@@ -14,12 +14,11 @@ services:
         - api/**
         - core/**
         - pyproject.toml
-        - schema.sql
+        - .python-version
         - render.yaml
     healthCheckPath: /health
+    # Python version comes from .python-version at the repo root (Render reads it).
     envVars:
-      - key: PYTHON_VERSION
-        value: "3.11"
       - key: DATABASE_URL
         sync: false
       - key: SESSION_SECRET

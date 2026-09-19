@@ -15,7 +15,7 @@ export TEST_DATABASE_URL=postgresql://localhost/blundriq_test   # any scratch Po
 .venv/bin/ruff check . && .venv/bin/pyright && .venv/bin/pytest
 cd ui && npm ci && npm run check && npm test                 # UI
 .venv/bin/uvicorn api.main:app --reload                      # API (needs the env vars in core/secrets.py)
-.venv/bin/pipeline db init | db upgrade | settings show      # database and settings CLI
+.venv/bin/pipeline db init | db upgrade | settings show      # database and settings CLI (SQL lives in core/sql/)
 ```
 
 ## Hard rules
@@ -24,7 +24,7 @@ cd ui && npm ci && npm run check && npm test                 # UI
 2. **This repo is public.** No DSNs, keys, emails, AWS/Supabase/Render identifiers, or bcrypt hashes in tracked files or log lines. Log counts and labels, never handles or URLs. The gitleaks hooks are never bypassed (`--no-verify` is not used). The repertoire course vendor is never named here; its tooling lives in a private local repo.
 3. **`core/` is the only place SQL lives.** `api/` and `pipeline/` call `core/`. `core/` modules import only what they use and do nothing at import time.
 4. **Settings live in the `settings` row via `core/settings.py`** (one typed model, one table row, one Preferences page). Engineering constants live in `core/constants.py`. Neither is ever read from env.
-5. **Schema changes** are a numbered file in `migrations/` plus a regenerated `schema.sql`, in the same PR. Fresh install loads `schema.sql`; existing databases apply migrations only. Never both.
+5. **Schema changes** are a numbered file in `core/sql/migrations/` plus a regenerated `core/sql/schema.sql` and an updated `tests/fixtures/schema_baseline.sql`, in the same PR. Fresh install loads `schema.sql`; existing databases apply migrations only. Never both.
 6. **`player_id` is always 1.** No multi-user branches, no auth beyond the one password cookie.
 7. **Chess960 games are history only**: imported and counted, never analysed, matched, puzzled or reviewed. Every worklist, query and migration uses `core.chess.eligibility`, never its own literal.
 8. **Every pipeline step is idempotent** and safe to rerun.
