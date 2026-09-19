@@ -1,0 +1,88 @@
+"""The only place the process reads its environment.
+
+Every secret the application needs is declared here by name. Reading is
+strict: a missing variable raises at import of `get()` time with the
+variable's name, and the process does not continue. There are no defaults,
+no fallbacks, no "backup" values, and nothing here is ever read from a file
+or a database row. The lint rule in pyproject.toml bans `os.environ` and
+`os.getenv` everywhere else, and tests/test_secrets_policy.py fails if this
+file ever contains a string literal on the right-hand side of a read.
+
+Which variables are required depends on the role of the process:
+
+    DATABASE_URL       api, pipeline     Postgres DSN (pooler)
+    SESSION_SECRET     api               signs the login cookie
+    PASSWORD_HASH      api               bcrypt hash of the one user's password
+    ANTHROPIC_API_KEY  api               AI explanations (optional feature; still no default)
+    OPENAI_API_KEY     api               AI explanations (optional feature; still no default)
+    RESEND_API_KEY     pipeline          ops alerts
+    ALERT_EMAIL        pipeline          where ops alerts go
+
+Local development sets them in the shell (e.g. `set -a; source ~/.blundriq-secrets/blundriq.env`).
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+
+class MissingSecret(RuntimeError):
+    """Raised when a required environment variable is absent or empty."""
+
+
+def _require(name: str) -> str:
+    value = os.environ.get(name)
+    if value is None or value.strip() == "":
+        raise MissingSecret(f"required environment variable {name} is not set")
+    return value
+
+
+@dataclass(frozen=True)
+class DatabaseSecrets:
+    database_url: str
+
+
+@dataclass(frozen=True)
+class ApiSecrets:
+    database_url: str
+    session_secret: str
+    password_hash: str
+
+
+@dataclass(frozen=True)
+class AiSecrets:
+    anthropic_api_key: str
+    openai_api_key: str
+
+
+@dataclass(frozen=True)
+class AlertSecrets:
+    resend_api_key: str
+    alert_email: str
+
+
+def database() -> DatabaseSecrets:
+    return DatabaseSecrets(database_url=_require("DATABASE_URL"))
+
+
+def api() -> ApiSecrets:
+    return ApiSecrets(
+        database_url=_require("DATABASE_URL"),
+        session_secret=_require("SESSION_SECRET"),
+        password_hash=_require("PASSWORD_HASH"),
+    )
+
+
+def ai() -> AiSecrets:
+    return AiSecrets(
+        anthropic_api_key=_require("ANTHROPIC_API_KEY"),
+        openai_api_key=_require("OPENAI_API_KEY"),
+    )
+
+
+def alerts() -> AlertSecrets:
+    return AlertSecrets(
+        resend_api_key=_require("RESEND_API_KEY"),
+        alert_email=_require("ALERT_EMAIL"),
+    )

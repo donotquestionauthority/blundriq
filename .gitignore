@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+ui/node_modules/
+ui/dist/
+
+# Secrets and local configuration: never tracked, no exceptions
+.env
+.env.*
+*.env
+*.pem
+*.key
+
+# Local data: dumps, oracle inputs, fixtures derived from real data
+*.dump
+*.sql.gz
+*.sqlite
+*.jsonl
+/data/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
