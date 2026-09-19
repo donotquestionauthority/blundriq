@@ -67,14 +67,17 @@ jobs:
 
   secrets-scan:
     # Detection after publication. The pre-push hook is what prevents a leak;
-    # this catches anything that got past it and blocks the merge.
+    # this catches anything that got past it and blocks the merge. Runs the
+    # gitleaks binary directly over the FULL history (the marketplace action
+    # computes a commit range that breaks on a repository's first push).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_CONFIG: .gitleaks.toml
-          GITLEAKS_ENABLE_SUMMARY: "true"
+      - name: Install gitleaks 8.24.3
+        run: |
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+      - name: Scan every commit
+        run: gitleaks git --config .gitleaks.toml --redact --no-banner --exit-code 1 .
