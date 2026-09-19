@@ -1,27 +1,32 @@
 """Fresh install and upgrade of the database schema. Two paths, never mixed.
 
-  init    — an EMPTY database loads schema.sql (always the latest schema) and
-            records the current baseline version in schema_version.
-  upgrade — an EXISTING database applies only migrations/NNN_*.sql files with
-            NNN greater than its recorded version, each in its own transaction,
-            recording each as it goes.
+  init    — an EMPTY database loads core/sql/schema.sql (always the latest
+            schema) and records the current baseline version in schema_version.
+  upgrade — an EXISTING database applies only core/sql/migrations/NNN_*.sql
+            files with NNN greater than its recorded version, each in its own
+            transaction, recording each as it goes.
 
+The SQL lives inside the `core` package (core/sql/) and is shipped as package
+data, so an ordinary `pip install .` works the same as an editable checkout.
 `schema.sql` is regenerated whenever a migration lands, so a fresh install and
-an upgraded database are identical; CI checks that (tests/test_schema.py).
+an upgraded database are identical; CI checks that (tests/test_schema.py) using
+tests/fixtures/schema_baseline.sql, which is deliberately outside the numbered
+migration directory.
 """
 
 from __future__ import annotations
 
 import re
+from importlib.resources import files
 from pathlib import Path
 from typing import Any, LiteralString, cast
 
 from psycopg import Connection
 from psycopg.rows import tuple_row
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-SCHEMA_FILE = REPO_ROOT / "schema.sql"
-MIGRATIONS_DIR = REPO_ROOT / "migrations"
+SQL_DIR = Path(str(files("core") / "sql"))
+SCHEMA_FILE = SQL_DIR / "schema.sql"
+MIGRATIONS_DIR = SQL_DIR / "migrations"
 
 _MIGRATION_RE = re.compile(r"^(\d{3})_[a-z0-9_]+\.sql$")
 
@@ -32,10 +37,16 @@ def _sql_from_repo_file(path: Path) -> LiteralString:
     return cast(LiteralString, path.read_text())
 
 
-def migration_files() -> list[tuple[int, Path]]:
-    """All migrations in numeric order. A malformed filename is an error, not a skip."""
+def migration_files(directory: Path | None = None) -> list[tuple[int, Path]]:
+    """All migrations in numeric order. A malformed filename is an error, not a skip;
+    a missing directory is an error too (an installed package without its SQL is broken)."""
+    directory = directory if directory is not None else MIGRATIONS_DIR
+    if not directory.is_dir():
+        raise FileNotFoundError(f"migrations directory missing: {directory}")
+    if not SCHEMA_FILE.is_file():
+        raise FileNotFoundError(f"schema file missing: {SCHEMA_FILE}")
     found: list[tuple[int, Path]] = []
-    for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+    for path in sorted(directory.glob("*.sql")):
         m = _MIGRATION_RE.match(path.name)
         if not m:
             raise ValueError(f"migration filename does not match NNN_name.sql: {path.name}")
@@ -46,10 +57,10 @@ def migration_files() -> list[tuple[int, Path]]:
     return found
 
 
-def latest_version() -> int:
+def latest_version(directory: Path | None = None) -> int:
     """The baseline a fresh install records: the highest migration number, or 0."""
-    files = migration_files()
-    return files[-1][0] if files else 0
+    found = migration_files(directory)
+    return found[-1][0] if found else 0
 
 
 def current_version(conn: Connection[Any]) -> int | None:
@@ -80,13 +91,13 @@ def init(conn: Connection[Any]) -> int:
     return version
 
 
-def upgrade(conn: Connection[Any]) -> list[int]:
+def upgrade(conn: Connection[Any], directory: Path | None = None) -> list[int]:
     """Apply pending migrations in order; returns the numbers applied."""
     version = current_version(conn)
     if version is None:
         raise RuntimeError("database has no schema; use init")
     applied: list[int] = []
-    for number, path in migration_files():
+    for number, path in migration_files(directory):
         if number <= version:
             continue
         with conn.cursor() as cur:

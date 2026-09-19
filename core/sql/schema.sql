@@ -1,4 +1,4 @@
--- BlundrIQ Personal — database schema (single source of truth for a FRESH install)
+-- BlundrIQ Personal — database schema (single source of truth for a FRESH install; lives in core/sql/ so it ships in the package)
 --
 -- Rules (see CLAUDE.md):
 --   * A fresh database loads this file and records the current baseline in schema_version.
@@ -130,8 +130,6 @@ CREATE TABLE public.blunders (
     canonical_fen text GENERATED ALWAYS AS ((public.bq_canonical_fen(fen) || ' 0 1'::text)) STORED
 );
 
-COMMENT ON TABLE public.blunders IS 'Per-player blunder rows. Convention §3.38: composite FK to player_games(chess_game_id, player_id) enforces tenant ownership.';
-
 CREATE SEQUENCE public.blunders_id_seq
     START WITH 1
     INCREMENT BY 1
@@ -223,12 +221,6 @@ CREATE TABLE public.chess_games (
     CONSTRAINT chess_games_variant_starting_fen_coherent CHECK ((((variant = 'standard'::text) AND (starting_fen IS NULL)) OR ((variant = 'chess960'::text) AND (starting_fen IS NOT NULL))))
 );
 
-COMMENT ON TABLE public.chess_games IS 'Content-addressed physical game store. One row per (platform, platform_game_id). Per-player attributes live on player_games; per-opponent-profile attributes live on opponent_views. Convention §3.38.';
-
-COMMENT ON COLUMN public.chess_games.variant IS 'Game variant. ''standard'' for normal chess; ''chess960'' for Fischer Random.';
-
-COMMENT ON COLUMN public.chess_games.starting_fen IS 'Initial position for variants with non-standard starts (chess960). NULL for standard games (implicit standard starting position). When non-NULL, must equal fen_sequence[0] (enforced by check constraint).';
-
 CREATE SEQUENCE public.chess_games_id_seq
     START WITH 1
     INCREMENT BY 1
@@ -238,7 +230,7 @@ CREATE SEQUENCE public.chess_games_id_seq
 
 ALTER SEQUENCE public.chess_games_id_seq OWNED BY public.chess_games.id;
 
--- Positions the player asked Blunders to stop showing.
+-- Positions the player asked Blunders to stop showing. Unique per canonical position.
 CREATE TABLE public.dismissed_blunder_fens (
     id integer NOT NULL,
     player_id integer NOT NULL,
@@ -257,7 +249,7 @@ CREATE SEQUENCE public.dismissed_blunder_fens_id_seq
 
 ALTER SEQUENCE public.dismissed_blunder_fens_id_seq OWNED BY public.dismissed_blunder_fens.id;
 
--- Positions that must never be turned into a puzzle.
+-- Positions that must never be turned into a puzzle. Unique per canonical position.
 CREATE TABLE public.dismissed_puzzle_candidates (
     fen text NOT NULL,
     dismissed_at timestamp with time zone DEFAULT now(),
@@ -279,8 +271,6 @@ CREATE TABLE public.game_repertoire_results (
     canonical_fen text GENERATED ALWAYS AS ((public.bq_canonical_fen(deviation_fen) || ' 0 1'::text)) STORED
 );
 
-COMMENT ON TABLE public.game_repertoire_results IS 'Per-player repertoire match for a chess_game. Convention §3.38.';
-
 CREATE SEQUENCE public.game_repertoire_results_id_seq
     START WITH 1
     INCREMENT BY 1
@@ -297,8 +287,6 @@ CREATE TABLE public.game_result_lines (
     line_id integer NOT NULL,
     matched_ply integer NOT NULL
 );
-
-COMMENT ON TABLE public.game_result_lines IS 'Junction: which repertoire_lines matched a given game_repertoire_results row, with the matched_ply at which match strength tied.';
 
 CREATE SEQUENCE public.game_result_lines_id_seq
     START WITH 1
@@ -406,8 +394,6 @@ CREATE TABLE public.opponent_views (
     CONSTRAINT opponent_views_source_type_check CHECK ((source_type = ANY (ARRAY['chesscom'::text, 'lichess'::text])))
 );
 
-COMMENT ON TABLE public.opponent_views IS 'Per-opponent-profile view of a chess_game. played_as is view-specific (the watched account played this color); not a property of the physical game (the same chess_game can be viewed from the opposite side by another profile). Convention §3.38.';
-
 -- The player's side of a chess_games row: color, ratings, result, analysis progress.
 CREATE TABLE public.player_games (
     player_id integer NOT NULL,
@@ -425,8 +411,6 @@ CREATE TABLE public.player_games (
     CONSTRAINT player_games_result_check CHECK ((result = ANY (ARRAY['win'::text, 'loss'::text, 'draw'::text]))),
     CONSTRAINT player_games_source_check CHECK ((source = ANY (ARRAY['chesscom'::text, 'lichess'::text])))
 );
-
-COMMENT ON TABLE public.player_games IS 'Per-player view of a chess_game: ownership, color, opponent details, result. Convention §3.38: tenant scope is via player_id here, never derived from chess_game_id alone.';
 
 -- Per-ply tactical findings (motif found/missed, mate found/missed, positional) that drive puzzle selection and weakness detection.
 CREATE TABLE public.player_motif_events (
@@ -588,8 +572,6 @@ CREATE TABLE public.puzzles (
     CONSTRAINT puzzles_repertoire_consistency_check CHECK ((((is_repertoire IS TRUE) AND (player_id IS NOT NULL) AND (repertoire_line_id IS NOT NULL)) OR ((is_repertoire IS FALSE) AND (repertoire_line_id IS NULL))))
 )
 WITH (autovacuum_vacuum_scale_factor='0.02', autovacuum_vacuum_threshold='50', autovacuum_analyze_scale_factor='0.01');
-
-COMMENT ON COLUMN public.puzzles.acceptance_map IS '#197 optimal-distance forced-mate acceptance map for own_mate puzzles (NULL otherwise). Shape {v,n,p,d}: v=format version, n=N* (player moves to mate, mirrors stored mate distance), p=EPD->[uci] accepted competing-optimal player moves, d=EPD->uci single canonical defense. Built engine-free by pipeline/mate_acceptance.py; size-capped by ACCEPTANCE_MAP_CAP_BYTES. EPD keys use legal-en-passant (python-chess epd()).';
 
 CREATE SEQUENCE public.puzzles_id_seq
     AS integer
@@ -861,6 +843,66 @@ ALTER TABLE ONLY public.review_events
 ALTER TABLE ONLY public.review_pool_state
     ADD CONSTRAINT review_pool_state_pkey PRIMARY KEY (player_id, pool_id);
 
+CREATE INDEX idx_chess_games_variant_played_at ON public.chess_games USING btree (variant, played_at DESC) WHERE (variant <> 'standard'::text);
+
+CREATE INDEX idx_opponent_profiles_player_id ON public.opponent_profiles USING btree (player_id);
+
+CREATE INDEX idx_opponent_sources_profile_id ON public.opponent_sources USING btree (opponent_profile_id);
+
+CREATE INDEX idx_puzzle_attempts_player ON public.puzzle_attempts USING btree (player_id, puzzle_id);
+
+CREATE UNIQUE INDEX idx_puzzles_repertoire_line ON public.puzzles USING btree (repertoire_line_id) WHERE (repertoire_line_id IS NOT NULL);
+
+CREATE INDEX idx_repertoire_lines_fen_sequence ON public.repertoire_lines USING gin (fen_sequence);
+
+CREATE UNIQUE INDEX ix_ai_explanation_cache_canonical ON public.ai_explanation_cache USING btree (canonical_fen, prompt_hash, context_hash);
+
+CREATE INDEX ix_blunders_canonical_fen ON public.blunders USING btree (canonical_fen);
+
+CREATE INDEX ix_blunders_classification ON public.blunders USING btree (classification);
+
+CREATE INDEX ix_blunders_fen ON public.blunders USING btree (fen);
+
+CREATE INDEX ix_blunders_player_game ON public.blunders USING btree (player_id, chess_game_id);
+
+CREATE INDEX ix_books_player_id ON public.books USING btree (player_id);
+
+CREATE INDEX ix_chapters_book_id ON public.chapters USING btree (book_id);
+
+CREATE UNIQUE INDEX ix_chapters_identity ON public.chapters USING btree (book_id, title, root_fen) NULLS NOT DISTINCT;
+
+CREATE INDEX ix_chess_games_pending ON public.chess_games USING btree (analysis_status) WHERE (analysis_status = ANY (ARRAY['unanalyzed'::text, 'failed_retryable'::text, 'pending'::text]));
+
+CREATE INDEX ix_chess_games_played_at ON public.chess_games USING btree (played_at DESC);
+
+CREATE INDEX ix_chess_games_position_keys ON public.chess_games USING gin (position_keys);
+
+CREATE UNIQUE INDEX ix_dismissed_blunder_fens_player_canonical ON public.dismissed_blunder_fens USING btree (player_id, canonical_fen);
+
+CREATE UNIQUE INDEX ix_dismissed_puzzle_candidates_canonical ON public.dismissed_puzzle_candidates USING btree (canonical_fen);
+
+CREATE INDEX ix_grl_grr ON public.game_result_lines USING btree (game_repertoire_result_id);
+
+CREATE INDEX ix_grl_line_id ON public.game_result_lines USING btree (line_id);
+
+CREATE INDEX ix_grr_canonical_fen ON public.game_repertoire_results USING btree (canonical_fen);
+
+CREATE INDEX ix_grr_chess_game ON public.game_repertoire_results USING btree (chess_game_id);
+
+CREATE INDEX ix_grr_deviation_fen ON public.game_repertoire_results USING btree (deviation_fen);
+
+CREATE INDEX ix_grr_player ON public.game_repertoire_results USING btree (player_id);
+
+CREATE INDEX ix_learn_commits_player_created ON public.learn_commits USING btree (player_id, created_at DESC);
+
+CREATE INDEX ix_lichess_puzzles_rating ON public.lichess_puzzles USING btree (rating);
+
+CREATE INDEX ix_lichess_puzzles_themes ON public.lichess_puzzles USING gin (themes);
+
+CREATE INDEX ix_lichess_puzzles_topk ON public.lichess_puzzles USING btree (popularity DESC, nb_plays DESC, puzzle_id) INCLUDE (fen, rating, themes, color, solution_line);
+
+CREATE INDEX ix_opponent_views_chess_game ON public.opponent_views USING btree (chess_game_id);
+
 CREATE INDEX ix_player_games_player ON public.player_games USING btree (player_id);
 
 CREATE INDEX ix_player_games_unanalyzed ON public.player_games USING btree (player_id) WHERE (analyzed_at_depth IS NULL);
@@ -1015,10 +1057,6 @@ ALTER TABLE ONLY public.review_events
 
 ALTER TABLE ONLY public.review_pool_state
     ADD CONSTRAINT review_pool_state_player_id_fkey FOREIGN KEY (player_id) REFERENCES public.players(id) ON DELETE CASCADE;
-
---
--- PostgreSQL database dump complete
---
 
 -- ---------------------------------------------------------------------------
 -- Tables new in this schema

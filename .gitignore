@@ -28,3 +28,4 @@ ui/dist/
 .DS_Store
 .idea/
 .vscode/
+build/
