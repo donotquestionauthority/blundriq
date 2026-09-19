@@ -23,8 +23,27 @@ from psycopg import Connection
 from psycopg.rows import tuple_row
 from pydantic import BaseModel, Field
 
+from core.prompts import DEFAULT_PROMPTS
+
 TimeClass = Literal["bullet", "blitz", "rapid", "classical"]
 DifficultyTier = Literal["easier", "normal", "hard", "very_hard"]
+FilterMode = Literal["days", "games"]
+
+
+class AiPrompt(BaseModel):
+    """One explanation prompt. `text` and `system_prompt` are Jinja-style templates over the
+    blunder context (fen, color, move_played, cp_loss, post_blunder_line, ...)."""
+
+    label: str = Field(default="", description="Name shown on the explain button.")
+    model: str = Field(default="", description="Model id sent to the provider (Anthropic or OpenAI).")
+    system_prompt: str = Field(default="", description="System prompt.")
+    text: str = Field(default="", description="User prompt template.")
+    temperature: float | None = Field(
+        default=None, ge=0, le=2, description="Sampling temperature; null = provider default."
+    )
+    thinking_enabled: bool = Field(default=False, description="Extended thinking (Anthropic models).")
+    thinking_budget_tokens: int = Field(default=2048, ge=0, le=32000, description="Thinking budget when enabled.")
+    prefill: str = Field(default="", description="Assistant prefill, if any.")
 
 
 class Settings(BaseModel):
@@ -81,21 +100,43 @@ class Settings(BaseModel):
     blunders_default_last_n_games: int = Field(
         default=500, ge=10, le=5000, description="Default game window on the Blunders page."
     )
+    blunders_default_filter_mode: FilterMode = Field(
+        default="days", description="Whether the Blunders page opens on a day window or a game-count window."
+    )
+    blunders_default_window_days: int = Field(default=20, ge=1, le=3650, description="Default day window on Blunders.")
     blunders_default_min_occurrences: int = Field(
-        default=3, ge=1, le=50, description="Default minimum occurrences on the Blunders page."
+        default=2, ge=1, le=50, description="Default minimum occurrences on the Blunders page."
     )
     blunders_default_classifications: list[str] = Field(
-        default=["miss", "blunder", "mistake", "inaccuracy"], description="Classifications shown by default."
+        default=["blunder", "miss", "mistake"], description="Classifications shown by default."
+    )
+    deviations_default_filter_mode: FilterMode = Field(
+        default="days", description="Whether Deviations opens on a day window or a game-count window."
+    )
+    deviations_default_window_days: int = Field(
+        default=20, ge=1, le=3650, description="Default day window on Deviations."
     )
     deviations_default_last_n_games: int = Field(
         default=500, ge=10, le=5000, description="Default game window on Deviations."
     )
     deviations_default_min_occurrences: int = Field(
-        default=3, ge=1, le=50, description="Default minimum occurrences on Deviations."
+        default=2, ge=1, le=50, description="Default minimum occurrences on Deviations."
+    )
+    deviations_default_min_ply: int = Field(default=1, ge=1, le=80, description="Ignore deviations before this ply.")
+    games_default_window_days: int = Field(
+        default=60, ge=1, le=3650, description="Default day window on the Games page."
+    )
+    games_columns: list[str] = Field(
+        default=["Date", "Color", "Opponent", "Result", "Repertoire", "Section", "Deviation", "Link"],
+        description="Columns shown on the Games page, in order.",
     )
     scout_default_last_n_games: int = Field(default=500, ge=10, le=5000, description="Default game window on Scout.")
     scout_default_min_occurrences: int = Field(
-        default=3, ge=1, le=50, description="Default minimum occurrences on Scout."
+        default=2, ge=1, le=50, description="Default minimum occurrences on Scout."
+    )
+    scout_my_window_days: int = Field(default=30, ge=1, le=3650, description="Day window for my games on Scout.")
+    scout_opponent_window_days: int = Field(
+        default=90, ge=1, le=3650, description="Day window for opponent games on Scout."
     )
     scout_bayesian_prior_strength: int = Field(
         default=10, ge=0, le=100, description="Prior strength for Scout win-rate smoothing."
@@ -247,6 +288,11 @@ class Settings(BaseModel):
     ai_explain_max_per_day: int = Field(
         default=50, ge=0, le=5000, description="Cap on AI explanations per day (cost guard)."
     )
+    ai_prompts: dict[str, AiPrompt] = Field(
+        default_factory=lambda: {k: AiPrompt.model_validate(v) for k, v in DEFAULT_PROMPTS.items()},
+        description="Explanation prompts by key (a, b, c...). Each is a button on a blunder; edit text and model here.",
+    )
+    ai_default_prompt: str = Field(default="a", description="Prompt key used by the primary Explain button.")
 
 
 # ---------------------------------------------------------------------------
