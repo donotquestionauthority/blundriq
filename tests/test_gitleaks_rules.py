@@ -1,6 +1,7 @@
 """Prove the scanner rules in .gitleaks.toml fire on synthetic examples and that the
 allowlists admit only what they are meant to. Skips when gitleaks is not installed
-(CI installs it; the hooks require it)."""
+(CI installs 8.24.3; the hooks require any version >= 8.24). Probe values are
+high-entropy like real secrets because newer gitleaks applies an entropy floor."""
 
 from __future__ import annotations
 
@@ -20,17 +21,24 @@ MUST_FLAG: list[tuple[str, tuple[str, ...]]] = [
     ("postgres-dsn", ("postgresql://", "review:fake-secret@localhost:5432/db")),
     ("postgres-dsn", ("postgres://", "user:pw@", "db.example.internal:5432/app")),
     ("supabase-host", ("https://abcdefghijklmnopqrst.", "supabase.co/rest/v1")),
-    ("supabase-access-token", ("sbp_", "0123456789abcdef0123456789abcdef01234567")),
+    ("supabase-access-token", ("sbp_", "9f3c1e7a2b4d8e6f0a5c7b9d1e3f2a4c6b8d0e2f")),
     ("render-host", ("https://blundriq-api-xyz1.", "onrender.com")),
     ("render-service-id", ("RENDER_SERVICE_ID=srv-", "c123456789abcdefghij")),
     ("vercel-id", ("VERCEL_PROJECT_ID=prj_", "1234567890abcdefghijklmn")),
     ("aws-host-or-arn", ("https://sqs.us-east-1.", "amazonaws.com/123456789012/queue")),
     ("aws-host-or-arn", ("arn:", "aws:iam::", "123456789012", ":role/x")),
     ("aws-account-id", ("AWS_ACCOUNT_ID=", "123456789012")),
-    ("resend-key", ("re_", "AbCdEfGhIjKlMnOpQrStUvWx")),
-    ("anthropic-key", ("sk-", "ant-api03-abcdefghijklmnopqrstuvwxyz0123456789")),
-    ("openai-key", ("sk-", "abcdefghijklmnopqrstuvwxyz0123456789")),
-    ("jwt", ("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9", ".eyJyb2xlIjoiYW5vbiJ9", ".abcdefghijklmnopqrstuvwxyz0123")),
+    ("resend-key", ("re_", "Qz7pLm2XvK9tRw4bNc8dHy3f")),
+    ("anthropic-key", ("sk-", "ant-api03-Qz7pLm2XvK9tRw4bNc8dHy3fJs6gAe1uBo5iTx0kMr")),
+    ("openai-key", ("sk-", "proj-Hx4kQ9vT2mLp7cWz1nRb8yFj5sGd3aEu6oIq0tYv")),
+    (
+        "jwt-token",
+        (
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+            ".eyJpc3MiOiJzdXBhYmFzZSIsInJvbGUiOiJhbm9uIiwiaWF0IjoxNzAwMDAwMDAwfQ",
+            ".Qz7pLm2XvK9tRw4bNc8dHy3fJs6gAe1uBo5iTx0kMrZq",
+        ),
+    ),
     ("bcrypt-hash", ("$2b$12$", "C6UzMDM.H6dfI/f/IKcEeO4Zp0MnjJyIm1WBNTUqXqmIWy7NiT1Ne")),
     ("email-address", ("someone@", "gmail.com")),
     ("email-address", ("review@", "example.com.invalid")),

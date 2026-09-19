@@ -10,7 +10,7 @@ Python 3.11, FastAPI, psycopg 3, pydantic 2 (`core/`, `api/`, `pipeline/`) · Re
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"   # once
-bash tools/hooks/install.sh                                  # once: gitleaks pre-commit + pre-push
+bash tools/hooks/install.sh                                  # once: gitleaks (>= 8.24; CI pins 8.24.3) pre-commit + pre-push
 export TEST_DATABASE_URL=postgresql://localhost/blundriq_test   # any scratch Postgres
 .venv/bin/ruff check . && .venv/bin/pyright && .venv/bin/pytest
 cd ui && npm ci && npm run check && npm test                 # UI
