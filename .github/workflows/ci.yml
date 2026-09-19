@@ -44,7 +44,9 @@ jobs:
           cd /tmp
           /tmp/installed/bin/pipeline db init
           /tmp/installed/bin/pipeline db version | tee /tmp/version.txt
-          grep -q '^database: 0; latest: 0$' /tmp/version.txt || { echo "unexpected version output"; exit 1; }
+          # A fresh install must record the installed package's latest migration number.
+          expected="$(/tmp/installed/bin/python -c 'from core import schema; print(schema.latest_version())')"
+          grep -qx "database: ${expected}; latest: ${expected}" /tmp/version.txt || { echo "unexpected version output"; exit 1; }
 
   ui:
     runs-on: ubuntu-latest
