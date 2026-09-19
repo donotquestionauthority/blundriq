@@ -58,7 +58,16 @@ function groupOf(key: string): string {
   return named[head] ?? "Other";
 }
 
-function Field({ name, schema, value, onChange }: { name: string; schema: PropSchema; value: unknown; onChange: (v: unknown) => void }) {
+type FieldProps = {
+  name: string;
+  schema: PropSchema;
+  value: unknown;
+  onChange: (v: unknown) => void;
+  onParseError: (message: string | null) => void;
+  parseError: string | null;
+};
+
+function Field({ name, schema, value, onChange, onParseError, parseError }: FieldProps) {
   const id = `f-${name}`;
   const base = "rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900";
   let control: ReactNode;
@@ -88,22 +97,9 @@ function Field({ name, schema, value, onChange }: { name: string; schema: PropSc
   } else if (schema.type === "boolean") {
     control = <input id={id} type="checkbox" checked={Boolean(value)} onChange={(e) => onChange(e.target.checked)} />;
   } else if (schema.type === "array" || schema.type === "object") {
-    // Lists, tuples and maps are edited as JSON; the server validates.
-    control = (
-      <input
-        id={id}
-        type="text"
-        className={`${base} w-full font-mono`}
-        defaultValue={JSON.stringify(value)}
-        onBlur={(e) => {
-          try {
-            onChange(JSON.parse(e.target.value));
-          } catch {
-            /* keep previous value; server-side validation reports on save */
-          }
-        }}
-      />
-    );
+    // Lists, tuples and maps are edited as JSON text. Malformed text is a visible
+    // error that blocks Save; it is never silently replaced by the previous value.
+    control = <JsonField id={id} className={`${base} w-full font-mono`} value={value} onChange={onChange} onParseError={onParseError} parseError={parseError} />;
   } else {
     control = <input id={id} type="text" className={`${base} w-64`} value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} />;
   }
@@ -114,9 +110,53 @@ function Field({ name, schema, value, onChange }: { name: string; schema: PropSc
       </label>
       <div>
         {control}
+        {parseError && <p className="mt-1 text-xs text-red-600">{parseError}</p>}
         {schema.description && <p className="mt-1 text-xs text-zinc-500">{schema.description}</p>}
       </div>
     </div>
+  );
+}
+
+function JsonField({
+  id,
+  className,
+  value,
+  onChange,
+  onParseError,
+  parseError,
+}: {
+  id: string;
+  className: string;
+  value: unknown;
+  onChange: (v: unknown) => void;
+  onParseError: (message: string | null) => void;
+  parseError: string | null;
+}) {
+  const [text, setText] = useState(() => JSON.stringify(value));
+  const [synced, setSynced] = useState(value);
+  // When a save returns the canonical value (or the value changes elsewhere), show it —
+  // derived during render, so the user's in-progress (possibly malformed) text is kept.
+  if (value !== synced && !parseError) {
+    setSynced(value);
+    setText(JSON.stringify(value));
+  }
+  return (
+    <input
+      id={id}
+      type="text"
+      className={className}
+      value={text}
+      aria-invalid={parseError ? true : undefined}
+      onChange={(e) => {
+        setText(e.target.value);
+        try {
+          onChange(JSON.parse(e.target.value));
+          onParseError(null);
+        } catch (err) {
+          onParseError(err instanceof Error ? `Not valid JSON: ${err.message}` : "Not valid JSON");
+        }
+      }}
+    />
   );
 }
 
@@ -124,6 +164,8 @@ export default function Preferences() {
   const [schema, setSchema] = useState<JsonSchema | null>(null);
   const [values, setValues] = useState<Values | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [parseErrors, setParseErrors] = useState<Record<string, string>>({});
+  const hasParseErrors = Object.keys(parseErrors).length > 0;
 
   useEffect(() => {
     Promise.all([api.get<JsonSchema>("/settings/schema"), api.get<Values>("/settings")]).then(([s, v]) => {
@@ -142,8 +184,21 @@ export default function Preferences() {
     return [...map.entries()];
   }, [schema]);
 
+  function setParseError(key: string, message: string | null) {
+    setParseErrors((prev) => {
+      const next = { ...prev };
+      if (message) next[key] = message;
+      else delete next[key];
+      return next;
+    });
+  }
+
   async function save() {
     if (!values) return;
+    if (hasParseErrors) {
+      setStatus("Not saved: fix the fields marked in red.");
+      return;
+    }
     setStatus("Saving…");
     try {
       const saved = await api.put<Values>("/settings", values);
@@ -160,7 +215,11 @@ export default function Preferences() {
     <div>
       <div className="flex items-center gap-4">
         <h1 className="text-xl font-semibold tracking-tight">Preferences</h1>
-        <button onClick={save} className="rounded bg-zinc-900 px-3 py-1 text-sm text-white dark:bg-zinc-100 dark:text-zinc-900">
+        <button
+          onClick={save}
+          disabled={hasParseErrors}
+          className="rounded bg-zinc-900 px-3 py-1 text-sm text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
+        >
           Save
         </button>
         {status && <span className="text-sm text-zinc-500">{status}</span>}
@@ -171,7 +230,15 @@ export default function Preferences() {
             {group}
           </h2>
           {keys.map((k) => (
-            <Field key={k} name={k} schema={schema.properties[k]} value={values[k]} onChange={(v) => setValues({ ...values, [k]: v })} />
+            <Field
+              key={k}
+              name={k}
+              schema={schema.properties[k]}
+              value={values[k]}
+              onChange={(v) => setValues({ ...values, [k]: v })}
+              onParseError={(m) => setParseError(k, m)}
+              parseError={parseErrors[k] ?? null}
+            />
           ))}
         </section>
       ))}
