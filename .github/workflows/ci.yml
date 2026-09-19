@@ -36,11 +36,15 @@ jobs:
       - run: pyright
       - run: pytest
       - name: Ordinary (non-editable) install ships the SQL and the CLI works
+        env:
+          DATABASE_URL: postgresql://postgres:ci@localhost:5432/blundriq_install
         run: |
           python -m venv /tmp/installed && /tmp/installed/bin/pip install -q .
-          cd /tmp && DATABASE_URL=postgresql://postgres:ci@localhost:5432/blundriq_install /tmp/installed/bin/pipeline db version
           psql postgresql://postgres:ci@localhost:5432/postgres -c 'CREATE DATABASE blundriq_install'
-          DATABASE_URL=postgresql://postgres:ci@localhost:5432/blundriq_install /tmp/installed/bin/pipeline db init
+          cd /tmp
+          /tmp/installed/bin/pipeline db init
+          /tmp/installed/bin/pipeline db version | tee /tmp/version.txt
+          grep -q '^database: 0; latest: 0$' /tmp/version.txt || { echo "unexpected version output"; exit 1; }
 
   ui:
     runs-on: ubuntu-latest
