@@ -26,11 +26,21 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+      - name: Install gitleaks (the rule-probe tests run it)
+        run: |
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin gitleaks
       - run: pip install -e ".[dev]"
       - run: ruff check .
       - run: ruff format --check .
       - run: pyright
       - run: pytest
+      - name: Ordinary (non-editable) install ships the SQL and the CLI works
+        run: |
+          python -m venv /tmp/installed && /tmp/installed/bin/pip install -q .
+          cd /tmp && DATABASE_URL=postgresql://postgres:ci@localhost:5432/blundriq_install /tmp/installed/bin/pipeline db version
+          psql postgresql://postgres:ci@localhost:5432/postgres -c 'CREATE DATABASE blundriq_install'
+          DATABASE_URL=postgresql://postgres:ci@localhost:5432/blundriq_install /tmp/installed/bin/pipeline db init
 
   ui:
     runs-on: ubuntu-latest

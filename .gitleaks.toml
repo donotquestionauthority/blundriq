@@ -1,21 +1,31 @@
 # gitleaks configuration: the default ruleset plus this project's shapes.
 # Runs as a pre-commit hook (staged content), a pre-push hook (every outgoing
-# commit) and in CI (every PR, full history). See CLAUDE.md rule 1 and §4.7 of
+# commit) and in CI (every PR, full history). See CLAUDE.md rule 2 and §4.7 of
 # the rebuild plan. A hit blocks the commit/push; do not bypass.
+#
+# tests/test_gitleaks_rules.py proves every rule below fires on a synthetic
+# example and that every allowlist admits only what it is meant to.
 
 title = "blundriq"
 
 [extend]
 useDefault = true
 
+# --- connection strings and hosts -------------------------------------------
+
 [[rules]]
 id = "postgres-dsn"
 description = "Postgres connection string"
 regex = '''postgres(ql)?://[^\s"'`]+'''
 [[rules.allowlists]]
-# localhost can never be a production identifier: CI's scratch database and doc examples.
+# Only CI's scratch server (user postgres, throwaway password "ci", localhost) and the doc
+# example. Nothing else on localhost is exempt: a localhost DSN can still carry a real
+# password (tunnels), so other credentials are never allowed.
 regexTarget = "match"
-regexes = ['''postgres(ql)?://[^\s@/]*@?localhost[/:]''']
+regexes = [
+  '''^postgresql://postgres:ci@localhost:5432/[a-z_]+$''',
+  '''^postgresql://localhost/blundriq_test$''',
+]
 
 [[rules]]
 id = "supabase-host"
@@ -23,14 +33,36 @@ description = "Supabase project host or ref"
 regex = '''[a-z0-9-]+\.supabase\.(co|in)'''
 
 [[rules]]
+id = "supabase-access-token"
+description = "Supabase personal access token"
+regex = '''\bsbp_[a-f0-9]{40}\b'''
+
+[[rules]]
 id = "render-host"
 description = "Render service hostname"
 regex = '''[a-z0-9-]+\.onrender\.com'''
 
 [[rules]]
+id = "render-service-id"
+description = "Render service id"
+regex = '''\bsrv-[a-z0-9]{20}\b'''
+
+[[rules]]
+id = "vercel-id"
+description = "Vercel project or team id"
+regex = '''\b(prj|team)_[A-Za-z0-9]{24,}\b'''
+
+[[rules]]
 id = "aws-host-or-arn"
-description = "AWS endpoint, ARN or account id"
-regex = '''([a-z0-9.-]+\.amazonaws\.com|arn:aws:[a-z0-9:/_-]+|\b[0-9]{12}\b\.dkr)'''
+description = "AWS endpoint or ARN"
+regex = '''([a-z0-9.-]+\.amazonaws\.com|arn:aws:[a-z0-9:/_-]+)'''
+
+[[rules]]
+id = "aws-account-id"
+description = "AWS account id in an assignment or ECR/ARN context"
+regex = '''(?i)((aws[_-]?)?account[_-]?id\s*[=:]\s*["']?\d{12}\b|\b\d{12}\.dkr\b|\b\d{12}:(root|user|role)\b)'''
+
+# --- keys and tokens ----------------------------------------------------------
 
 [[rules]]
 id = "resend-key"
@@ -48,26 +80,34 @@ description = "OpenAI API key"
 regex = '''\bsk-[A-Za-z0-9_-]{20,}'''
 
 [[rules]]
-id = "email-address"
-description = "Email address (none belong in this repo)"
-regex = '''[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'''
-[[rules.allowlists]]
-regexTarget = "match"
-regexes = ['''noreply@anthropic\.com''', '''example\.com''']
-
-[[rules]]
-id = "course-vendor"
-description = "The repertoire course vendor is never named in this repository (private tooling lives elsewhere)"
-regex = '''(?i)chess\s?able'''
+id = "jwt"
+description = "JSON Web Token (Supabase anon/service keys are JWTs)"
+regex = '''\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b'''
 
 [[rules]]
 id = "bcrypt-hash"
 description = "A bcrypt hash committed as a literal"
 regex = '''\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}'''
 
-[[allowlists]]
-description = "Paths that legitimately contain matching shapes"
-paths = [
-  '''\.gitleaks\.toml$''',
-  '''package-lock\.json$''',
+# --- identities ---------------------------------------------------------------
+
+[[rules]]
+id = "email-address"
+description = "Email address (none belong in this repo)"
+regex = '''[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'''
+[[rules.allowlists]]
+# Anchored: exactly the commit-trailer address and RFC 2606 example domains.
+regexTarget = "match"
+regexes = [
+  '''^noreply@anthropic\.com$''',
+  '''^[A-Za-z0-9._%+-]+@example\.(com|org|net)$''',
 ]
+
+[[rules]]
+id = "course-vendor"
+description = "The repertoire course vendor is never named in this repository (private tooling lives elsewhere)"
+regex = '''(?i)chess\s?able'''
+
+[[allowlists]]
+description = "This configuration file necessarily contains the shapes it bans"
+paths = ['''^\.gitleaks\.toml$''']
