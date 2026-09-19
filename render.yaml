@@ -1,0 +1,28 @@
+# Render Blueprint for the API. The service root is the repository root so
+# core/ is available at build and run time (Render exposes nothing outside the
+# root directory). Secrets are set in the Render dashboard, never here.
+services:
+  - type: web
+    name: blundriq-api
+    runtime: python
+    plan: free
+    rootDir: .
+    buildCommand: pip install .
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    buildFilter:
+      paths:
+        - api/**
+        - core/**
+        - pyproject.toml
+        - schema.sql
+        - render.yaml
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
+      - key: DATABASE_URL
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: PASSWORD_HASH
+        sync: false

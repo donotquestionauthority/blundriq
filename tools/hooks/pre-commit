@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Scans STAGED content with gitleaks. Blocks the commit on any finding.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+command -v gitleaks >/dev/null || { echo "pre-commit: gitleaks is not installed (brew install gitleaks)"; exit 1; }
+gitleaks git --staged --config .gitleaks.toml --redact --no-banner --exit-code 1 .

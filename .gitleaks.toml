@@ -1,0 +1,73 @@
+# gitleaks configuration: the default ruleset plus this project's shapes.
+# Runs as a pre-commit hook (staged content), a pre-push hook (every outgoing
+# commit) and in CI (every PR, full history). See CLAUDE.md rule 1 and §4.7 of
+# the rebuild plan. A hit blocks the commit/push; do not bypass.
+
+title = "blundriq"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "postgres-dsn"
+description = "Postgres connection string"
+regex = '''postgres(ql)?://[^\s"'`]+'''
+[[rules.allowlists]]
+# localhost can never be a production identifier: CI's scratch database and doc examples.
+regexTarget = "match"
+regexes = ['''postgres(ql)?://[^\s@/]*@?localhost[/:]''']
+
+[[rules]]
+id = "supabase-host"
+description = "Supabase project host or ref"
+regex = '''[a-z0-9-]+\.supabase\.(co|in)'''
+
+[[rules]]
+id = "render-host"
+description = "Render service hostname"
+regex = '''[a-z0-9-]+\.onrender\.com'''
+
+[[rules]]
+id = "aws-host-or-arn"
+description = "AWS endpoint, ARN or account id"
+regex = '''([a-z0-9.-]+\.amazonaws\.com|arn:aws:[a-z0-9:/_-]+|\b[0-9]{12}\b\.dkr)'''
+
+[[rules]]
+id = "resend-key"
+description = "Resend API key"
+regex = '''\bre_[A-Za-z0-9]{20,}'''
+
+[[rules]]
+id = "anthropic-key"
+description = "Anthropic API key"
+regex = '''\bsk-ant-[A-Za-z0-9_-]{20,}'''
+
+[[rules]]
+id = "openai-key"
+description = "OpenAI API key"
+regex = '''\bsk-[A-Za-z0-9_-]{20,}'''
+
+[[rules]]
+id = "email-address"
+description = "Email address (none belong in this repo)"
+regex = '''[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'''
+[[rules.allowlists]]
+regexTarget = "match"
+regexes = ['''noreply@anthropic\.com''', '''example\.com''']
+
+[[rules]]
+id = "course-vendor"
+description = "The repertoire course vendor is never named in this repository (private tooling lives elsewhere)"
+regex = '''(?i)chess\s?able'''
+
+[[rules]]
+id = "bcrypt-hash"
+description = "A bcrypt hash committed as a literal"
+regex = '''\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}'''
+
+[[allowlists]]
+description = "Paths that legitimately contain matching shapes"
+paths = [
+  '''\.gitleaks\.toml$''',
+  '''package-lock\.json$''',
+]
