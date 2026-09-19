@@ -42,7 +42,7 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "TID", "UP"]
 
-# Secrets and configuration are read in exactly one place each (CLAUDE.md rule 1).
+# Secrets and configuration are read in exactly one place each (see core/secrets.py).
 # Anything else touching the environment is a lint error, not a review comment.
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "os.environ".msg = "Environment reads live only in core/secrets.py. Add the secret there; it fails closed."

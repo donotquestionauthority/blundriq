@@ -1,6 +1,6 @@
 # gitleaks configuration: the default ruleset plus this project's shapes.
 # Runs as a pre-commit hook (staged content), a pre-push hook (every outgoing
-# commit) and in CI (every PR, full history). See CLAUDE.md rule 2 and §4.7 of
+# commit) and in CI (every PR, full history). See §4.7 of
 # the rebuild plan. A hit blocks the commit/push; do not bypass.
 #
 # tests/test_gitleaks_rules.py proves every rule below fires on a synthetic

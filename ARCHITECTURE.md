@@ -52,7 +52,7 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `pipeline/cli.py` | The `pipeline` command. |
 | `ui/` | React app. `Preferences` renders `core/settings.py`'s schema generically. |
 | `core/sql/schema.sql`, `core/sql/migrations/` | The database. Every table has a one-line comment saying why it exists. |
-| `tests/` | pytest against a scratch Postgres; vitest for the UI. `test_secrets_policy.py` enforces rule 1. |
+| `tests/` | pytest against a scratch Postgres; vitest for the UI. `test_secrets_policy.py` enforces the single-reader rule for secrets. |
 
 ## Tables at a glance
 

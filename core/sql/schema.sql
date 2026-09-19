@@ -1,6 +1,6 @@
 -- BlundrIQ Personal — database schema (single source of truth for a FRESH install; lives in core/sql/ so it ships in the package)
 --
--- Rules (see CLAUDE.md):
+-- Rules:
 --   * A fresh database loads this file and records the current baseline in schema_version.
 --   * An existing database applies only migrations/NNN_*.sql above its recorded version;
 --     migrations are never replayed over this file. When a migration lands, this file is
