@@ -75,7 +75,7 @@ def current_version(conn: Connection[Any]) -> int | None:
         return int(row[0]) if row else 0
 
 
-def init(conn: Connection[Any]) -> int:
+def init(conn: Connection[Any], directory: Path | None = None) -> int:
     """Fresh install. Refuses to run on a database that already has a schema."""
     if current_version(conn) is not None:
         raise RuntimeError("database already initialised; use upgrade")
@@ -85,7 +85,7 @@ def init(conn: Connection[Any]) -> int:
         if row and int(row[0]) > 0:
             raise RuntimeError("database is not empty; refusing to load schema.sql over existing tables")
         cur.execute(_sql_from_repo_file(SCHEMA_FILE))
-        version = latest_version()
+        version = latest_version(directory)
         cur.execute("INSERT INTO schema_version (version) VALUES (%s)", (version,))
     conn.commit()
     return version

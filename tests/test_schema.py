@@ -142,29 +142,39 @@ def _scratch(fresh_db_url: str, suffix: str) -> str:
     return with_dbname(fresh_db_url, target)
 
 
-def test_upgrade_applies_pending_migrations_and_keeps_data(fresh_db_url: str, tmp_path: Path) -> None:
-    """A real upgrade against a populated database, using a temporary migrations directory."""
-    url = _scratch(fresh_db_url, "upg")
+@pytest.mark.parametrize("baseline", [0, 1, 7], ids=["baseline-0", "baseline-1", "baseline-7"])
+def test_upgrade_applies_pending_migrations_and_keeps_data(fresh_db_url: str, tmp_path: Path, baseline: int) -> None:
+    """A real upgrade against a populated database, using a temporary migrations directory.
+
+    Runs at baseline 0 and at nonzero baselines: migrations numbered at or below the
+    recorded baseline are skipped, those above it run in order, data survives, a second
+    run is a no-op, and init refuses a populated database. Independent of the repo's real
+    migration number: the probe numbers are chosen relative to the baseline.
+    """
+    for n in range(1, baseline + 1):  # pretend these already shipped; init records the highest
+        (tmp_path / f"{n:03d}_already_applied.sql").write_text("SELECT 'must not run';\n")
+    url = _scratch(fresh_db_url, f"upg{baseline}")
     with psycopg.connect(url) as c:
-        schema.init(c)  # baseline: current schema, version 0
+        assert schema.init(c, tmp_path) == baseline
         c.execute("INSERT INTO players (id, chesscom_username) VALUES (1, 'p')")
         c.execute("INSERT INTO settings (id, data) VALUES (1, '{\"daily_puzzle_target\": 7}'::jsonb)")
         c.commit()
-    (tmp_path / "001_add_probe.sql").write_text(
+    a, b = baseline + 1, baseline + 2
+    (tmp_path / f"{a:03d}_add_probe.sql").write_text(
         "ALTER TABLE players ADD COLUMN probe_note text;\n"
         "CREATE TABLE probe_log (id serial PRIMARY KEY, note text NOT NULL);\n"
     )
-    (tmp_path / "002_fill_probe.sql").write_text("UPDATE players SET probe_note = 'migrated';\n")
+    (tmp_path / f"{b:03d}_fill_probe.sql").write_text("UPDATE players SET probe_note = 'migrated';\n")
     with psycopg.Connection[DictRow].connect(url, row_factory=dict_row) as c:
-        assert schema.upgrade(c, tmp_path) == [1, 2]
-        assert schema.current_version(c) == 2
+        assert schema.upgrade(c, tmp_path) == [a, b]
+        assert schema.current_version(c) == b
         row = c.execute("SELECT probe_note FROM players WHERE id = 1").fetchone()
         assert row and row["probe_note"] == "migrated"
         kept = c.execute("SELECT data->>'daily_puzzle_target' AS v FROM settings").fetchone()
         assert kept and kept["v"] == "7"
         assert schema.upgrade(c, tmp_path) == []  # idempotent: nothing pending
         with pytest.raises(RuntimeError, match="already initialised"):
-            schema.init(c)
+            schema.init(c, tmp_path)
 
 
 def test_migration_filenames_are_strict(tmp_path: Path) -> None:
