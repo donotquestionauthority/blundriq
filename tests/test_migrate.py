@@ -11,6 +11,8 @@ from psycopg.rows import DictRow, dict_row
 
 from core import migrate
 from core.constants import PLAYER_ID
+from core.puzzles.generate import run as generators
+from core.settings import Settings
 from tests.conftest import _admin_url, with_dbname
 
 MAPPING = migrate.Mapping(
@@ -28,6 +30,10 @@ FEN960 = "bbqnnrkr/pppppppp/8/8/8/8/PPPPPPPP/BBQNNRKR w KQkq - 0 1"
 # Puzzle 2 sits on the same board as his own puzzle 900, so adopting it needs reconciling.
 SHARED_FEN = "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1"
 THIRD_FEN = "rnbqkbnr/pppppppp/8/8/2P5/8/PP1PPPPP/RNBQKBNR b KQkq - 0 1"
+# Puzzle 497 is the archive's real shape for a hand-made puzzle in the shared tier: tagged
+# 'blunder', no 'manual', and a created_by naming the person who made it. That second
+# signal is the only thing separating it from a puzzle the pipeline generated.
+HANDMADE_FEN = "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq - 1 1"
 START = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
 OLD_SCHEMA = f"""
@@ -101,14 +107,15 @@ INSERT INTO puzzles (id, fen, solution_line, source_types, color, player_id, puz
   (1, '{SHARED_FEN}', '["d5"]', ARRAY['lichess_cc0'], 'b', NULL, 'line', NULL),
   (2, '{START}', '["e4"]', ARRAY['lichess_cc0'], 'w', NULL, 'line', NULL),
   (3, '{THIRD_FEN}', '["e5"]', ARRAY['lichess_cc0'], 'b', NULL, 'line', NULL),
+  (497, '{HANDMADE_FEN}', '["d5"]', ARRAY['blunder'], 'b', NULL, 'line', 9),
   (901, 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1', '["e5"]', ARRAY['manual','blunder'], 'b', 1, 'line', 4),
   (902, '8/8/8/8/8/5k2/6q1/7K b - - 0 1', '["Qg1#"]', ARRAY['own_mate'], 'b', 1, 'endgame_drill', NULL),
   (903, '{START}', '["d4"]', ARRAY['blunder'], 'w', 1065, 'line', NULL);
 INSERT INTO puzzle_attempts (id, puzzle_id, player_id, solved, moves_played) VALUES
   (1, 900, 1, true, 'e4'), (2, 902, 1, false, 'Qg1'), (3, 903, 1065, true, 'd4'),
-  (4, 1, 1, true, 'd5'), (5, 2, 1, true, 'e4'), (6, 3, 1065, true, 'e5');
+  (4, 1, 1, true, 'd5'), (5, 2, 1, true, 'e4'), (6, 3, 1065, true, 'e5'), (7, 497, 1, true, 'd5');
 INSERT INTO player_puzzle_state (player_id, puzzle_id, level, correct_at_level) VALUES
-  (1, 900, 'rook', 1), (1, 902, 'pawn', 0), (1, 1, 'queen', 1), (1, 2, 'queen', 1);
+  (1, 900, 'rook', 1), (1, 902, 'pawn', 0), (1, 1, 'queen', 1), (1, 2, 'queen', 1), (1, 497, 'queen', 1);
 INSERT INTO player_puzzle_exposure (id, player_id, puzzle_id, bucket, batch_id, item_kind, repertoire_line_id) VALUES
   (1, 1, 900, 'your_puzzles', 1, 'puzzle', NULL), (2, 1, NULL, 'your_puzzles', 1, 'repertoire_drill', 700);
 INSERT INTO player_puzzle_skip (id, player_id, scope, batch_id, puzzle_id, item_kind, repertoire_line_id) VALUES
@@ -155,13 +162,13 @@ def test_migrate_copies_the_player_and_drops_960_derivatives(
         # 900 and 901 are his; 1 and 2 are shared puzzles his own history reaches. 902 is an
         # endgame drill, 903 belongs to another player, and 3 is shared but only ever
         # solved by someone else.
-        "puzzles": 4,
-        "puzzle_attempts": 3,
-        "player_puzzle_state": 3,
+        "puzzles": 5,
+        "puzzle_attempts": 4,
+        "player_puzzle_state": 4,
         "player_puzzle_exposure": 1,
         "player_puzzle_skip": 1,
         "dismissed_blunder_fens": 1,
-        "puzzles adopted from the shared tier": 2,
+        "puzzles adopted from the shared tier": 3,
         "puzzles retired to keep one per board": 1,
     }
     book = dst.execute("SELECT id, source_book_id, title FROM books").fetchone()
@@ -187,8 +194,9 @@ def test_migrate_copies_the_player_and_drops_960_derivatives(
     assert [(r["id"], sorted(r["source_types"])) for r in sources] == [
         (1, ["lichess_cc0"]),
         (2, ["lichess_cc0"]),
+        (497, ["blunder", "custom"]),  # created_by said a person made it; 'custom' says so here
         (900, ["blunder"]),
-        (901, ["blunder", "custom"]),
+        (901, ["blunder", "custom"]),  # the old 'manual' tag
     ]
     # An adopted puzzle becomes his: there is nobody else here to own it.
     assert {r["player_id"] for r in sources} == {PLAYER_ID}
@@ -197,7 +205,12 @@ def test_migrate_copies_the_player_and_drops_960_derivatives(
     active = {r["id"]: r["active"] for r in sources}
     assert active[2] is True and active[900] is False
     progress = dst.execute("SELECT puzzle_id, level FROM player_puzzle_state ORDER BY puzzle_id").fetchall()
-    assert [(r["puzzle_id"], r["level"]) for r in progress] == [(1, "queen"), (2, "queen"), (900, "rook")]
+    assert [(r["puzzle_id"], r["level"]) for r in progress] == [
+        (1, "queen"),
+        (2, "queen"),
+        (497, "queen"),
+        (900, "rook"),
+    ]
     with pytest.raises(RuntimeError, match="not empty"):
         migrate.migrate(old_db, dst, MAPPING)
 
@@ -215,13 +228,43 @@ def test_only_migrates_the_named_tables_into_a_populated_database(
     counts = migrate.migrate(old_db, dst, MAPPING, only=second)
     dst.commit()
     assert counts == {
-        "puzzles": 4,
-        "puzzle_attempts": 3,
-        "player_puzzle_state": 3,
-        "puzzles adopted from the shared tier": 2,
+        "puzzles": 5,
+        "puzzle_attempts": 4,
+        "player_puzzle_state": 4,
+        "puzzles adopted from the shared tier": 3,
         "puzzles retired to keep one per board": 1,
     }
     with pytest.raises(RuntimeError, match="not empty"):
         migrate.migrate(old_db, dst, MAPPING, only=["puzzles"])
     with pytest.raises(RuntimeError, match="no migration step"):
         migrate.migrate(old_db, dst, MAPPING, only=["nonexistent"])
+
+
+def test_an_adopted_hand_made_puzzle_survives_the_first_generation_run(
+    old_db: psycopg.Connection[DictRow], clean: psycopg.Connection[DictRow]
+) -> None:
+    """Migrating the rows is not the same as keeping them usable.
+
+    Puzzle 497 is the archive's shape for a puzzle Rob made by hand in the shared tier:
+    tagged `blunder`, no `manual`, and a `created_by`. If only the tag is translated it
+    looks like a puzzle the pipeline generated, and the very next generation run retires
+    it for having no evidence behind it — the row survives, its practice life does not.
+    """
+    dst = clean
+    migrate.migrate(old_db, dst, MAPPING)
+    dst.commit()
+
+    generators.generate_all(dst, Settings())
+    dst.commit()
+
+    row = dst.execute(
+        "SELECT active, source_types FROM puzzles WHERE id = 497",
+    ).fetchone()
+    assert row is not None, "the hand-made puzzle must still exist under its original id"
+    assert row["active"] is True, "it was created on purpose; no generator may retire it"
+    assert "custom" in row["source_types"]
+
+    state = dst.execute("SELECT level FROM player_puzzle_state WHERE puzzle_id = 497").fetchone()
+    assert state and state["level"] == "queen"
+    attempts = dst.execute("SELECT count(*) AS n FROM puzzle_attempts WHERE puzzle_id = 497").fetchone()
+    assert attempts and attempts["n"] == 1

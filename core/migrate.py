@@ -65,6 +65,20 @@ _MY_PUZZLE = (
     f" AND (p.player_id = {PLAYER_ID} OR p.player_id IS NULL))"
 )
 
+# Who made a puzzle decided whether a generator was allowed to take its board away, and
+# the old schema said so twice: a 'manual' tag in `source_types`, and a `created_by` that
+# only a person ever filled in. This vocabulary has one marker, 'custom', so both signals
+# are translated into it here — while `created_by` still exists to read. Translating only
+# the tag leaves a hand-made puzzle looking like one the pipeline generated, and the first
+# generation run then deactivates it for having no evidence behind it.
+_SOURCE_TYPES = """
+CASE
+    WHEN t.source_types @> ARRAY['manual'] THEN array_replace(t.source_types, 'manual', 'custom')
+    WHEN t.created_by IS NOT NULL THEN t.source_types || ARRAY['custom']
+    ELSE t.source_types
+END
+"""
+
 # Merging the two tiers can put two active rows on one board, which the partial unique
 # index forbids — and it forbids it row by row during the copy, before anything has had a
 # chance to reconcile. So the index is dropped for the length of the merge and rebuilt
@@ -158,10 +172,7 @@ def steps(mapping: Mapping) -> list[Step]:
             _SURVIVING_PUZZLE,
             order="t.id",
             # There is one player here, so an adopted shared puzzle becomes his.
-            overrides={"player_id": str(PLAYER_ID)},
-            # The old vocabulary called a hand-made puzzle 'manual'; here it is 'custom',
-            # which is what the pages and core/constants.py call it.
-            after="UPDATE puzzles SET source_types = array_replace(source_types, 'manual', 'custom')",
+            overrides={"player_id": str(PLAYER_ID), "source_types": _SOURCE_TYPES},
         ),
         Step("puzzle_attempts", f"t.player_id = {PLAYER_ID} AND {_MY_PUZZLE}", order="t.id"),
         Step("player_puzzle_state", f"t.player_id = {PLAYER_ID} AND {_MY_PUZZLE}", order="t.puzzle_id"),

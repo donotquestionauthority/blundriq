@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Compare the puzzles this system generates against the ones the old database holds.
 
-Two checks, run in this order because the first one's evidence is destroyed by the second.
+Two checks.
 
 **Acceptance maps.** Every stored missed-mate map in the *old* database — active or not —
-is rebuilt from the current solver and compared. The old database is never written to, so
-this reference cannot be disturbed by anything the regeneration does. A difference here
-means a solver change that would grade a puzzle differently from the way it was solved.
+is rebuilt from the current solver and compared. The reference is the archive, which
+nothing here writes to, so it holds whatever else runs. A difference means a solver change
+that would grade a puzzle differently from the way it was originally solved.
 
 **Generation.** The generated puzzles in the scratch database are deleted, the generators
 are run, and what comes back is compared with the old rows at the same board or line —
@@ -118,7 +118,6 @@ def main() -> int:
     args = parser.parse_args()
     run_all = not (args.maps or args.generation)
     status = 0
-    # Maps first: regeneration replaces the rows the map check would otherwise read.
     if run_all or args.maps:
         status |= diff_maps()
     if run_all or args.generation:
