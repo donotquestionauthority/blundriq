@@ -37,3 +37,24 @@ def window_cte() -> str:
         f" WHERE pg.player_id = %(pid)s AND {analysable_sql('cg')}"
         " ORDER BY cg.played_at DESC NULLS LAST, cg.id DESC LIMIT %(window)s)"
     )
+
+
+# Time classes that count as evidence when the focus is the player's study time controls.
+FOCUS_TIME_CLASSES = ("rapid", "classical", "correspondence")
+
+
+def evidence_sql(alias: str, focus: str) -> str:
+    """Predicate selecting games whose findings may become puzzles.
+
+    Distinct from the window above, and applied *after* it on purpose. A Chess960 game
+    is not training material at all, so it never takes a window slot; a blitz game is
+    still one of the player's recent games, it just is not what they are studying.
+    Filtering it out before the window would silently reach further back in time.
+
+    `focus` is the `time_class_focus` setting: "rapid_plus" is rapid and slower,
+    "all" is every time class, including games whose class the platform did not give.
+    """
+    if focus == "all":
+        return "TRUE"
+    classes = ", ".join(f"'{c}'" for c in FOCUS_TIME_CLASSES)
+    return f"{alias}.time_class IN ({classes})"

@@ -13,5 +13,12 @@ disposable and is modified.
                                                  # classifier + tagger for every analysed game, diff
     python tools/oracle/diff_analysis.py --stockfish [--limit N]
                                                  # real Stockfish 18 depth 18 on the sample, diff
+    python tools/oracle/diff_puzzles.py          # regenerate puzzles and diff; rebuild every
+                                                 # acceptance map and diff
+
+`diff_puzzles.py --generation` deletes the generated puzzles before remaking them, and
+deleting a puzzle cascades its SRS row away, so it refuses to run unless the database name
+contains `scratch`. Make one by migrating from the oracle into a local database rather than
+pointing it at the database Rob practises against.
 
 Each script prints per-game differences and exits 1 if any field differs.

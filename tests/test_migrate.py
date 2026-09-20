@@ -49,6 +49,20 @@ CREATE TABLE game_result_lines (id bigserial PRIMARY KEY, game_repertoire_result
 CREATE TABLE opponent_profiles (id serial PRIMARY KEY, player_id int, name text, onboard_attempts int);
 CREATE TABLE opponent_sources (id serial PRIMARY KEY, opponent_profile_id int, source_type text, username text);
 CREATE TABLE opponent_views (opponent_profile_id int, chess_game_id bigint, source_type text, played_as text, result text);
+CREATE TABLE puzzles (id serial PRIMARY KEY, fen text, solution_line jsonb, solution_fen_sequence jsonb,
+    source_types text[], color char(1), title text, description text, themes text[], acceptance_map jsonb,
+    is_repertoire bool DEFAULT false, repertoire_line_id int, player_id int, active bool DEFAULT true,
+    puzzle_kind text DEFAULT 'line', created_by int, created_at timestamptz DEFAULT now(),
+    updated_at timestamptz DEFAULT now());
+CREATE TABLE puzzle_attempts (id serial PRIMARY KEY, puzzle_id int, player_id int, solved bool, moves_played text,
+    attempt_at timestamptz DEFAULT now(), attempt_id uuid, session_id uuid);
+CREATE TABLE player_puzzle_state (player_id int, puzzle_id int, level text DEFAULT 'pawn', correct_at_level int DEFAULT 0,
+    last_3_attempts bool[] DEFAULT '{{}}', last_correct_date date, next_show_at timestamptz, updated_at timestamptz DEFAULT now());
+CREATE TABLE player_puzzle_exposure (id bigserial PRIMARY KEY, player_id int, puzzle_id int, bucket text, batch_id bigint,
+    scope text DEFAULT 'all', served_at timestamptz DEFAULT now(), item_kind text DEFAULT 'puzzle', repertoire_line_id int);
+CREATE TABLE player_puzzle_skip (id bigserial PRIMARY KEY, player_id int, scope text, batch_id bigint, puzzle_id int,
+    skipped_at timestamptz DEFAULT now(), item_kind text DEFAULT 'puzzle', repertoire_line_id int);
+CREATE TABLE dismissed_blunder_fens (id serial PRIMARY KEY, player_id int, fen text, dismissed_at timestamptz DEFAULT now());
 """
 
 OLD_DATA = f"""
@@ -78,6 +92,19 @@ INSERT INTO game_result_lines (id, game_repertoire_result_id, line_id, matched_p
 INSERT INTO opponent_profiles (id, player_id, name, onboard_attempts) VALUES (5, 1, 'rival', 3), (6, 1065, 'other', 0);
 INSERT INTO opponent_sources (id, opponent_profile_id, source_type, username) VALUES (1, 5, 'lichess', 'rival'), (2, 6, 'lichess', 'x');
 INSERT INTO opponent_views (opponent_profile_id, chess_game_id, source_type, played_as, result) VALUES (5, 12, 'chesscom', 'white', 'win'), (6, 12, 'chesscom', 'black', 'loss');
+INSERT INTO puzzles (id, fen, solution_line, source_types, color, player_id, puzzle_kind, created_by) VALUES
+  (900, '{START}', '["e4"]', ARRAY['blunder'], 'w', 1, 'line', NULL),
+  (901, 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1', '["e5"]', ARRAY['manual','blunder'], 'b', 1, 'line', 4),
+  (902, '8/8/8/8/8/5k2/6q1/7K b - - 0 1', '["Qg1#"]', ARRAY['own_mate'], 'b', 1, 'endgame_drill', NULL),
+  (903, '{START}', '["d4"]', ARRAY['blunder'], 'w', 1065, 'line', NULL);
+INSERT INTO puzzle_attempts (id, puzzle_id, player_id, solved, moves_played) VALUES
+  (1, 900, 1, true, 'e4'), (2, 902, 1, false, 'Qg1'), (3, 903, 1065, true, 'd4');
+INSERT INTO player_puzzle_state (player_id, puzzle_id, level, correct_at_level) VALUES (1, 900, 'rook', 1), (1, 902, 'pawn', 0);
+INSERT INTO player_puzzle_exposure (id, player_id, puzzle_id, bucket, batch_id, item_kind, repertoire_line_id) VALUES
+  (1, 1, 900, 'your_puzzles', 1, 'puzzle', NULL), (2, 1, NULL, 'your_puzzles', 1, 'repertoire_drill', 700);
+INSERT INTO player_puzzle_skip (id, player_id, scope, batch_id, puzzle_id, item_kind, repertoire_line_id) VALUES
+  (1, 1, 'all', 1, 900, 'puzzle', NULL), (2, 1, 'all', 1, NULL, 'repertoire_drill', 700);
+INSERT INTO dismissed_blunder_fens (id, player_id, fen) VALUES (1, 1, '{START}'), (2, 1065, '{START}');
 """
 
 
@@ -116,6 +143,12 @@ def test_migrate_copies_the_player_and_drops_960_derivatives(
         "opponent_profiles": 1,
         "opponent_sources": 1,
         "opponent_views": 1,
+        "puzzles": 2,  # 902 is an endgame drill, 903 belongs to another player
+        "puzzle_attempts": 1,
+        "player_puzzle_state": 1,
+        "player_puzzle_exposure": 1,
+        "player_puzzle_skip": 1,
+        "dismissed_blunder_fens": 1,
     }
     book = dst.execute("SELECT id, source_book_id, title FROM books").fetchone()
     assert book and (book["id"], book["source_book_id"], book["title"]) == (7, 12345, "Mine")
@@ -135,5 +168,32 @@ def test_migrate_copies_the_player_and_drops_960_derivatives(
         "INSERT INTO books (title, color, player_id) VALUES ('new', 'white', %s) RETURNING id", (PLAYER_ID,)
     ).fetchone()
     assert nxt and nxt["id"] == 8
+    # A hand-made puzzle was 'manual' in the old vocabulary and is 'custom' here.
+    sources = dst.execute("SELECT id, source_types FROM puzzles ORDER BY id").fetchall()
+    assert [(r["id"], sorted(r["source_types"])) for r in sources] == [
+        (900, ["blunder"]),
+        (901, ["blunder", "custom"]),
+    ]
+    srs = dst.execute("SELECT puzzle_id, level FROM player_puzzle_state").fetchone()
+    assert srs and (srs["puzzle_id"], srs["level"]) == (900, "rook")
     with pytest.raises(RuntimeError, match="not empty"):
         migrate.migrate(old_db, dst, MAPPING)
+
+
+def test_only_migrates_the_named_tables_into_a_populated_database(
+    old_db: psycopg.Connection[DictRow], clean: psycopg.Connection[DictRow]
+) -> None:
+    """A later phase adds its tables to a database earlier phases already filled."""
+    dst = clean
+    first = ["players", "chess_games", "player_games"]
+    assert set(migrate.migrate(old_db, dst, MAPPING, only=first)) == set(first)
+    dst.commit()
+    # The already-populated tables do not block the second pass.
+    second = ["puzzles", "puzzle_attempts", "player_puzzle_state"]
+    counts = migrate.migrate(old_db, dst, MAPPING, only=second)
+    dst.commit()
+    assert counts == {"puzzles": 2, "puzzle_attempts": 1, "player_puzzle_state": 1}
+    with pytest.raises(RuntimeError, match="not empty"):
+        migrate.migrate(old_db, dst, MAPPING, only=["puzzles"])
+    with pytest.raises(RuntimeError, match="no migration step"):
+        migrate.migrate(old_db, dst, MAPPING, only=["nonexistent"])

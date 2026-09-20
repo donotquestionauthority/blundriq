@@ -56,15 +56,8 @@ def test_retained_conflict_targets(conn: psycopg.Connection[DictRow]) -> None:
             "ON CONFLICT (player_id, canonical_fen) DO NOTHING",
             (START_FEN,),
         )
-    # puzzle-candidate dismissal: unique on canonical_fen
-    for _ in range(2):
-        conn.execute(
-            "INSERT INTO dismissed_puzzle_candidates (fen) VALUES (%s) ON CONFLICT (canonical_fen) DO NOTHING",
-            (START_FEN,),
-        )
     n1 = conn.execute("SELECT count(*) AS n FROM dismissed_blunder_fens").fetchone()
-    n2 = conn.execute("SELECT count(*) AS n FROM dismissed_puzzle_candidates").fetchone()
-    assert n1 and n2 and n1["n"] == 1 and n2["n"] == 1
+    assert n1 and n1["n"] == 1
 
 
 def test_expected_indexes_present(conn: psycopg.Connection[DictRow]) -> None:

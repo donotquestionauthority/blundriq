@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, LiteralString, cast
 
 from psycopg import Connection, sql
 
@@ -44,6 +44,13 @@ _OWNED_GAME = (
     f" WHERE ov.chess_game_id = t.id AND p.player_id = {PLAYER_ID}))"
 )
 ANNOTATION_SOURCES = ("course", "manual")  # the new schema's CHECK; other sources are not migrated
+
+# A puzzle survives if it is the player's and is a line puzzle; endgame drills do not
+# exist here. The attempt, SRS, exposure and skip tables follow their puzzle.
+_MY_PUZZLE = (
+    "EXISTS (SELECT 1 FROM puzzles p WHERE p.id = t.puzzle_id"
+    f" AND p.player_id = {PLAYER_ID} AND p.puzzle_kind = 'line')"
+)
 
 
 @dataclass(frozen=True)
@@ -69,6 +76,7 @@ class Step:
     table: str
     where: str  # predicate over alias t in the SOURCE database
     order: str = "1"
+    after: str = ""  # statement run on the TARGET once the table is copied
 
 
 def steps(mapping: Mapping) -> list[Step]:
@@ -101,6 +109,31 @@ def steps(mapping: Mapping) -> list[Step]:
         Step("opponent_profiles", f"t.player_id = {PLAYER_ID}", order="t.id"),
         Step("opponent_sources", _MY_PROFILE, order="t.id"),
         Step("opponent_views", _MY_PROFILE, order="t.chess_game_id"),
+        # Puzzles and everything keyed on them. IDs are preserved: attempts, SRS state,
+        # exposure and skips all reference them, and the SRS row is the irreplaceable
+        # part of the whole migration.
+        Step(
+            "puzzles",
+            f"t.player_id = {PLAYER_ID} AND t.puzzle_kind = 'line'",
+            order="t.id",
+            # The old vocabulary called a hand-made puzzle 'manual'; here it is 'custom',
+            # which is what the pages and core/constants.py call it.
+            after="UPDATE puzzles SET source_types = array_replace(source_types, 'manual', 'custom')",
+        ),
+        Step("puzzle_attempts", f"t.player_id = {PLAYER_ID} AND {_MY_PUZZLE}", order="t.id"),
+        Step("player_puzzle_state", f"t.player_id = {PLAYER_ID} AND {_MY_PUZZLE}", order="t.puzzle_id"),
+        # Drill items were served alongside puzzles and have no counterpart here.
+        Step(
+            "player_puzzle_exposure",
+            f"t.player_id = {PLAYER_ID} AND t.item_kind = 'puzzle' AND {_MY_PUZZLE}",
+            order="t.id",
+        ),
+        Step(
+            "player_puzzle_skip",
+            f"t.player_id = {PLAYER_ID} AND t.item_kind = 'puzzle' AND {_MY_PUZZLE}",
+            order="t.id",
+        ),
+        Step("dismissed_blunder_fens", f"t.player_id = {PLAYER_ID}", order="t.id"),
     ]
 
 
@@ -166,9 +199,25 @@ def reset_sequences(dst: Connection[Any], plan: list[Step]) -> None:
         )
 
 
-def migrate(src: Connection[Any], dst: Connection[Any], mapping: Mapping) -> dict[str, int]:
-    """Copy every step in order inside one target transaction. Returns row counts."""
+def migrate(
+    src: Connection[Any],
+    dst: Connection[Any],
+    mapping: Mapping,
+    only: list[str] | None = None,
+) -> dict[str, int]:
+    """Copy every step in order inside one target transaction. Returns row counts.
+
+    `only` restricts the run to the named tables, and the empty-target precondition to
+    those tables too. That is how a phase adds its tables to a database earlier phases
+    already populated; the cutover runs the whole plan into a clean database.
+    """
     plan = steps(mapping)
+    if only is not None:
+        wanted = set(only)
+        unknown = wanted - {s.table for s in plan}
+        if unknown:
+            raise RuntimeError(f"no migration step for: {', '.join(sorted(unknown))}")
+        plan = [s for s in plan if s.table in wanted]
     for step in plan:
         row = dst.execute(sql.SQL("SELECT count(*) AS n FROM {}").format(sql.Identifier(step.table))).fetchone()
         if row and int(row["n"]) > 0:
@@ -177,5 +226,7 @@ def migrate(src: Connection[Any], dst: Connection[Any], mapping: Mapping) -> dic
     with dst.transaction():
         for step in plan:
             counts[step.table] = copy_table(src, dst, step, mapping)
+            if step.after:
+                dst.execute(cast(LiteralString, step.after))
         reset_sequences(dst, plan)
     return counts
