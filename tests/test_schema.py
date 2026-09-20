@@ -112,13 +112,15 @@ def test_expected_tables_present(conn: psycopg.Connection[DictRow]) -> None:
         assert gone not in names, gone
 
 
-def test_no_vendor_or_tenancy_leftovers(conn: psycopg.Connection[DictRow]) -> None:
+def test_no_source_specific_or_tenancy_leftovers(conn: psycopg.Connection[DictRow]) -> None:
+    """Repertoire provenance columns are the neutral source_* names; no tenancy columns survive."""
     cols = conn.execute(
         "SELECT table_name||'.'||column_name AS c FROM information_schema.columns WHERE table_schema='public'"
     ).fetchall()
-    joined = " ".join(r["c"] for r in cols)
-    vendor = "chess" + "able"  # assembled so the scanner rule that bans the name does not fire on this test
-    assert vendor not in joined.lower()
+    names = {r["c"] for r in cols}
+    assert {"books.source_book_id", "chapters.source_chapter_id", "repertoire_lines.source_line_id"} <= names
+    assert not [c for c in names if c.endswith(("_bid", "_lid"))]
+    joined = " ".join(names)
     assert "onboarding" not in joined and "trial_" not in joined
     policies = conn.execute("SELECT count(*) AS n FROM pg_policies").fetchone()
     assert policies is not None and policies["n"] == 0

@@ -17,6 +17,8 @@ Which variables are required depends on the role of the process:
     OPENAI_API_KEY     api               AI explanations (optional feature; still no default)
     RESEND_API_KEY     pipeline          ops alerts
     ALERT_EMAIL        pipeline          where ops alerts go
+    ALERT_FROM         pipeline          the sender address (on the Resend-verified domain)
+    ORACLE_DATABASE_URL  migrate, tools/oracle   the restored old database (local Postgres)
 
 Local development sets them in the shell (e.g. `set -a; source ~/.blundriq-secrets/blundriq.env`).
 """
@@ -59,7 +61,13 @@ class AiSecrets:
 @dataclass(frozen=True)
 class AlertSecrets:
     resend_api_key: str
-    alert_email: str
+    alert_email: str  # recipient
+    alert_from: str  # sender on the Resend-verified domain
+
+
+@dataclass(frozen=True)
+class OracleSecrets:
+    oracle_database_url: str  # the restored old database, for `pipeline migrate` and tools/oracle
 
 
 def database() -> DatabaseSecrets:
@@ -85,4 +93,9 @@ def alerts() -> AlertSecrets:
     return AlertSecrets(
         resend_api_key=_require("RESEND_API_KEY"),
         alert_email=_require("ALERT_EMAIL"),
+        alert_from=_require("ALERT_FROM"),
     )
+
+
+def oracle() -> OracleSecrets:
+    return OracleSecrets(oracle_database_url=_require("ORACLE_DATABASE_URL"))

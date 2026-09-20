@@ -17,12 +17,12 @@ dependencies = [
     "bcrypt>=4.2",
     "itsdangerous>=2.2",
     "chess>=1.11",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
-    "httpx>=0.27",
     "ruff>=0.6",
     "pyright>=1.1.380",
 ]
@@ -55,6 +55,9 @@ select = ["E", "F", "I", "B", "TID", "UP"]
 [tool.ruff.lint.per-file-ignores]
 "core/secrets.py" = ["TID251"]
 "core/prompts.py" = ["E501"]  # verbatim prompt text; wrapping would change it
+"api/routes/*" = ["B008"]
+"tests/*" = ["E501"]  # fixture SQL and payloads read better on one line
+"tools/*" = ["E501"]  # FastAPI Depends()/Query() in defaults is the framework idiom
 
 # --- pyright ----------------------------------------------------------------
 [tool.pyright]
