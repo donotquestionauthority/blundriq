@@ -4,11 +4,13 @@ At most one active non-repertoire puzzle exists per board (the partial unique in
 `ix_puzzles_player_standard_fen`). Two generators and the player all want to put a
 puzzle there, so a board has an owner class and the classes have a precedence:
 
-    own_mate > custom > blunder_auto > cc0
+    custom > own_mate > blunder_auto > cc0
 
-A missed mate is the stronger lesson than the blunder that led to it; a puzzle the
-player made by hand is never displaced by a generator; a corpus puzzle that happens to
-sit on a board the player actually blundered gives way to the real thing.
+**A puzzle the player made by hand outranks everything**, including a missed mate: it is
+there because he decided that position was worth practising, and displacing it would
+throw away its progress along with his intent. Between the generators, a missed mate is
+the stronger lesson than the blunder that led to it, and a corpus puzzle that happens to
+sit on a board he actually blundered gives way to the real thing.
 
 Both generators read the same `active_puzzles` CTE, so the classes cannot drift apart.
 The generator's worklist is a FULL OUTER JOIN of what qualifies now against what is
@@ -26,8 +28,9 @@ CUSTOM = "custom"
 BLUNDER_AUTO = "blunder_auto"
 CC0 = "cc0"
 
-# Ordered strongest first. A generator displaces only classes weaker than its own.
-PRECEDENCE = (OWN_MATE, CUSTOM, BLUNDER_AUTO, CC0)
+# Ordered strongest first. A generator displaces only classes weaker than its own, so
+# `custom` at the head is what makes a hand-made puzzle untouchable by either generator.
+PRECEDENCE = (CUSTOM, OWN_MATE, BLUNDER_AUTO, CC0)
 
 # 'custom' is tested before 'blunder': a puzzle the player created from a blunder
 # position carries both, and the player's intent wins.

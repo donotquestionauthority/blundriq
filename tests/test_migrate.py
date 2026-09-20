@@ -24,6 +24,10 @@ MAPPING = migrate.Mapping(
 
 VENDOR = "legacy"  # stands in for the old schema's source-specific column prefix and enum value
 FEN960 = "bbqnnrkr/pppppppp/8/8/8/8/PPPPPPPP/BBQNNRKR w KQkq - 0 1"
+# Puzzles 1 and 2 stand for the old shared tier: owned by nobody, solved by Rob anyway.
+# Puzzle 2 sits on the same board as his own puzzle 900, so adopting it needs reconciling.
+SHARED_FEN = "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1"
+THIRD_FEN = "rnbqkbnr/pppppppp/8/8/2P5/8/PP1PPPPP/RNBQKBNR b KQkq - 0 1"
 START = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
 OLD_SCHEMA = f"""
@@ -94,12 +98,17 @@ INSERT INTO opponent_sources (id, opponent_profile_id, source_type, username) VA
 INSERT INTO opponent_views (opponent_profile_id, chess_game_id, source_type, played_as, result) VALUES (5, 12, 'chesscom', 'white', 'win'), (6, 12, 'chesscom', 'black', 'loss');
 INSERT INTO puzzles (id, fen, solution_line, source_types, color, player_id, puzzle_kind, created_by) VALUES
   (900, '{START}', '["e4"]', ARRAY['blunder'], 'w', 1, 'line', NULL),
+  (1, '{SHARED_FEN}', '["d5"]', ARRAY['lichess_cc0'], 'b', NULL, 'line', NULL),
+  (2, '{START}', '["e4"]', ARRAY['lichess_cc0'], 'w', NULL, 'line', NULL),
+  (3, '{THIRD_FEN}', '["e5"]', ARRAY['lichess_cc0'], 'b', NULL, 'line', NULL),
   (901, 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1', '["e5"]', ARRAY['manual','blunder'], 'b', 1, 'line', 4),
   (902, '8/8/8/8/8/5k2/6q1/7K b - - 0 1', '["Qg1#"]', ARRAY['own_mate'], 'b', 1, 'endgame_drill', NULL),
   (903, '{START}', '["d4"]', ARRAY['blunder'], 'w', 1065, 'line', NULL);
 INSERT INTO puzzle_attempts (id, puzzle_id, player_id, solved, moves_played) VALUES
-  (1, 900, 1, true, 'e4'), (2, 902, 1, false, 'Qg1'), (3, 903, 1065, true, 'd4');
-INSERT INTO player_puzzle_state (player_id, puzzle_id, level, correct_at_level) VALUES (1, 900, 'rook', 1), (1, 902, 'pawn', 0);
+  (1, 900, 1, true, 'e4'), (2, 902, 1, false, 'Qg1'), (3, 903, 1065, true, 'd4'),
+  (4, 1, 1, true, 'd5'), (5, 2, 1, true, 'e4'), (6, 3, 1065, true, 'e5');
+INSERT INTO player_puzzle_state (player_id, puzzle_id, level, correct_at_level) VALUES
+  (1, 900, 'rook', 1), (1, 902, 'pawn', 0), (1, 1, 'queen', 1), (1, 2, 'queen', 1);
 INSERT INTO player_puzzle_exposure (id, player_id, puzzle_id, bucket, batch_id, item_kind, repertoire_line_id) VALUES
   (1, 1, 900, 'your_puzzles', 1, 'puzzle', NULL), (2, 1, NULL, 'your_puzzles', 1, 'repertoire_drill', 700);
 INSERT INTO player_puzzle_skip (id, player_id, scope, batch_id, puzzle_id, item_kind, repertoire_line_id) VALUES
@@ -143,12 +152,17 @@ def test_migrate_copies_the_player_and_drops_960_derivatives(
         "opponent_profiles": 1,
         "opponent_sources": 1,
         "opponent_views": 1,
-        "puzzles": 2,  # 902 is an endgame drill, 903 belongs to another player
-        "puzzle_attempts": 1,
-        "player_puzzle_state": 1,
+        # 900 and 901 are his; 1 and 2 are shared puzzles his own history reaches. 902 is an
+        # endgame drill, 903 belongs to another player, and 3 is shared but only ever
+        # solved by someone else.
+        "puzzles": 4,
+        "puzzle_attempts": 3,
+        "player_puzzle_state": 3,
         "player_puzzle_exposure": 1,
         "player_puzzle_skip": 1,
         "dismissed_blunder_fens": 1,
+        "puzzles adopted from the shared tier": 2,
+        "puzzles retired to keep one per board": 1,
     }
     book = dst.execute("SELECT id, source_book_id, title FROM books").fetchone()
     assert book and (book["id"], book["source_book_id"], book["title"]) == (7, 12345, "Mine")
@@ -169,13 +183,21 @@ def test_migrate_copies_the_player_and_drops_960_derivatives(
     ).fetchone()
     assert nxt and nxt["id"] == 8
     # A hand-made puzzle was 'manual' in the old vocabulary and is 'custom' here.
-    sources = dst.execute("SELECT id, source_types FROM puzzles ORDER BY id").fetchall()
+    sources = dst.execute("SELECT id, source_types, player_id, active FROM puzzles ORDER BY id").fetchall()
     assert [(r["id"], sorted(r["source_types"])) for r in sources] == [
+        (1, ["lichess_cc0"]),
+        (2, ["lichess_cc0"]),
         (900, ["blunder"]),
         (901, ["blunder", "custom"]),
     ]
-    srs = dst.execute("SELECT puzzle_id, level FROM player_puzzle_state").fetchone()
-    assert srs and (srs["puzzle_id"], srs["level"]) == (900, "rook")
+    # An adopted puzzle becomes his: there is nobody else here to own it.
+    assert {r["player_id"] for r in sources} == {PLAYER_ID}
+    # Puzzle 2 and puzzle 900 share a board. The one carrying more progress keeps serving;
+    # the other is retired, not deleted, so its attempts and SRS row survive.
+    active = {r["id"]: r["active"] for r in sources}
+    assert active[2] is True and active[900] is False
+    progress = dst.execute("SELECT puzzle_id, level FROM player_puzzle_state ORDER BY puzzle_id").fetchall()
+    assert [(r["puzzle_id"], r["level"]) for r in progress] == [(1, "queen"), (2, "queen"), (900, "rook")]
     with pytest.raises(RuntimeError, match="not empty"):
         migrate.migrate(old_db, dst, MAPPING)
 
@@ -192,7 +214,13 @@ def test_only_migrates_the_named_tables_into_a_populated_database(
     second = ["puzzles", "puzzle_attempts", "player_puzzle_state"]
     counts = migrate.migrate(old_db, dst, MAPPING, only=second)
     dst.commit()
-    assert counts == {"puzzles": 2, "puzzle_attempts": 1, "player_puzzle_state": 1}
+    assert counts == {
+        "puzzles": 4,
+        "puzzle_attempts": 3,
+        "player_puzzle_state": 3,
+        "puzzles adopted from the shared tier": 2,
+        "puzzles retired to keep one per board": 1,
+    }
     with pytest.raises(RuntimeError, match="not empty"):
         migrate.migrate(old_db, dst, MAPPING, only=["puzzles"])
     with pytest.raises(RuntimeError, match="no migration step"):

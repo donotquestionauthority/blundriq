@@ -34,7 +34,10 @@ MATE_IN_TWO_FEN = "7k/8/8/8/8/8/R7/1R5K w - - 0 1"
 
 
 def _config(**overrides: Any) -> Settings:
-    return Settings(**overrides)
+    """Settings for a test, with both generator thresholds at two games unless the test is
+    about the threshold itself. Two-game fixtures keep the other tests readable; the real
+    defaults (three) are exercised by `test_the_occurrence_threshold_*`."""
+    return Settings(**{"blunder_puzzle_min_occurrences": 2, "deviation_puzzle_min_occurrences": 2, **overrides})
 
 
 def _game(
@@ -155,6 +158,21 @@ def test_one_occurrence_is_not_enough(clean: psycopg.Connection[DictRow]) -> Non
     _game(clean, 1)
     _blunder(clean, 1)
     assert blunder.generate(clean, _config())["created"] == 0
+
+
+def test_the_occurrence_threshold_for_blunder_puzzles_defaults_to_three(
+    clean: psycopg.Connection[DictRow],
+) -> None:
+    """The old system built a puzzle only after a position had cost three games. That is a
+    different setting from the Blunders page's own minimum, which Rob keeps at two."""
+    _player(clean)
+    for game_id in (1, 2):
+        _game(clean, game_id)
+        _blunder(clean, game_id)
+    assert blunder.generate(clean, Settings())["created"] == 0
+    _game(clean, 3)
+    _blunder(clean, 3)
+    assert blunder.generate(clean, Settings())["created"] == 1
 
 
 def test_the_same_position_twice_in_one_game_counts_once(clean: psycopg.Connection[DictRow]) -> None:
@@ -515,3 +533,30 @@ def test_an_inactive_line_takes_its_puzzle_with_it(clean: psycopg.Connection[Dic
     stats = repertoire.generate(clean, _config())
     assert stats["orphaned"] == 1
     assert _puzzles(clean)[0]["active"] is False
+
+
+def test_a_hand_made_puzzle_survives_a_missed_mate_too(clean: psycopg.Connection[DictRow]) -> None:
+    """Both generators respect a puzzle Rob made himself. A missed mate is the stronger
+    lesson than a blunder, but not stronger than his own decision to practise a position —
+    and displacing it would give the board a new puzzle id and throw the progress away."""
+    _player(clean)
+    _mate_event(clean, 1)
+    row = clean.execute(
+        "INSERT INTO puzzles (fen, solution_line, source_types, color, player_id)"
+        " VALUES (%s, %s::jsonb, ARRAY['custom'], 'w', %s) RETURNING id",
+        (MATE_FEN, json.dumps(["Ra8#"]), PLAYER_ID),
+    ).fetchone()
+    assert row is not None
+    custom_id = int(row["id"])
+    clean.execute(
+        "INSERT INTO player_puzzle_state (player_id, puzzle_id, level) VALUES (%s, %s, 'rook')",
+        (PLAYER_ID, custom_id),
+    )
+
+    stats = missed_mate.generate(clean, _config())
+    assert stats["created"] == 0 and stats["deactivated"] == 0 and stats["skipped_stronger"] == 1
+
+    puzzles = _puzzles(clean)
+    assert [(p["id"], p["source_types"], p["active"]) for p in puzzles] == [(custom_id, ["custom"], True)]
+    level = clean.execute("SELECT level FROM player_puzzle_state WHERE puzzle_id = %s", (custom_id,)).fetchone()
+    assert level and level["level"] == "rook"

@@ -11,6 +11,11 @@ def test_defaults_match_effective_phase0_values() -> None:
         "mistake",
     ]
     assert s.blunders_default_window_days == 20 and s.deviations_default_min_occurrences == 2
+    # The old system had two settings of the same name: a global the generators read and a
+    # page filter Rob had set lower. They are separate fields here because they mean
+    # different things — what gets built, and what gets shown.
+    assert s.blunder_puzzle_min_occurrences == 3 and s.deviation_puzzle_min_occurrences == 3
+    assert s.blunders_default_last_n_games == 500 and s.deviations_default_last_n_games == 500
     assert set(s.ai_prompts) == {"a", "b", "c"} and s.ai_prompts["a"].model.startswith("claude-")
 
 

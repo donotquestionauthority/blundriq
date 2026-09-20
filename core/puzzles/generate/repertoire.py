@@ -1,10 +1,10 @@
 """Puzzles from repertoire lines the player keeps leaving.
 
 These are keyed on the line, not on a board: one puzzle per active repertoire line the
-player has deviated from in at least `deviations_default_min_occurrences` distinct games
-inside the window. They live outside the ownership contest the other two generators run
-(`_state`), because a line puzzle is identified by its line and nothing else competes
-for it.
+player has deviated from in at least `deviation_puzzle_min_occurrences` distinct games
+inside the deviation window (`deviations_default_last_n_games`). They live outside the
+ownership contest the other two generators run (`_state`), because a line puzzle is
+identified by its line and nothing else competes for it.
 
 The line's stored FEN sequence is the authority, not a replay from the standard start:
 a chapter rooted at a tabiya begins there, and `fen_sequence[0]` is the position the
@@ -24,6 +24,10 @@ different:
 A line whose stored data is malformed is skipped and its puzzle soft-disabled, with SRS
 untouched: a re-import can heal the line, and the player should not lose progress to a
 temporary import problem.
+
+Unlike the other two generators this one does not filter by time class: leaving a
+prepared line is the same mistake in a blitz game as in a rapid one, and the line is
+what is being practised either way (docs/decisions/005).
 """
 
 from __future__ import annotations
@@ -39,11 +43,17 @@ from core.constants import PLAYER_ID
 from core.puzzles.lines import fen_sequence
 from core.settings import Settings
 
+# A line stops being the player's for three reasons, not one: the line itself, its
+# chapter, or its book can be deactivated. The worklist only sees lines whose whole
+# chain is active, so a puzzle under a disabled chapter would otherwise never be
+# revisited and would keep serving for ever.
 _ORPHANS = """
 UPDATE puzzles p SET active = FALSE, updated_at = now()
 FROM repertoire_lines rl
+JOIN chapters ch ON ch.id = rl.chapter_id
+JOIN books bk ON bk.id = ch.book_id
 WHERE p.repertoire_line_id = rl.id AND p.is_repertoire = TRUE AND p.active = TRUE
-  AND rl.active = FALSE
+  AND (rl.active = FALSE OR ch.active = FALSE OR bk.active = FALSE)
 """
 
 _WORKLIST = cast(
@@ -144,7 +154,7 @@ def generate(conn: Connection[Any], config: Settings) -> dict[str, int]:
         stats.orphaned = cur.rowcount
         cur.execute(
             _WORKLIST,
-            {"pid": PLAYER_ID, "window": config.analysis_game_limit},
+            {"pid": PLAYER_ID, "window": config.deviations_default_last_n_games},
         )
         rows = cur.fetchall()
     stats.lines = len(rows)
@@ -165,7 +175,7 @@ def generate(conn: Connection[Any], config: Settings) -> dict[str, int]:
                 to_deactivate.append(int(existing_id))
             continue
 
-        if int(row["event_count"]) < config.deviations_default_min_occurrences:
+        if int(row["event_count"]) < config.deviation_puzzle_min_occurrences:
             if existing_id is not None and row["existing_active"]:
                 to_deactivate.append(int(existing_id))
             continue

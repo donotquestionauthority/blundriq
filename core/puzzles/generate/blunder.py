@@ -1,7 +1,8 @@
 """Puzzles from blunders the player keeps making.
 
 A board qualifies when the player blundered there in at least
-`blunders_default_min_occurrences` *distinct* games inside the training window — a
+`blunder_puzzle_min_occurrences` *distinct* games inside the blunder window
+(`blunders_default_last_n_games`) — a
 position reached twice in one game is one game, not two — and when the tagger knows
 what the tactic was. That second half is the certainty gate: the blunder's themes must
 overlap the five the tagger detects geometrically, must not be `mate` (missed mates are
@@ -191,8 +192,8 @@ def generate(conn: Connection[Any], config: Settings) -> dict[str, int]:
             _worklist_sql(config.time_class_focus),
             {
                 "pid": PLAYER_ID,
-                "window": config.analysis_game_limit,
-                "min_occurrences": config.blunders_default_min_occurrences,
+                "window": config.blunders_default_last_n_games,
+                "min_occurrences": config.blunder_puzzle_min_occurrences,
                 "tactical": list(TACTICAL_THEMES),
             },
         )
