@@ -72,14 +72,16 @@ def test_omitted_game_fails_the_check(tool_env: Any, monkeypatch: pytest.MonkeyP
     assert "worklist 1" in capsys.readouterr().out
 
 
-def test_retained_rows_never_satisfy_the_check(tool_env: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_retained_rows_never_satisfy_the_check(
+    tool_env: Any, fresh_db_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A run that claims success but writes nothing: the reset removed the old rows and no
     fresh analysis exists, so coverage fails even though the counts look right."""
     monkeypatch.setattr(
         diff_analysis, "analyze_pending", lambda *a, **k: {"pending": 2, "analyzed": 2, "failed": 0, "issues": 0}
     )
     assert diff_analysis.with_stockfish(None, None) == 1
-    with psycopg.connect(tool_env.info.dsn, row_factory=psycopg.rows.dict_row) as c:  # type: ignore[arg-type]
+    with psycopg.connect(fresh_db_url, row_factory=psycopg.rows.dict_row) as c:  # type: ignore[arg-type]
         assert q.freshly_analysed(c, [1, 2]) == []
 
 
