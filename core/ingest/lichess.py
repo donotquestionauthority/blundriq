@@ -19,8 +19,18 @@ HEADERS = {"User-Agent": USER_AGENT, "Accept": "application/x-ndjson"}
 TIMEOUT = 30.0
 
 
+ONGOING_STATUSES = ("created", "started")
+
+
+def is_ongoing(game: dict[str, Any]) -> bool:
+    return text(game, "status") in ONGOING_STATUSES
+
+
 def stream_games(client: httpx.Client, username: str, since_ms: int) -> Iterator[dict[str, Any]]:
-    """Yield raw game dicts newest first. A transport failure mid-stream raises FetchError."""
+    """Yield raw game dicts newest first, ONGOING GAMES INCLUDED (`ongoing=true`): the
+    importer never stores them, but it needs their creation times to place the next
+    import's boundary (see core/ingest/run.py). `since` filters by creation time.
+    A transport failure mid-stream raises FetchError."""
     params = {
         "since": since_ms,
         "sort": "dateDesc",
@@ -28,6 +38,7 @@ def stream_games(client: httpx.Client, username: str, since_ms: int) -> Iterator
         "opening": "true",
         "clocks": "true",
         "evals": "false",
+        "ongoing": "true",
     }
     try:
         with client.stream("GET", f"{API}/games/user/{username}", params=params, headers=HEADERS, timeout=TIMEOUT) as r:
@@ -54,7 +65,7 @@ def parse_game(game: dict[str, Any], username: str) -> GameRecord | None:
     if variant is None:
         return None
     game_id = text(game, "id")
-    if not game_id:
+    if not game_id or is_ongoing(game):
         return None
     moves = text(game, "moves").split()
     if not moves:

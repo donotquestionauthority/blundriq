@@ -347,3 +347,48 @@ def test_lichess_interrupted_stream_is_completed_by_the_next_run(clean: psycopg.
     assert stored and stored["n"] == 150
     checked = conn.execute("SELECT lichess_last_checked FROM players WHERE id = %s", (PLAYER_ID,)).fetchone()
     assert checked and checked["lichess_last_checked"] is not None
+
+
+def test_lichess_game_finishing_after_an_import_is_fetched_by_the_next(clean: psycopg.Connection[DictRow]) -> None:
+    """The mock honours `since` (by creation time), `ongoing`, and a clock: a game created
+    at 12:55 is still running during the 13:00 import and finishes at 13:10. The 14:00
+    import must store it. Lichess games are created before they finish, so a boundary
+    at an import's own start time would skip it for ever."""
+    conn = clean
+    _player(conn)
+    conn.commit()
+    t = lambda h, m: datetime(2026, 9, 20, h, m, tzinfo=UTC)  # noqa: E731
+    ms = lambda d: int(d.timestamp() * 1000)  # noqa: E731
+    clock = {"now": t(13, 0)}
+    finished = _lichess_game(id="long1", createdAt=ms(t(12, 55)), lastMoveAt=ms(t(13, 10)))
+    ongoing = {**finished, "status": "started", "winner": None, "lastMoveAt": ms(t(12, 59)), "moves": "e4 d5"}
+
+    def platform(request: httpx.Request) -> httpx.Response:
+        since = int(request.url.params.get("since", "0"))
+        include_ongoing = request.url.params.get("ongoing") == "true"
+        games: list[dict[str, Any]] = []
+        for g in [ongoing] if clock["now"] < t(13, 10) else [finished]:
+            if int(g["createdAt"]) < since:
+                continue
+            if g["status"] in ("created", "started") and not include_ongoing:
+                continue
+            games.append(g)
+        return httpx.Response(200, content="\n".join(json.dumps(g) for g in games).encode())
+
+    client = httpx.Client(transport=httpx.MockTransport(platform))
+    s = import_lichess(conn, ME, client=client, now=t(13, 0))
+    assert (s.fetched, s.new) == (0, 0)  # the game was ongoing: seen, not stored
+    boundary = conn.execute("SELECT lichess_last_checked FROM players WHERE id = %s", (PLAYER_ID,)).fetchone()
+    assert boundary and boundary["lichess_last_checked"] == t(12, 55)  # the next import starts before it
+
+    clock["now"] = t(14, 0)
+    s = import_lichess(conn, ME, client=client, now=t(14, 0))
+    assert (s.fetched, s.new) == (1, 1)
+    stored = conn.execute("SELECT platform_game_id FROM chess_games").fetchall()
+    assert [r["platform_game_id"] for r in stored] == ["long1"]
+    boundary = conn.execute("SELECT lichess_last_checked FROM players WHERE id = %s", (PLAYER_ID,)).fetchone()
+    assert boundary and boundary["lichess_last_checked"] == t(14, 0)  # nothing ongoing: the boundary catches up
+
+    # a third, empty import must not disturb anything
+    clock["now"] = t(15, 0)
+    assert import_lichess(conn, ME, client=client, now=t(15, 0)).fetched == 0

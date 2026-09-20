@@ -54,12 +54,44 @@ def analysed_game_ids(conn: Connection[Any]) -> list[int]:
     return [int(r["id"]) for r in rows]
 
 
-def first_analysed_game(conn: Connection[Any], predicate: LiteralString, order: LiteralString = "cg.id") -> int | None:
-    """The first analysed game satisfying an extra SQL predicate over aliases cg/pg (sample edge cases)."""
-    row = conn.execute(
-        _ANALYSED_GAME + f" AND ({predicate}) ORDER BY {order} LIMIT 1", {"pid": PLAYER_ID, "depth": STOCKFISH_DEPTH}
-    ).fetchone()
-    return int(row["id"]) if row else None
+# The named edge cases of the fixed comparison sample: (predicate over aliases cg/pg, ordering).
+_EDGE_CASES: dict[str, tuple[LiteralString, LiteralString]] = {
+    "checkmate_win": ("cg.termination = 'checkmate' AND pg.result = 'win'", "cg.id"),
+    "promotion": ("cg.moves::text LIKE '%%=Q%%'", "cg.id"),
+    "clean": (
+        "NOT EXISTS (SELECT 1 FROM blunders b WHERE b.player_id = pg.player_id AND b.chess_game_id = cg.id)",
+        "cg.id",
+    ),
+    "missed_mate": (
+        "EXISTS (SELECT 1 FROM player_motif_events e WHERE e.player_id = pg.player_id AND e.chess_game_id = cg.id"
+        " AND e.metric_type = 'mate' AND e.found IS FALSE)",
+        "cg.id",
+    ),
+    "longest": ("TRUE", "jsonb_array_length(cg.moves) DESC"),
+    "opponent_deviated": (
+        "EXISTS (SELECT 1 FROM game_repertoire_results g WHERE g.player_id = pg.player_id"
+        " AND g.chess_game_id = cg.id AND g.deviation_by = 'opponent')",
+        "cg.id",
+    ),
+    "followed_line": (
+        "EXISTS (SELECT 1 FROM game_repertoire_results g WHERE g.player_id = pg.player_id"
+        " AND g.chess_game_id = cg.id AND g.deviation_by = 'none')",
+        "cg.id",
+    ),
+}
+
+
+def edge_case_games(conn: Connection[Any]) -> dict[str, int]:
+    """One analysed game per named edge case (a case with no game is left out)."""
+    out: dict[str, int] = {}
+    for name, (predicate, order) in _EDGE_CASES.items():
+        row = conn.execute(
+            _ANALYSED_GAME + f" AND ({predicate}) ORDER BY {order} LIMIT 1",
+            {"pid": PLAYER_ID, "depth": STOCKFISH_DEPTH},
+        ).fetchone()
+        if row:
+            out[name] = int(row["id"])
+    return out
 
 
 def games_for_replay(conn: Connection[Any], ids: list[int]) -> list[dict[str, Any]]:

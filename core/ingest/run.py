@@ -7,12 +7,16 @@ Incremental mode (the hourly default):
   can share the newest game's second; the upsert dedups). An interrupted run
   leaves only newer archives unfetched, and they are still newer than the
   stored games, so the next run fetches them.
-- Lichess streams newest first from `since`, committing every 100 games. A
-  timestamp taken from the stored games would move past games an interrupted
-  stream never delivered, so `since` is the START time of the last COMPLETED
-  import (players.lichess_last_checked, stamped only after the whole stream
-  was stored). Games the interrupted run did store are fetched again and
-  dedup on the upsert.
+- Lichess streams newest first from `since`, committing every 100 games.
+  `since` filters by a game's CREATION time and the stream contains finished
+  games plus (with `ongoing=true`) games still in progress. The boundary the
+  next import starts from (players.lichess_last_checked) is therefore the
+  earliest of: this import's start time and the creation time of every game
+  that was still ongoing when this import ran — so a game that started before
+  an import and finished after it is fetched by the next one, however long it
+  lasts (correspondence included). The boundary is stamped only after the
+  whole stream was stored; an interrupted run leaves the previous boundary in
+  place and its stored games dedup on the upsert.
 
 `all_history=True` walks everything. A savepoint per game means one bad game
 never loses its batch.
@@ -29,7 +33,7 @@ from psycopg import Connection, sql
 
 from core.constants import PLAYER_ID
 from core.ingest import chesscom, lichess
-from core.ingest.records import GameRecord
+from core.ingest.records import GameRecord, integer
 from core.ingest.store import store_game
 from core.player import usernames
 
@@ -116,11 +120,16 @@ def import_chesscom(
 
 
 def import_lichess(
-    conn: Connection[Any], username: str, *, all_history: bool = False, client: httpx.Client | None = None
+    conn: Connection[Any],
+    username: str,
+    *,
+    all_history: bool = False,
+    client: httpx.Client | None = None,
+    now: datetime | None = None,
 ) -> ImportSummary:
     summary = ImportSummary("lichess")
     client = client or httpx.Client()
-    started_at = datetime.now(UTC)
+    started_at = now or datetime.now(UTC)
     completed = None if all_history else last_completed(conn, "lichess")
     conn.commit()
     if all_history:
@@ -128,16 +137,22 @@ def import_lichess(
     elif completed is not None:
         since_ms = int(completed.timestamp() * 1000)
     else:
-        since_ms = int((datetime.now(UTC) - timedelta(days=30 * INITIAL_IMPORT_MONTHS)).timestamp() * 1000)
+        since_ms = int((started_at - timedelta(days=30 * INITIAL_IMPORT_MONTHS)).timestamp() * 1000)
+    boundary = started_at
     batch: list[GameRecord | None] = []
     for game in lichess.stream_games(client, username, since_ms):
+        if lichess.is_ongoing(game):
+            created = integer(game, "createdAt")
+            if created is not None:
+                boundary = min(boundary, datetime.fromtimestamp(created / 1000, tz=UTC))
+            continue
         batch.append(lichess.parse_game(game, username))
         if len(batch) >= LICHESS_BATCH:
             _store_batch(conn, batch, summary)
             batch = []
     if batch:
         _store_batch(conn, batch, summary)
-    _stamp_completed(conn, "lichess", started_at)
+    _stamp_completed(conn, "lichess", boundary)
     return summary
 
 
