@@ -215,3 +215,85 @@ def freshly_analysed(conn: Connection[Any], ids: list[int]) -> list[int]:
         (PLAYER_ID, ids, STOCKFISH_DEPTH, STOCKFISH_DEPTH),
     ).fetchall()
     return [int(r["chess_game_id"]) for r in rows]
+
+
+# --- puzzles -----------------------------------------------------------------------------
+
+GENERATED_SOURCES = ("blunder", "own_mate", "deviation")
+
+_PUZZLE_FIELDS = (
+    "id, canonical_fen, fen, source_types, themes, solution_line, color, active,"
+    " is_repertoire, repertoire_line_id, acceptance_map"
+)
+
+
+def generated_puzzles(conn: Connection[Any], *, old_schema: bool = False) -> list[dict[str, Any]]:
+    """Active puzzles a generator produced, on either side of the port.
+
+    `old_schema` reads the archived database, where puzzles carry a `puzzle_kind` and the
+    player's own rows sit beside a shared tier, and a hand-made puzzle is tagged 'manual'
+    rather than 'custom'.
+    """
+    query: LiteralString
+    if old_schema:
+        query = (
+            f"SELECT {_PUZZLE_FIELDS} FROM puzzles"
+            " WHERE player_id = %s AND puzzle_kind = 'line' AND active = TRUE"
+            "   AND source_types && %s::text[] AND NOT source_types @> ARRAY['manual']"
+            " ORDER BY id"
+        )
+        params: tuple[Any, ...] = (PLAYER_ID, list(GENERATED_SOURCES))
+    else:
+        query = (
+            f"SELECT {_PUZZLE_FIELDS} FROM puzzles"
+            " WHERE active = TRUE AND source_types && %s::text[]"
+            "   AND NOT source_types @> ARRAY['custom']"
+            " ORDER BY id"
+        )
+        params = (list(GENERATED_SOURCES),)
+    return [dict(r) for r in conn.execute(query, params).fetchall()]
+
+
+def acceptance_maps(conn: Connection[Any], *, old_schema: bool = False) -> list[dict[str, Any]]:
+    """Every stored missed-mate map, active or not. Inactive rows are still graded when a
+    mastered puzzle is re-attempted, so they belong in a parity check."""
+    owner: LiteralString = " AND player_id = %s AND puzzle_kind = 'line'" if old_schema else ""
+    query: LiteralString = (
+        "SELECT id, fen, acceptance_map FROM puzzles"
+        f" WHERE source_types @> ARRAY['own_mate'] AND acceptance_map IS NOT NULL{owner}"
+        " ORDER BY id"
+    )
+    params: tuple[Any, ...] = (PLAYER_ID,) if old_schema else ()
+    return [dict(r) for r in conn.execute(query, params).fetchall()]
+
+
+def forget_generated_puzzles(conn: Connection[Any]) -> int:
+    """Scratch only: delete every generated puzzle so a rerun must produce them afresh.
+
+    This cascades to the attempts and the spaced-repetition rows behind those puzzles, so
+    `require_scratch_database` guards it and the caller is a disposable copy.
+    """
+    require_scratch_database(conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM puzzles WHERE source_types && %s::text[] AND NOT source_types @> ARRAY['custom']",
+            (list(GENERATED_SOURCES),),
+        )
+        return cur.rowcount
+
+
+def require_scratch_database(conn: Connection[Any]) -> None:
+    """Refuse to continue unless this database is named as a throwaway.
+
+    Deleting a puzzle takes its spaced-repetition row with it, and that progress is the one
+    thing in the database that cannot be rebuilt. A name check is a weak signal, so it
+    exists to catch a mistake, not to make the operation safe.
+    """
+    row = conn.execute("SELECT current_database() AS name").fetchone()
+    name = str(row["name"]) if row else ""
+    if "scratch" not in name:
+        raise RuntimeError(
+            f"refusing to rewrite puzzles in '{name}': this deletes puzzles, which cascades to"
+            " spaced-repetition progress. Point DATABASE_URL at a disposable copy whose name"
+            " contains 'scratch'."
+        )

@@ -1,3 +1,6 @@
+-- baseline_version: 0
+-- The schema as of migration 000 (i.e. before 001). CI loads this, applies every
+-- migration, and asserts the result is structurally identical to a fresh schema.sql.
 -- BlundrIQ Personal — database schema (single source of truth for a FRESH install; lives in core/sql/ so it ships in the package)
 --
 -- Rules:
@@ -249,6 +252,13 @@ CREATE SEQUENCE public.dismissed_blunder_fens_id_seq
 
 ALTER SEQUENCE public.dismissed_blunder_fens_id_seq OWNED BY public.dismissed_blunder_fens.id;
 
+-- Positions that must never be turned into a puzzle. Unique per canonical position.
+CREATE TABLE public.dismissed_puzzle_candidates (
+    fen text NOT NULL,
+    dismissed_at timestamp with time zone DEFAULT now(),
+    canonical_fen text GENERATED ALWAYS AS ((public.bq_canonical_fen(fen) || ' 0 1'::text)) STORED
+);
+
 -- Per (game, player): where the game left the repertoire and who deviated; the Deviations page reads this.
 CREATE TABLE public.game_repertoire_results (
     id bigint NOT NULL,
@@ -437,12 +447,16 @@ ALTER SEQUENCE public.player_motif_events_id_seq OWNED BY public.player_motif_ev
 CREATE TABLE public.player_puzzle_exposure (
     id bigint NOT NULL,
     player_id integer NOT NULL,
-    puzzle_id integer NOT NULL,
+    puzzle_id integer,
     bucket text NOT NULL,
     batch_id bigint NOT NULL,
     scope text DEFAULT 'all'::text NOT NULL,
     served_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT player_puzzle_exposure_bucket_chk CHECK ((bucket = ANY (ARRAY['your_puzzles'::text, 'motifs_first_class'::text, 'motifs_remaining'::text, 'own_missed_mate'::text, 'cc0_mate_endgame'::text])))
+    item_kind text DEFAULT 'puzzle'::text NOT NULL,
+    repertoire_line_id integer,
+    CONSTRAINT player_puzzle_exposure_bucket_chk CHECK ((bucket = ANY (ARRAY['your_puzzles'::text, 'motifs_first_class'::text, 'motifs_remaining'::text, 'own_missed_mate'::text, 'cc0_mate_endgame'::text]))),
+    CONSTRAINT ppe_item_kind_chk CHECK ((item_kind = ANY (ARRAY['puzzle'::text, 'repertoire_drill'::text]))),
+    CONSTRAINT ppe_item_kind_xor_chk CHECK ((((item_kind = 'puzzle'::text) AND (puzzle_id IS NOT NULL) AND (repertoire_line_id IS NULL)) OR ((item_kind = 'repertoire_drill'::text) AND (repertoire_line_id IS NOT NULL) AND (puzzle_id IS NULL))))
 );
 
 CREATE SEQUENCE public.player_puzzle_exposure_id_seq
@@ -459,9 +473,13 @@ CREATE TABLE public.player_puzzle_skip (
     player_id integer NOT NULL,
     scope text NOT NULL,
     batch_id bigint NOT NULL,
-    puzzle_id integer NOT NULL,
+    puzzle_id integer,
     skipped_at timestamp with time zone DEFAULT now() NOT NULL,
-    id bigint NOT NULL
+    item_kind text DEFAULT 'puzzle'::text NOT NULL,
+    repertoire_line_id integer,
+    id bigint NOT NULL,
+    CONSTRAINT pps_item_kind_chk CHECK ((item_kind = ANY (ARRAY['puzzle'::text, 'repertoire_drill'::text]))),
+    CONSTRAINT pps_item_kind_xor_chk CHECK ((((item_kind = 'puzzle'::text) AND (puzzle_id IS NOT NULL) AND (repertoire_line_id IS NULL)) OR ((item_kind = 'repertoire_drill'::text) AND (repertoire_line_id IS NOT NULL) AND (puzzle_id IS NULL))))
 );
 
 CREATE SEQUENCE public.player_puzzle_skip_id_seq
@@ -536,21 +554,24 @@ ALTER SEQUENCE public.puzzle_attempts_id_seq OWNED BY public.puzzle_attempts.id;
 CREATE TABLE public.puzzles (
     id integer NOT NULL,
     fen text NOT NULL,
-    solution_line jsonb NOT NULL,
+    solution_line jsonb,
     source_types text[] NOT NULL,
     color character(1) NOT NULL,
     title text,
     description text,
-    active boolean DEFAULT true NOT NULL,
+    active boolean DEFAULT true,
     created_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),
     solution_fen_sequence jsonb,
     is_repertoire boolean DEFAULT false NOT NULL,
     repertoire_line_id integer,
-    player_id integer NOT NULL,
+    player_id integer,
     themes text[],
+    puzzle_kind text DEFAULT 'line'::text NOT NULL,
     acceptance_map jsonb,
     canonical_fen text GENERATED ALWAYS AS ((public.bq_canonical_fen(fen) || ' 0 1'::text)) STORED,
+    CONSTRAINT puzzles_line_requires_solution CHECK (((puzzle_kind <> 'line'::text) OR (solution_line IS NOT NULL))),
+    CONSTRAINT puzzles_puzzle_kind_check CHECK ((puzzle_kind = ANY (ARRAY['line'::text, 'endgame_drill'::text]))),
     CONSTRAINT puzzles_repertoire_consistency_check CHECK ((((is_repertoire IS TRUE) AND (player_id IS NOT NULL) AND (repertoire_line_id IS NOT NULL)) OR ((is_repertoire IS FALSE) AND (repertoire_line_id IS NULL))))
 )
 WITH (autovacuum_vacuum_scale_factor='0.02', autovacuum_vacuum_threshold='50', autovacuum_analyze_scale_factor='0.01');
@@ -735,6 +756,9 @@ ALTER TABLE ONLY public.dismissed_blunder_fens
 ALTER TABLE ONLY public.dismissed_blunder_fens
     ADD CONSTRAINT dismissed_blunder_fens_player_id_fen_key UNIQUE (player_id, fen);
 
+ALTER TABLE ONLY public.dismissed_puzzle_candidates
+    ADD CONSTRAINT dismissed_puzzle_candidates_pkey PRIMARY KEY (fen);
+
 ALTER TABLE ONLY public.game_repertoire_results
     ADD CONSTRAINT game_repertoire_results_chess_game_id_player_id_key UNIQUE (chess_game_id, player_id);
 
@@ -858,6 +882,8 @@ CREATE INDEX ix_chess_games_position_keys ON public.chess_games USING gin (posit
 
 CREATE UNIQUE INDEX ix_dismissed_blunder_fens_player_canonical ON public.dismissed_blunder_fens USING btree (player_id, canonical_fen);
 
+CREATE UNIQUE INDEX ix_dismissed_puzzle_candidates_canonical ON public.dismissed_puzzle_candidates USING btree (canonical_fen);
+
 CREATE INDEX ix_grl_grr ON public.game_result_lines USING btree (game_repertoire_result_id);
 
 CREATE INDEX ix_grl_line_id ON public.game_result_lines USING btree (line_id);
@@ -888,6 +914,8 @@ CREATE UNIQUE INDEX ix_player_motif_events_perply ON public.player_motif_events 
 
 CREATE INDEX ix_player_motif_events_player_theme ON public.player_motif_events USING btree (player_id, metric_type, theme);
 
+CREATE INDEX ix_ppe_player_line ON public.player_puzzle_exposure USING btree (player_id, repertoire_line_id) WHERE (repertoire_line_id IS NOT NULL);
+
 CREATE INDEX ix_ppe_player_puzzle ON public.player_puzzle_exposure USING btree (player_id, puzzle_id);
 
 CREATE INDEX ix_ppe_player_scope_id ON public.player_puzzle_exposure USING btree (player_id, scope, id DESC);
@@ -898,11 +926,13 @@ CREATE INDEX ix_pps_retired ON public.player_puzzle_state USING btree (player_id
 
 CREATE UNIQUE INDEX ix_puzzle_attempts_idempotency ON public.puzzle_attempts USING btree (player_id, attempt_id) WHERE (attempt_id IS NOT NULL);
 
+CREATE UNIQUE INDEX ix_puzzles_admin_standard_fen ON public.puzzles USING btree (canonical_fen, puzzle_kind) WHERE ((is_repertoire = false) AND (player_id IS NULL) AND (active = true));
+
 CREATE UNIQUE INDEX ix_puzzles_one_per_player_line ON public.puzzles USING btree (player_id, repertoire_line_id) WHERE (is_repertoire = true);
 
 CREATE INDEX ix_puzzles_player_active_repertoire ON public.puzzles USING btree (player_id, active) WHERE (is_repertoire = true);
 
-CREATE UNIQUE INDEX ix_puzzles_player_standard_fen ON public.puzzles USING btree (player_id, canonical_fen) WHERE ((is_repertoire = false) AND (active = true));
+CREATE UNIQUE INDEX ix_puzzles_player_standard_fen ON public.puzzles USING btree (player_id, canonical_fen, puzzle_kind) WHERE ((is_repertoire = false) AND (player_id IS NOT NULL) AND (active = true));
 
 CREATE INDEX ix_repertoire_annotations_source ON public.repertoire_annotations USING btree (player_id, source, source_ref);
 
@@ -916,7 +946,9 @@ CREATE INDEX ix_review_events_player_route ON public.review_events USING btree (
 
 CREATE UNIQUE INDEX repertoire_annotations_unattached_uniq ON public.repertoire_annotations USING btree (player_id, fen_norm) WHERE (line_id IS NULL);
 
-CREATE UNIQUE INDEX ux_pps_puzzle ON public.player_puzzle_skip USING btree (player_id, scope, batch_id, puzzle_id);
+CREATE UNIQUE INDEX ux_pps_line ON public.player_puzzle_skip USING btree (player_id, scope, batch_id, repertoire_line_id) WHERE (repertoire_line_id IS NOT NULL);
+
+CREATE UNIQUE INDEX ux_pps_puzzle ON public.player_puzzle_skip USING btree (player_id, scope, batch_id, puzzle_id) WHERE (puzzle_id IS NOT NULL);
 
 ALTER TABLE ONLY public.blunders
     ADD CONSTRAINT blunders_chess_game_id_player_id_fkey FOREIGN KEY (chess_game_id, player_id) REFERENCES public.player_games(chess_game_id, player_id) ON DELETE CASCADE;
@@ -975,11 +1007,17 @@ ALTER TABLE ONLY public.player_puzzle_exposure
 ALTER TABLE ONLY public.player_puzzle_exposure
     ADD CONSTRAINT player_puzzle_exposure_puzzle_id_fkey FOREIGN KEY (puzzle_id) REFERENCES public.puzzles(id) ON DELETE CASCADE;
 
+ALTER TABLE ONLY public.player_puzzle_exposure
+    ADD CONSTRAINT player_puzzle_exposure_repertoire_line_id_fkey FOREIGN KEY (repertoire_line_id) REFERENCES public.repertoire_lines(id) ON DELETE CASCADE;
+
 ALTER TABLE ONLY public.player_puzzle_skip
     ADD CONSTRAINT player_puzzle_skip_player_id_fkey FOREIGN KEY (player_id) REFERENCES public.players(id) ON DELETE CASCADE;
 
 ALTER TABLE ONLY public.player_puzzle_skip
     ADD CONSTRAINT player_puzzle_skip_puzzle_id_fkey FOREIGN KEY (puzzle_id) REFERENCES public.puzzles(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.player_puzzle_skip
+    ADD CONSTRAINT player_puzzle_skip_repertoire_line_id_fkey FOREIGN KEY (repertoire_line_id) REFERENCES public.repertoire_lines(id) ON DELETE CASCADE;
 
 ALTER TABLE ONLY public.player_puzzle_state
     ADD CONSTRAINT player_puzzle_state_player_id_fkey FOREIGN KEY (player_id) REFERENCES public.players(id) ON DELETE CASCADE;

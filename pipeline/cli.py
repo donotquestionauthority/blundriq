@@ -6,9 +6,11 @@
     pipeline import [--platform P] [--all] [--months N]
     pipeline match-repertoire
     pipeline analyze [--workers N] [--limit N] [--game-id ID ...]
+    pipeline generate-puzzles
+    pipeline import-corpus --csv FILE             rebuild the Lichess CC0 corpus sample
     pipeline housekeep
-    pipeline run [--analyze-limit N]              import → match → analyze → housekeep, logged, alert on failure
-    pipeline migrate --mapping FILE               old database (ORACLE_DATABASE_URL) → this one (once)
+    pipeline run [--analyze-limit N]              the hourly chain, logged, alert on failure
+    pipeline migrate --mapping FILE [--only T,T]  old database (ORACLE_DATABASE_URL) → this one
 
 Every step is idempotent and safe to rerun; each records a pipeline_runs row.
 """
@@ -28,6 +30,8 @@ from psycopg.rows import DictRow, dict_row
 from core import db, housekeeping, migrate, notify, player, runs, schema, settings
 from core.analysis import run as analysis
 from core.ingest import run as ingest
+from core.puzzles import corpus
+from core.puzzles.generate import run as puzzles
 from core.repertoire import matching
 
 
@@ -114,6 +118,14 @@ def _step_analyze(conn: psycopg.Connection[Any], args: argparse.Namespace) -> di
     )
 
 
+def _step_generate_puzzles(conn: psycopg.Connection[Any], _: argparse.Namespace) -> dict[str, Any]:
+    return puzzles.generate_all(conn, settings.load(conn))
+
+
+def _step_import_corpus(conn: psycopg.Connection[Any], args: argparse.Namespace) -> dict[str, Any]:
+    return corpus.import_corpus(conn, settings.load(conn), args.csv)
+
+
 def _step_housekeep(conn: psycopg.Connection[Any], _: argparse.Namespace) -> dict[str, Any]:
     return housekeeping.run(conn, settings.load(conn).analysis_game_limit)
 
@@ -169,6 +181,7 @@ def _run_all(args: argparse.Namespace) -> int:
         ("import", _step_import),
         ("match", _step_match),
         ("analyze", _step_analyze),
+        ("generate-puzzles", _step_generate_puzzles),
         ("housekeep", _step_housekeep),
     ):
         if _run_step(name, step, args) != 0:
@@ -181,8 +194,9 @@ def _migrate(args: argparse.Namespace) -> int:
 
     src_url = secrets.oracle().oracle_database_url
     mapping = migrate.Mapping.load(Path(args.mapping))
+    only = [t.strip() for t in args.only.split(",") if t.strip()] if args.only else None
     with psycopg.Connection[DictRow].connect(src_url, row_factory=dict_row) as src, db.connect() as dst:
-        counts = migrate.migrate(src, dst, mapping)
+        counts = migrate.migrate(src, dst, mapping, only=only)
     for table, n in counts.items():
         print(f"{table:28s} {n}")
     return 0
@@ -231,6 +245,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_an.add_argument("--game-id", type=int, action="append", help="only these games (may repeat)")
     p_an.set_defaults(func=_cmd("analyze", _step_analyze))
 
+    sub.add_parser("generate-puzzles", help="reconcile generated puzzles with the evidence").set_defaults(
+        func=_cmd("generate-puzzles", _step_generate_puzzles)
+    )
+
+    p_corpus = sub.add_parser("import-corpus", help="rebuild the Lichess CC0 corpus sample from the published CSV")
+    p_corpus.add_argument("--csv", required=True, help="the decompressed lichess_db_puzzle.csv")
+    p_corpus.set_defaults(func=_cmd("import-corpus", _step_import_corpus))
+
     sub.add_parser("housekeep", help="retention outside the analysis window").set_defaults(
         func=_cmd("housekeep", _step_housekeep)
     )
@@ -239,6 +261,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.set_defaults(func=_run_all)
     p_mig = sub.add_parser("migrate", help="copy the old database into this one (once)")
     p_mig.add_argument("--mapping", required=True, help="JSON file with the old schema's column renames and value maps")
+    p_mig.add_argument("--only", help="comma-separated tables to migrate; the emptiness check applies to just those")
     p_mig.set_defaults(func=_migrate)
     return parser
 

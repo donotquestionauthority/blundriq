@@ -107,6 +107,12 @@ class Settings(BaseModel):
     blunders_default_min_occurrences: int = Field(
         default=2, ge=1, le=50, description="Default minimum occurrences on the Blunders page."
     )
+    blunder_puzzle_min_occurrences: int = Field(
+        default=3,
+        ge=1,
+        le=50,
+        description="Distinct games a position must be blundered in before it becomes a puzzle.",
+    )
     blunders_default_classifications: list[str] = Field(
         default=["blunder", "miss", "mistake"], description="Classifications shown by default."
     )
@@ -121,6 +127,12 @@ class Settings(BaseModel):
     )
     deviations_default_min_occurrences: int = Field(
         default=2, ge=1, le=50, description="Default minimum occurrences on Deviations."
+    )
+    deviation_puzzle_min_occurrences: int = Field(
+        default=3,
+        ge=1,
+        le=50,
+        description="Distinct games a line must be deviated from before it becomes a puzzle.",
     )
     deviations_default_min_ply: int = Field(default=1, ge=1, le=80, description="Ignore deviations before this ply.")
     games_default_window_days: int = Field(
@@ -168,6 +180,9 @@ class Settings(BaseModel):
     puzzle_mix_cc0_mate_endgame_pct: int = Field(default=10, ge=0, le=100, description="% from corpus mate patterns.")
     repertoire_puzzle_lookahead_moves: int = Field(
         default=1, ge=0, le=6, description="Moves of the line shown after a deviation puzzle."
+    )
+    blunder_puzzle_max_player_plies: int = Field(
+        default=3, ge=1, le=6, description="Longest solution, in your own moves, for a blunder puzzle."
     )
     weak_motif_min_occurrences: int = Field(
         default=2, ge=1, le=50, description="Occurrences before a motif counts as a weakness."

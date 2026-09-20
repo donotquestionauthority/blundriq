@@ -115,3 +115,41 @@ def test_uncaught_command_error_prints_no_traceback(
     out = capsys.readouterr()
     assert code == 1 and "pipeline db: FAILED (OperationalError)" in out.err
     assert HOST_MARKER not in out.err and TOKEN_MARKER not in out.err
+
+
+def test_the_hourly_chain_generates_puzzles_after_analysis(
+    clean: psycopg.Connection[DictRow],
+    app_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Generation is part of the hour, not a separate thing to remember to run, and it
+    runs after analysis because it reads what analysis wrote."""
+    conn = clean
+    conn.execute("INSERT INTO players (id) VALUES (%s)", (PLAYER_ID,))  # no usernames: nothing to fetch
+    conn.commit()
+    monkeypatch.setattr(cli, "_step_analyze", lambda _conn, _args: {"pending": 0, "analyzed": 0, "failed": 0})
+    assert cli.main(["run"]) == 0
+    capsys.readouterr()
+    steps = [r["step"] for r in conn.execute("SELECT step FROM pipeline_runs ORDER BY id").fetchall()]
+    assert steps == ["import", "match", "analyze", "generate-puzzles", "housekeep"]
+
+
+def test_generate_puzzles_runs_on_its_own(
+    clean: psycopg.Connection[DictRow],
+    app_env: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = clean
+    conn.execute("INSERT INTO players (id) VALUES (%s)", (PLAYER_ID,))
+    conn.commit()
+    assert cli.main(["generate-puzzles"]) == 0
+    out = capsys.readouterr().out
+    assert "generate-puzzles" in out and "blunder" in out
+    row = conn.execute("SELECT step, status FROM pipeline_runs ORDER BY id DESC LIMIT 1").fetchone()
+    assert row and (row["step"], row["status"]) == ("generate-puzzles", "ok")
+
+
+def test_import_corpus_needs_a_csv() -> None:
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["import-corpus"])
