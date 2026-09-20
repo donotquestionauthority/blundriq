@@ -39,14 +39,19 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `core/db.py` | Connection helper and pool. One role. |
 | `core/schema.py` | Fresh install (`core/sql/schema.sql`) vs upgrade (`core/sql/migrations/`). |
 | `core/chess/eligibility.py` | The Chess960 rule, as one SQL predicate and one Python check. |
-| `core/chess/` (later) | FEN identity, openings, time control, termination. |
-| `core/analysis/` (phase 2) | Stockfish analysis, motif detection, mate acceptance. |
-| `core/repertoire/` (phase 2) | Line storage, matching, the neutral import. |
-| `core/puzzles/` (phase 3) | Generation, serving, attempts + SRS. |
-| `core/scout/` (phase 6) | Opponent profiles and on-the-fly position stats. |
-| `core/review/` (phase 8) | Review detection (no tablebase rung; see decisions/001). |
-| `core/ai.py` (phase 4) | Explanations with cache. |
-| `core/notify.py` (phase 2) | Ops email. |
+| `core/chess/board.py`, `openings.py`, `platform.py` | Boards and FEN sequences (Chess960-aware); canonical opening names; termination and time-class vocabularies. |
+| `core/ingest/` | Chess.com and Lichess fetch + parse (`chesscom.py`, `lichess.py`), the only `chess_games` writer (`store.py`), the import step (`run.py`). |
+| `core/repertoire/matching.py` | Game-vs-line matching and the match step. (Line import: to come.) |
+| `core/analysis/` | `game.py` (Stockfish per-game walk and classification), `motifs.py` (tactical-motif and missed-mate tagger), `run.py` (worklist, parallel workers, writes), `engine.py`. |
+| `core/housekeeping.py` | Retention outside the analysis window. |
+| `core/runs.py`, `core/notify.py` | `pipeline_runs` rows; the one failure email (redacted). |
+| `core/games.py` | The Games page's reads. |
+| `core/migrate.py` | One-time copy of the old database (`pipeline migrate`). |
+| `tools/oracle/` | Diffs of the new pipeline against the old database's rows; see its README. |
+| `core/puzzles/` (to come) | Generation, serving, attempts + SRS. |
+| `core/scout/` (to come) | Opponent profiles and on-the-fly position stats. |
+| `core/review/` (to come) | Review detection (no tablebase rung; see decisions/001). |
+| `core/ai.py` (to come) | Explanations with cache. |
 | `api/auth.py` | One password, one signed cookie. |
 | `api/routes/*` | Thin routes. |
 | `pipeline/cli.py` | The `pipeline` command. |
@@ -62,4 +67,8 @@ The six `bq_*` SQL functions (`core/sql/schema.sql`, top) canonicalise FENs and 
 
 ## Deployment
 
-Render: root directory = repo root, build `pip install .`, start `uvicorn api.main:app --host 0.0.0.0 --port $PORT`, build filter on `api/ core/ pyproject.toml .python-version`; Python version from `.python-version`. Vercel: root `ui/` with the project setting "Ignored Build Step: Automatic" (skips commits that do not touch `ui/`), and `VITE_API_URL` must be set in the Vercel project to the API origin (staging `https://api-personal.blundriq.com`) because the built UI has no `/api` proxy. GitHub Actions: `ci.yml` on push/PR; `pipeline.yml` hourly (added in phase 2), secrets only in that workflow. The Dell runs the same `pipeline` CLI against the same database for bulk work.
+Render: root directory = repo root, build `pip install .`, start `uvicorn api.main:app --host 0.0.0.0 --port $PORT`, build filter on `api/ core/ pyproject.toml .python-version`; Python version from `.python-version`. Vercel: root `ui/` with the project setting "Ignored Build Step: Automatic" (skips commits that do not touch `ui/`), and `VITE_API_URL` must be set in the Vercel project to the API origin (staging `https://api-personal.blundriq.com`) because the built UI has no `/api` proxy. GitHub Actions: `ci.yml` on push/PR; `pipeline.yml` hourly (`pipeline run --analyze-limit 60`: import → match → analyze → housekeep, Stockfish 18 downloaded from the pinned release), secrets only in that workflow. The Dell runs the same `pipeline` CLI against the same database for bulk work (`pipeline analyze --workers 30`).
+
+## Windows and retention
+
+`analysis_game_limit` (settings) is the one window: the player's most recent N games are matched and analysed; `pipeline housekeep` deletes analysis artefacts and repertoire results outside it and nulls the bulk JSON (moves, FEN sequence, clocks, per-ply analysis) of games no owner — the player or a scouted opponent — has in-window. The metadata row stays, so the Games page lists everything ever imported. Chess960 games are in the window for counting only (`core/chess/eligibility.py`).

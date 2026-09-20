@@ -56,6 +56,26 @@ def conn(fresh_db_url: str) -> Generator[psycopg.Connection[DictRow], None, None
         c.rollback()
 
 
+def reset_game_data(conn: psycopg.Connection[DictRow]) -> None:
+    """Truncate every game/repertoire/analysis table (tests that commit share one scratch DB)."""
+    conn.execute(
+        "TRUNCATE chess_games, player_games, blunders, player_motif_events, books, chapters, repertoire_lines,"
+        " repertoire_annotations, game_repertoire_results, game_result_lines, puzzles, opponent_profiles,"
+        " pipeline_runs, players RESTART IDENTITY CASCADE"
+    )
+    conn.commit()
+
+
+@pytest.fixture()
+def clean(conn: psycopg.Connection[DictRow]) -> Generator[psycopg.Connection[DictRow], None, None]:
+    """A connection over a database with no game data; tests using it may commit.
+    The data is cleared again afterwards so explicit ids never collide with later serial ones."""
+    reset_game_data(conn)
+    yield conn
+    conn.rollback()
+    reset_game_data(conn)
+
+
 @pytest.fixture()
 def app_env(fresh_db_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Environment for API tests: real DSN, throwaway session secret, known password."""

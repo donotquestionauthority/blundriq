@@ -1,0 +1,42 @@
+name: pipeline
+
+# The hourly run: import → match → analyze → housekeep. The only workflow with
+# access to the database secret. Each step logs a pipeline_runs row; a failure
+# stops the chain and sends one alert (core/notify.py).
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Stockfish 18 (pinned to core/constants.STOCKFISH_VERSION)
+        run: |
+          curl -sSL -o /tmp/sf.tar https://github.com/official-stockfish/Stockfish/releases/download/sf_18/stockfish-ubuntu-x86-64-avx2.tar
+          tar -xf /tmp/sf.tar -C /tmp
+          sudo install -m 755 "$(find /tmp/stockfish -type f -name 'stockfish-ubuntu-x86-64-avx2')" /usr/local/bin/stockfish
+          printf 'uci\nquit\n' | stockfish | head -1
+      - run: pip install -q .
+      - name: Run the chain
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          ALERT_FROM: ${{ secrets.ALERT_FROM }}
+        run: pipeline run --analyze-limit 60

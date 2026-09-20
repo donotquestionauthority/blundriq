@@ -4,6 +4,7 @@ import { api } from "../api";
 // Pages arrive phase by phase; a link is added here when its page exists.
 const NAV: Array<{ to: string; label: string }> = [
   { to: "/", label: "Home" },
+  { to: "/games", label: "Games" },
   { to: "/preferences", label: "Preferences" },
 ];
 
