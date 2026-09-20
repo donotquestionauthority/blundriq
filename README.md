@@ -4,4 +4,4 @@ A personal chess improvement tool: it imports my games from Chess.com and Liches
 
 Single user, deliberately small; `ARCHITECTURE.md` is the map. A rebuild of an earlier multi-user version.
 
-Stockfish is GPL-3.0; its notices will ship with the in-browser engine under `ui/public/engine/` when Explore lands.
+MIT licensed. Stockfish is GPL-3.0; its notices will ship with the in-browser engine under `ui/public/engine/` when Explore lands.
