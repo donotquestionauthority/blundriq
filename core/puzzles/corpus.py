@@ -27,13 +27,13 @@ from __future__ import annotations
 
 import csv
 import heapq
-import json
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
 import chess
 from psycopg import Connection
+from psycopg.types.json import Jsonb
 
 from core.constants import CC0_SERVE_THEMES
 from core.settings import Settings
@@ -112,13 +112,19 @@ def sample(rows: Iterable[list[str]], config: Settings, stats: ImportStats) -> d
     One bounded min-heap per cell, keyed `(popularity, nb_plays, puzzle_id)` so ties
     break deterministically and the same CSV always yields the same sample. A puzzle
     can sit in several theme cells at one rating, so an evicted payload is dropped only
-    once no cell still holds it.
+    once the last cell holding it lets go.
     """
     served = set(CC0_SERVE_THEMES)
     cap = config.cc0_import_cap_per_cell
     bucket_size = config.cc0_rating_bucket_size
     heaps: dict[tuple[str, int], list[tuple[int, int, str]]] = {}
     payloads: dict[str, Candidate] = {}
+    # How many cells currently hold each puzzle. A puzzle sits in one cell per theme it
+    # matches, so its payload can only be dropped once the last cell lets go of it.
+    # Counting is what keeps this cheap: looking the answer up by scanning the cells costs
+    # a pass over a full heap per theme per eviction, and evictions are the common case
+    # once the cells fill.
+    held: dict[str, int] = {}
 
     for index, fields in enumerate(rows):
         if index == 0 and fields and fields[_ID] == "PuzzleId":
@@ -152,35 +158,23 @@ def sample(rows: Iterable[list[str]], config: Settings, stats: ImportStats) -> d
             cell = heaps.setdefault((theme, candidate.rating_bucket), [])
             heapq.heappush(cell, (candidate.popularity, candidate.nb_plays, candidate.puzzle_id))
             payloads[candidate.puzzle_id] = candidate
+            held[candidate.puzzle_id] = held.get(candidate.puzzle_id, 0) + 1
             if len(cell) > cap:
                 _, _, evicted = heapq.heappop(cell)
-                if not _still_held(evicted, payloads, heaps):
+                held[evicted] -= 1
+                if held[evicted] == 0:
+                    del held[evicted]
                     payloads.pop(evicted, None)
 
     survivors: dict[str, Candidate] = {}
     for cell_heap in heaps.values():
         for _, _, puzzle_id in cell_heap:
-            held = payloads.get(puzzle_id)
-            if held is not None:
-                survivors[puzzle_id] = held
+            survivor = payloads.get(puzzle_id)
+            if survivor is not None:
+                survivors[puzzle_id] = survivor
     stats.sampled = len(survivors)
     stats.cells = len(heaps)
     return survivors
-
-
-def _still_held(
-    puzzle_id: str,
-    payloads: dict[str, Candidate],
-    heaps: dict[tuple[str, int], list[tuple[int, int, str]]],
-) -> bool:
-    candidate = payloads.get(puzzle_id)
-    if candidate is None:
-        return False
-    for theme in candidate.themes:
-        cell = heaps.get((theme, candidate.rating_bucket))
-        if cell and any(entry[2] == puzzle_id for entry in cell):
-            return True
-    return False
 
 
 def materialise(survivors: dict[str, Candidate], stats: ImportStats) -> list[Row]:
@@ -229,31 +223,42 @@ def read_csv(path: str) -> Iterator[list[str]]:
         yield from csv.reader(handle)
 
 
+_COPY_COLUMNS = (
+    "COPY lichess_puzzles (puzzle_id, fen, solution_line, color, rating, rating_bucket,"
+    " popularity, nb_plays, themes) FROM STDIN (FORMAT BINARY)"
+)
+_COPY_TYPES = ("text", "text", "jsonb", "text", "int4", "int4", "int2", "int4", "text[]")
+
+
 def load(conn: Connection[Any], rows: list[Row], stats: ImportStats) -> None:
-    """Replace the corpus. Refuses to delete anything when the sample is empty."""
+    """Replace the corpus. Refuses to delete anything when the sample is empty.
+
+    The rows go in through one `COPY` stream rather than a statement each. There are a few
+    hundred thousand of them, and against a hosted database a statement each is a network
+    round trip each — an hour or more of waiting for work that takes seconds as a stream.
+    """
     if not rows:
         stats.failed += 1
         stats.notes.append("sample is empty; the existing corpus was left in place")
         return
     with conn.cursor() as cur:
         cur.execute("DELETE FROM lichess_puzzles")
-        for row in rows:
-            cur.execute(
-                "INSERT INTO lichess_puzzles (puzzle_id, fen, solution_line, color, rating,"
-                " rating_bucket, popularity, nb_plays, themes)"
-                " VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s::text[])",
-                (
-                    row.puzzle_id,
-                    row.fen,
-                    json.dumps(row.solution_line),
-                    row.color,
-                    row.rating,
-                    row.rating_bucket,
-                    row.popularity,
-                    row.nb_plays,
-                    row.themes,
-                ),
-            )
+        with cur.copy(_COPY_COLUMNS) as copy:
+            copy.set_types(_COPY_TYPES)
+            for row in rows:
+                copy.write_row(
+                    (
+                        row.puzzle_id,
+                        row.fen,
+                        Jsonb(row.solution_line),
+                        row.color,
+                        row.rating,
+                        row.rating_bucket,
+                        row.popularity,
+                        row.nb_plays,
+                        row.themes,
+                    )
+                )
     conn.commit()
     stats.loaded = len(rows)
 

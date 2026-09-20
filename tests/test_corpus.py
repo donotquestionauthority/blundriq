@@ -147,3 +147,22 @@ def test_the_index_check_reads_structure_not_words(clean: psycopg.Connection[Dic
     clean.execute(ORIGINAL_TOPK_INDEX)
     clean.commit()
     corpus.verify_topk_index(clean)
+
+
+def test_a_puzzle_evicted_from_one_cell_survives_in_another() -> None:
+    """A puzzle sits in one cell per theme it matches, and the cells fill independently.
+    Dropping its payload the first time any cell lets go would lose a puzzle that is still
+    among the best in another theme — and would leave the survivor set referring to it."""
+    cap = 10
+    rows = [HEADER]
+    # A crowd of popular pure-fork puzzles, enough to push the cell over the cap.
+    rows += [_row(f"fork{i:02d}", popularity=90 - i, themes="fork") for i in range(cap)]
+    # Unpopular for fork, but the only thing in the pin cell.
+    rows.append(_row("both", popularity=1, themes="fork pin"))
+
+    stats = corpus.ImportStats()
+    kept = corpus.sample(rows, _config(cc0_import_cap_per_cell=cap), stats)
+
+    assert "both" in kept, "evicted from the fork cell, still the best pin puzzle there"
+    assert kept["both"].themes == ["fork", "pin"], "its payload came through intact"
+    assert corpus.materialise(kept, stats), "a survivor must still be materialisable"
