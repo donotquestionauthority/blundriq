@@ -76,3 +76,77 @@ CC0_SERVE_THEMES = (
 
 # Depth choices offered on Explore (was app_settings.explore_engine_depth_options).
 EXPLORE_DEPTH_OPTIONS = (12, 16, 18, 20)
+
+# --- Practice: the five buckets a play batch is drawn from -----------------------------
+# Two are bounded by spaced repetition (the player's own puzzles and his own missed mates);
+# three rotate through the corpus by theme class. The order is the fill order when minting.
+BUCKET_YOUR_PUZZLES = "your_puzzles"
+BUCKET_MOTIFS_FIRST_CLASS = "motifs_first_class"
+BUCKET_MOTIFS_REMAINING = "motifs_remaining"
+BUCKET_OWN_MISSED_MATE = "own_missed_mate"
+BUCKET_CC0_MATE_ENDGAME = "cc0_mate_endgame"
+PUZZLE_MIX_BUCKETS = (
+    BUCKET_YOUR_PUZZLES,
+    BUCKET_MOTIFS_FIRST_CLASS,
+    BUCKET_MOTIFS_REMAINING,
+    BUCKET_OWN_MISSED_MATE,
+    BUCKET_CC0_MATE_ENDGAME,
+)
+SRS_BUCKETS = frozenset({BUCKET_YOUR_PUZZLES, BUCKET_OWN_MISSED_MATE})
+ROTATION_BUCKETS = frozenset({BUCKET_MOTIFS_FIRST_CLASS, BUCKET_MOTIFS_REMAINING, BUCKET_CC0_MATE_ENDGAME})
+
+# Corpus theme classes. A corpus puzzle is routed to the first class it overlaps, in
+# ROTATION_ROUTING_ORDER: a fork that is also a mate is a fork lesson.
+ROTATION_FIRST_CLASS_THEMES = frozenset({"fork", "pin", "skewer", "hangingPiece", "discoveredAttack"})
+ROTATION_MATE_THEMES = frozenset(
+    {
+        "mateIn1",
+        "mateIn2",
+        "mateIn3",
+        "mateIn4",
+        "mateIn5",
+        "backRankMate",
+        "smotheredMate",
+        "anastasiaMate",
+        "arabianMate",
+        "bodenMate",
+        "dovetailMate",
+        "hookMate",
+        "doubleBishopMate",
+        "killBoxMate",
+        "vukovicMate",
+    }
+)
+ROTATION_ENDGAME_THEMES = frozenset(
+    {"rookEndgame", "pawnEndgame", "bishopEndgame", "queenEndgame", "knightEndgame", "queenRookEndgame"}
+)
+ROTATION_REMAINING_THEMES = (
+    frozenset(CC0_SERVE_THEMES) - ROTATION_FIRST_CLASS_THEMES - ROTATION_MATE_THEMES - ROTATION_ENDGAME_THEMES
+)
+ROTATION_BUCKET_THEMES: dict[str, frozenset[str]] = {
+    BUCKET_MOTIFS_FIRST_CLASS: ROTATION_FIRST_CLASS_THEMES,
+    BUCKET_MOTIFS_REMAINING: ROTATION_REMAINING_THEMES,
+    BUCKET_CC0_MATE_ENDGAME: ROTATION_MATE_THEMES | ROTATION_ENDGAME_THEMES,
+}
+ROTATION_ROUTING_ORDER = (BUCKET_MOTIFS_FIRST_CLASS, BUCKET_CC0_MATE_ENDGAME, BUCKET_MOTIFS_REMAINING)
+
+# The motif vocabulary a first-class corpus puzzle keeps on its row (the tagger's five plus
+# 'mate'); the rotation buckets keep the whole served vocabulary.
+MOTIF_THEME_VOCAB = frozenset({"fork", "pin", "skewer", "hangingPiece", "discoveredAttack", "mate"})
+
+# Advisory-lock keyspaces (the first int of pg_advisory_xact_lock). One player, so the
+# second int is a constant for the queue and the puzzle id for an attempt.
+LOCK_PUZZLE_QUEUE = 3001
+LOCK_SRS_ATTEMPT = 3002
+
+# Spaced-repetition ladder. 'king' is mastery (core/puzzles/srs.py).
+SRS_LEVELS = ("pawn", "knight", "bishop", "rook", "queen", "king")
+
+# Play queue: mint the next batch when this many items or fewer are still pending
+# (clamped below the batch size at run time), and never hold more than two pending batches.
+MINT_AHEAD_THRESHOLD = 4
+PENDING_BATCH_DEPTH_CAP = 2
+
+# A repertoire puzzle is served once the player has deviated from its line in this many
+# distinct games, all time.
+REPERTOIRE_PUZZLE_MIN_EVENTS = 3

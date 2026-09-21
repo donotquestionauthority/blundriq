@@ -32,14 +32,14 @@ CC0 = "cc0"
 # `custom` at the head is what makes a hand-made puzzle untouchable by either generator.
 PRECEDENCE = (CUSTOM, OWN_MATE, BLUNDER_AUTO, CC0)
 
-# 'custom' is tested before 'blunder': a puzzle the player created from a blunder
-# position carries both, and the player's intent wins.
+# 'custom' is tested first: a puzzle the player made from a blunder, a missed mate or a
+# corpus position carries that origin tag too, and the player's intent wins over all of them.
 ACTIVE_PUZZLES_CTE = f"""active_puzzles AS (
     SELECT pz.id AS active_puzzle_id, pz.canonical_fen, pz.fen,
            CASE
+               WHEN pz.source_types @> ARRAY['custom']      THEN '{CUSTOM}'
                WHEN pz.source_types @> ARRAY['own_mate']    THEN '{OWN_MATE}'
                WHEN pz.source_types @> ARRAY['lichess_cc0'] THEN '{CC0}'
-               WHEN pz.source_types @> ARRAY['custom']      THEN '{CUSTOM}'
                WHEN pz.source_types @> ARRAY['blunder']     THEN '{BLUNDER_AUTO}'
                ELSE '{CUSTOM}'
            END AS active_class

@@ -5,6 +5,7 @@ import Layout from "./components/Layout";
 import Games from "./pages/Games";
 import Home from "./pages/Home";
 import Login from "./pages/Login";
+import Practice from "./pages/Practice";
 import Preferences from "./pages/Preferences";
 
 type AuthState = "checking" | "in" | "out";
@@ -29,6 +30,7 @@ export default function App() {
       <Route element={<Layout onLoggedOut={() => setAuth("out")} />}>
         <Route path="/" element={<Home />} />
         <Route path="/games" element={<Games />} />
+        <Route path="/practice" element={<Practice />} />
         <Route path="/preferences" element={<Preferences />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

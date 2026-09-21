@@ -115,7 +115,9 @@ def generate(conn: Connection[Any], config: Settings) -> dict[str, Any]:
     with conn.cursor() as cur:
         cur.execute(
             _worklist_sql(config.time_class_focus),
-            {"pid": PLAYER_ID, "max_moves": config.missed_mate_max_moves},
+            # The acceptance-map builder solves exhaustively and refuses anything past mate in
+            # five, so the setting is capped here rather than qualifying boards it cannot build.
+            {"pid": PLAYER_ID, "max_moves": min(5, config.missed_mate_max_moves)},
         )
         rows = cur.fetchall()
 

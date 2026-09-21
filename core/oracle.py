@@ -297,3 +297,117 @@ def require_scratch_database(conn: Connection[Any]) -> None:
             " spaced-repetition progress. Point DATABASE_URL at a disposable copy whose name"
             " contains 'scratch'."
         )
+
+
+# --- practice --------------------------------------------------------------------------------
+
+
+def solved_attempts(conn: Connection[Any]) -> list[dict[str, Any]]:
+    """Every attempt recorded as solved, with what it was graded against. A replay through
+    the current grader must agree with every one of them."""
+    return [
+        dict(r)
+        for r in conn.execute(
+            "SELECT a.id, a.puzzle_id, a.moves_played, a.attempt_at, p.fen, p.solution_line, p.color,"
+            " p.acceptance_map, p.source_types, p.is_repertoire, p.updated_at AS puzzle_updated_at"
+            " FROM puzzle_attempts a JOIN puzzles p ON p.id = a.puzzle_id"
+            " WHERE a.player_id = %s AND a.solved = TRUE AND a.moves_played IS NOT NULL ORDER BY a.id",
+            (PLAYER_ID,),
+        ).fetchall()
+    ]
+
+
+def old_visible_ids(conn: Connection[Any], lookahead_plies: int) -> set[int]:
+    """The puzzles the old system would show the player, computed on the archived schema
+    with the old rules: active line puzzles he owns or that his sources reach, not
+    contradicted by the repertoire, not redundant with it, not dismissed; repertoire
+    puzzles with three deviations, one per presented position."""
+    n = int(lookahead_plies)
+    standard = conn.execute(
+        """
+        WITH rep_steps AS (
+            SELECT CASE bk.color WHEN 'white' THEN 'w' ELSE 'b' END AS book_color, step.fen AS position_fen,
+                   rl.fen_sequence->>(step.ord::int) AS next_fen
+            FROM repertoire_lines rl JOIN chapters ch ON ch.id = rl.chapter_id JOIN books bk ON bk.id = ch.book_id,
+            LATERAL jsonb_array_elements_text(rl.fen_sequence) WITH ORDINALITY AS step(fen, ord)
+            WHERE bk.player_id = %(pid)s AND bk.active AND ch.active AND rl.active
+              AND step.ord < jsonb_array_length(rl.fen_sequence)
+        ),
+        steps AS (
+            SELECT p.id AS puzzle_id, p.color, step.fen AS position_fen,
+                   p.solution_fen_sequence->>(step.ord::int) AS next_fen
+            FROM puzzles p, LATERAL jsonb_array_elements_text(p.solution_fen_sequence) WITH ORDINALITY AS step(fen, ord)
+            WHERE p.active AND p.is_repertoire = FALSE AND p.puzzle_kind = 'line'
+              AND step.ord < jsonb_array_length(p.solution_fen_sequence) AND split_part(step.fen, ' ', 2) = p.color
+        ),
+        conflicted AS (
+            SELECT DISTINCT s.puzzle_id FROM steps s JOIN rep_steps r
+              ON r.position_fen = s.position_fen AND r.book_color = s.color
+            WHERE r.next_fen IS NOT NULL AND s.next_fen IS NOT NULL AND r.next_fen <> s.next_fen
+        ),
+        sources AS (
+            SELECT canonical_fen FROM blunders WHERE player_id = %(pid)s
+            UNION SELECT canonical_fen FROM game_repertoire_results
+            WHERE player_id = %(pid)s AND deviation_by = 'me' AND deviated_at_ply IS NOT NULL
+        )
+        SELECT p.id FROM puzzles p
+        WHERE p.active AND p.is_repertoire = FALSE AND p.puzzle_kind = 'line'
+          AND (p.player_id = %(pid)s
+               OR (p.player_id IS NULL AND p.canonical_fen IN (SELECT canonical_fen FROM sources)))
+          AND NOT (p.source_types @> ARRAY['own_mate'] AND p.acceptance_map IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM conflicted c WHERE c.puzzle_id = p.id)
+          AND NOT (p.source_types @> ARRAY['blunder'] AND EXISTS (
+                SELECT 1 FROM rep_steps r WHERE r.position_fen = p.fen AND r.book_color = p.color))
+          AND NOT EXISTS (SELECT 1 FROM dismissed_blunder_fens d
+                          WHERE d.player_id = %(pid)s AND d.canonical_fen = p.canonical_fen)
+        """,
+        {"pid": PLAYER_ID},
+    ).fetchall()
+    repertoire = conn.execute(
+        cast(
+            LiteralString,
+            f"""
+        WITH line_stats AS (
+            SELECT grl.line_id, count(DISTINCT grr.chess_game_id) AS event_count,
+                   max(grr.deviated_at_ply) AS furthest_ply
+            FROM game_result_lines grl
+            JOIN game_repertoire_results grr ON grr.id = grl.game_repertoire_result_id
+            WHERE grr.player_id = %(pid)s AND grr.deviation_by = 'me' AND grr.deviated_at_ply IS NOT NULL
+            GROUP BY grl.line_id HAVING count(DISTINCT grr.chess_game_id) >= 3
+        ),
+        candidates AS (
+            SELECT p.id, ls.event_count,
+                   p.solution_fen_sequence->>LEAST(ls.furthest_ply + {n},
+                       (jsonb_array_length(p.solution_line) - 1)
+                         - ((jsonb_array_length(p.solution_line) - 1 - ls.furthest_ply) %% 2))::int AS presentation_fen
+            FROM puzzles p
+            JOIN line_stats ls ON ls.line_id = p.repertoire_line_id
+            JOIN repertoire_lines rl ON rl.id = p.repertoire_line_id
+            JOIN chapters ch ON ch.id = rl.chapter_id JOIN books bk ON bk.id = ch.book_id
+            WHERE p.active AND p.is_repertoire = TRUE AND p.player_id = %(pid)s
+              AND bk.player_id = %(pid)s AND rl.active AND ch.active AND bk.active
+        )
+        SELECT DISTINCT ON (presentation_fen) id FROM candidates ORDER BY presentation_fen, event_count DESC, id
+        """,
+        ),
+        {"pid": PLAYER_ID},
+    ).fetchall()
+    return {int(r["id"]) for r in standard} | {int(r["id"]) for r in repertoire}
+
+
+def old_due_ids(conn: Connection[Any], visible: set[int]) -> set[int]:
+    """Of the visible set, those the old system counted as due right now."""
+    if not visible:
+        return set()
+    rows = conn.execute(
+        "SELECT puzzle_id, level, next_show_at FROM player_puzzle_state WHERE player_id = %s AND puzzle_id = ANY(%s)",
+        (PLAYER_ID, sorted(visible)),
+    ).fetchall()
+    now = conn.execute("SELECT NOW() AS now").fetchone()
+    assert now is not None
+    state = {int(r["puzzle_id"]): r for r in rows}
+    return {
+        pid
+        for pid in visible
+        if pid not in state or (state[pid]["level"] != "king" and state[pid]["next_show_at"] <= now["now"])
+    }

@@ -23,6 +23,7 @@ Chess.com / Lichess APIs
         │                            │
         │                            ▼
         │                 Practice (api) ──► puzzle_attempts, player_puzzle_state (SRS), exposure, skip
+        │                 pipeline srs-maintain un-retires mastered puzzles whose pattern recurs
         │
         └─► pipeline review ──► review_events (regenerated, never migrated)
 
@@ -55,7 +56,10 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `core/games.py` | The Games page's reads. |
 | `core/migrate.py` | One-time copy of the old database (`pipeline migrate`). |
 | `tools/oracle/` | Diffs of the new pipeline against the old database's rows; see its README. |
-| `core/puzzles/serve.py`, `attempts.py`, `srs.py`, `visibility.py` (to come) | Serving, attempts and spaced repetition. |
+| `core/puzzles/visibility.py` | Which puzzles the player may see and attempt, as SQL fragments every reader composes. |
+| `core/puzzles/serve.py` | The play queue: batches from the five buckets, pending and skip, the corpus rotation, the browse and trophy lists, the due count. |
+| `core/puzzles/srs.py` | The six-level ladder, one attempt's transition, attempt summaries, king demotion (`pipeline srs-maintain`). |
+| `core/puzzles/attempts.py` | Grading (line replay or acceptance map) and recording an attempt in one transaction. |
 | `core/scout/` (to come) | Opponent profiles and on-the-fly position stats. |
 | `core/review/` (to come) | Review detection (no tablebase rung; see decisions/001). |
 | `core/ai.py` (to come) | Explanations with cache. |
@@ -74,7 +78,7 @@ The six `bq_*` SQL functions (`core/sql/schema.sql`, top) canonicalise FENs and 
 
 ## Deployment
 
-Render: root directory = repo root, build `pip install .`, start `uvicorn api.main:app --host 0.0.0.0 --port $PORT`, build filter on `api/ core/ pyproject.toml .python-version`; Python version from `.python-version`. Vercel: root `ui/` with the project setting "Ignored Build Step: Automatic" (skips commits that do not touch `ui/`), and `VITE_API_URL` must be set in the Vercel project to the API origin (staging `https://api-personal.blundriq.com`) because the built UI has no `/api` proxy. GitHub Actions: `ci.yml` on push/PR; `pipeline.yml` hourly (`pipeline run --analyze-limit 60`: import → match → analyze → housekeep, Stockfish 18 downloaded from the pinned release), secrets only in that workflow. The Dell runs the same `pipeline` CLI against the same database for bulk work (`pipeline analyze --workers 30`).
+Render: root directory = repo root, build `pip install .`, start `uvicorn api.main:app --host 0.0.0.0 --port $PORT`, build filter on `api/ core/ pyproject.toml .python-version`; Python version from `.python-version`. Vercel: root `ui/` with the project setting "Ignored Build Step: Automatic" (skips commits that do not touch `ui/`), and `VITE_API_URL` must be set in the Vercel project to the API origin (staging `https://api-personal.blundriq.com`) because the built UI has no `/api` proxy. GitHub Actions: `ci.yml` on push/PR; `pipeline.yml` hourly (`pipeline run --analyze-limit 60`: import → match → analyze → generate-puzzles → srs-maintain → housekeep, Stockfish 18 downloaded from the pinned release), secrets only in that workflow. The Dell runs the same `pipeline` CLI against the same database for bulk work (`pipeline analyze --workers 30`).
 
 ## Windows and retention
 

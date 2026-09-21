@@ -1,16 +1,24 @@
+import { useSyncExternalStore } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router";
 import { api } from "../api";
+import { getUnsavedAttempt, subscribeUnsavedAttempt } from "../utils/unsavedAttempt";
 
 // Pages arrive phase by phase; a link is added here when its page exists.
 const NAV: Array<{ to: string; label: string }> = [
   { to: "/", label: "Home" },
+  { to: "/practice", label: "Practice" },
   { to: "/games", label: "Games" },
   { to: "/preferences", label: "Preferences" },
 ];
 
 export default function Layout({ onLoggedOut }: { onLoggedOut: () => void }) {
   const navigate = useNavigate();
+  // While Practice holds an attempt it could not save, leaving the page would lose it, so
+  // the header's links wait for the save.
+  const held = useSyncExternalStore(subscribeUnsavedAttempt, getUnsavedAttempt, getUnsavedAttempt) !== null;
+  const heldTitle = "Save your attempt on the Practice page first";
   async function logout() {
+    if (held) return;
     await api.post("/logout");
     onLoggedOut();
     navigate("/login");
@@ -20,19 +28,25 @@ export default function Layout({ onLoggedOut }: { onLoggedOut: () => void }) {
       <header className="border-b border-zinc-200 dark:border-zinc-800">
         <nav className="mx-auto flex max-w-5xl items-center gap-4 px-4 py-3">
           <span className="font-semibold tracking-tight">BlundrIQ</span>
-          {NAV.map((n) => (
-            <NavLink
-              key={n.to}
-              to={n.to}
-              end={n.to === "/"}
-              className={({ isActive }) =>
-                `text-sm ${isActive ? "text-zinc-900 dark:text-zinc-100" : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"}`
-              }
-            >
-              {n.label}
-            </NavLink>
-          ))}
-          <button onClick={logout} className="ml-auto text-sm text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200">
+          {NAV.map((n) =>
+            held ? (
+              <span key={n.to} aria-disabled="true" title={heldTitle} className="text-sm text-zinc-300 dark:text-zinc-600">
+                {n.label}
+              </span>
+            ) : (
+              <NavLink
+                key={n.to}
+                to={n.to}
+                end={n.to === "/"}
+                className={({ isActive }) =>
+                  `text-sm ${isActive ? "text-zinc-900 dark:text-zinc-100" : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"}`
+                }
+              >
+                {n.label}
+              </NavLink>
+            ),
+          )}
+          <button onClick={logout} disabled={held} title={held ? heldTitle : undefined} className="ml-auto text-sm text-zinc-500 hover:text-zinc-800 disabled:opacity-50 dark:hover:text-zinc-200">
             Log out
           </button>
         </nav>

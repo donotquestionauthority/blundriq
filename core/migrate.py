@@ -29,6 +29,7 @@ from psycopg import Connection, sql
 
 from core.chess.eligibility import analysable_sql
 from core.constants import PLAYER_ID
+from core.notify import OperatorError
 
 _ANALYSABLE_GAME = f"EXISTS (SELECT 1 FROM chess_games cg WHERE cg.id = t.chess_game_id AND {analysable_sql('cg')})"
 _MY_BOOK = f"EXISTS (SELECT 1 FROM books b WHERE b.id = t.book_id AND b.player_id = {PLAYER_ID})"
@@ -275,12 +276,15 @@ def migrate(
         wanted = set(only)
         unknown = wanted - {s.table for s in plan}
         if unknown:
-            raise RuntimeError(f"no migration step for: {', '.join(sorted(unknown))}")
+            raise OperatorError(f"no migration step for: {', '.join(sorted(unknown))}")
         plan = [s for s in plan if s.table in wanted]
     for step in plan:
         row = dst.execute(sql.SQL("SELECT count(*) AS n FROM {}").format(sql.Identifier(step.table))).fetchone()
         if row and int(row["n"]) > 0:
-            raise RuntimeError(f"target table {step.table} is not empty; migrate only into a fresh database")
+            raise OperatorError(
+                f"target table {step.table} is not empty; migrate only into a fresh database"
+                " (dropdb, createdb, `pipeline db init`, then migrate again)"
+            )
     counts: dict[str, int] = {}
     merging_puzzles = "puzzles" in {s.table for s in plan}
     with dst.transaction():
@@ -308,7 +312,9 @@ def _drop_board_index(dst: Connection[Any]) -> LiteralString:
         "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = %s", (_BOARD_INDEX,)
     ).fetchone()
     if row is None:
-        raise RuntimeError(f"expected index {_BOARD_INDEX} to exist before migrating puzzles")
+        raise OperatorError(
+            f"expected index {_BOARD_INDEX} to exist before migrating puzzles; run `pipeline db upgrade`"
+        )
     definition = cast(LiteralString, row["indexdef"])  # read from pg_indexes, never from input
     dst.execute(_DROP_BOARD_INDEX)
     return definition
