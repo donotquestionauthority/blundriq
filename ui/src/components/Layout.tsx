@@ -7,6 +7,7 @@ import { getUnsavedAttempt, subscribeUnsavedAttempt } from "../utils/unsavedAtte
 const NAV: Array<{ to: string; label: string }> = [
   { to: "/", label: "Home" },
   { to: "/practice", label: "Practice" },
+  { to: "/blunders", label: "Blunders" },
   { to: "/games", label: "Games" },
   { to: "/preferences", label: "Preferences" },
 ];

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useSearchParams } from "react-router";
+import { ApiError } from "../api";
+import { removePuzzle } from "../blunders";
 import { useApi } from "../hooks/useApi";
 import { disownUnsavedAttempt, getUnsavedAttempt, holdUnsavedAttempt, isUnsavedAttemptOwned, releaseUnsavedAttempt, subscribeUnsavedAttempt, type UnsavedAttempt } from "../utils/unsavedAttempt";
 import { PuzzleEngine } from "../components/PuzzleEngine";
@@ -502,6 +504,34 @@ function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onNavigationLock }:
     onNavigationLock(locked);
     return () => onNavigationLock(false);
   }, [locked, onNavigationLock]);
+
+  // A hand-made puzzle can be retired from here. Not while an attempt on it is unsaved or
+  // still on its way: the solver must not unmount owing the server an attempt, and an
+  // attempt that lands after the puzzle is gone is refused.
+  const removable = !puzzle.is_repertoire && puzzle.source_types.includes("custom");
+  const held = useSyncExternalStore(subscribeUnsavedAttempt, getUnsavedAttempt, getUnsavedAttempt) !== null; // by any solver on the page
+  const removeBlocked = locked || held || attempt.attemptStatus !== null;
+  const [confirming, setConfirming] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  async function remove() {
+    if (removing || removeBlocked) return;
+    setRemoving(true);
+    setRemoveError(null);
+    try {
+      await removePuzzle(puzzle.id);
+    } catch (e) {
+      if (!(e instanceof ApiError && e.status === 404)) {
+        setRemoveError("Could not remove this puzzle. Try again.");
+        setConfirming(false);
+        setRemoving(false);
+        return;
+      }
+    }
+    onAttemptRecorded(); // refetch the list it was on
+    onClose();
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4" role="dialog" aria-label={`Puzzle ${puzzle.id}`}>
       <div className="max-h-[90svh] w-full max-w-xl overflow-y-auto rounded border border-zinc-200 bg-white p-4 shadow-xl dark:border-zinc-800 dark:bg-zinc-950">
@@ -532,6 +562,30 @@ function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onNavigationLock }:
         />
         <BlockingBanner error={attempt.blockingError} submitting={attempt.submitting} onRetry={attempt.retry} />
         <GameLinks puzzle={puzzle} />
+        {removable && (
+          <div className="mt-4 flex items-center justify-end gap-3 border-t border-zinc-200 pt-3 text-xs dark:border-zinc-800">
+            {removeError && (
+              <span role="alert" className="mr-auto text-red-600 dark:text-red-400">
+                {removeError}
+              </span>
+            )}
+            {confirming ? (
+              <>
+                <span className="text-zinc-500">Remove this puzzle? Its history is kept.</span>
+                <button type="button" disabled={removing || removeBlocked} onClick={remove} className="font-medium text-red-600 disabled:opacity-40 dark:text-red-400">
+                  {removing ? "Removing…" : "Yes, remove"}
+                </button>
+                <button type="button" disabled={removing} onClick={() => setConfirming(false)} className="text-zinc-500 disabled:opacity-40">
+                  Keep
+                </button>
+              </>
+            ) : (
+              <button type="button" disabled={removeBlocked} title={removeBlocked ? "Saving your attempt first" : undefined} onClick={() => setConfirming(true)} className="text-zinc-500 hover:text-zinc-900 disabled:opacity-40 dark:hover:text-zinc-100">
+                Remove puzzle
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -13,20 +13,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chess } from "chess.js";
 import type { Move, Square } from "chess.js";
 import { Chessboard } from "react-chessboard";
+import { HIGHLIGHT, SQUARES } from "../utils/board";
 import { mapKey, moveUci, sanResolvesToMove, uciToMove } from "../utils/chess";
 import type { AcceptanceMap } from "../practice";
 
 type PuzzleState = "playing" | "wrong" | "solved";
-
-const HIGHLIGHT = {
-  selected: "rgba(255, 255, 0, 0.5)",
-  lastMove: "rgba(255, 255, 0, 0.3)",
-  correct: "rgba(34, 197, 94, 0.4)",
-  wrong: "rgba(239, 68, 68, 0.5)",
-  legalDot: "radial-gradient(rgba(0,0,0,0.25) 22%, transparent 22%)",
-  legalRing: "radial-gradient(transparent 51%, rgba(0,0,0,0.3) 51%)",
-} as const;
-const SQUARES = { darkSquareStyle: { backgroundColor: "#779952" }, lightSquareStyle: { backgroundColor: "#edeed1" } } as const;
 
 export interface PuzzleEngineProps {
   fen: string;

@@ -572,4 +572,45 @@ describe("Practice page", () => {
     fireEvent.click(screen.getByText("#21"));
     expect(await screen.findByRole("dialog", { name: "Puzzle 21" })).toBeInTheDocument();
   });
+
+  it("retires a hand-made puzzle from the overlay after a confirmation, and offers it for no other kind", async () => {
+    const custom = puzzle(21, 1, { source_types: ["blunder", "custom"] });
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: { ...serve([custom, puzzle(22, 1)], 1), batch_id: null } }),
+      "/puzzles/21": (method) => (method === "DELETE" ? { status: 200, body: { detail: "removed" } } : { status: 405, body: {} }),
+    });
+    renderPage("/practice?srs=all");
+    fireEvent.click(await screen.findByText("#22"));
+    expect(await screen.findByRole("dialog", { name: "Puzzle 22" })).toBeInTheDocument();
+    expect(screen.queryByText("Remove puzzle")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Close"));
+
+    fireEvent.click(screen.getByText("#21"));
+    fireEvent.click(await screen.findByText("Remove puzzle"));
+    expect(calls.some((c) => c.method === "DELETE")).toBe(false); // the first click only asks
+    fireEvent.click(screen.getByText("Keep"));
+    fireEvent.click(screen.getByText("Remove puzzle"));
+    const lists = calls.filter((c) => c.path === "/practice/puzzles").length;
+    fireEvent.click(screen.getByText("Yes, remove"));
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(calls.filter((c) => c.method === "DELETE").map((c) => c.path)).toEqual(["/puzzles/21"]);
+    expect(calls.filter((c) => c.path === "/practice/puzzles").length).toBe(lists + 1); // the list is refetched
+  });
+
+  it("will not retire a puzzle while an attempt on it is unsaved", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1)], 1, 1) }),
+      "/practice/puzzles/11": () => ({ status: 200, body: { id: 11, fen: puzzle(11, 1).fen, solution_line: ["Ra8#"], color: "w", acceptance_map: null, source_types: ["custom"], themes: [], is_repertoire: false, presentation_ply: null } }),
+      "/practice/puzzles/11/attempt": () => ({ status: 500, body: { detail: "boom" } }),
+    });
+    renderPage("/practice?puzzle=11");
+    expect(await screen.findByText("Remove puzzle")).toBeEnabled();
+    fireEvent.click(screen.getByText("Remove puzzle"));
+    fireEvent.click(screen.getAllByText("drop")[0]);
+    expect(await screen.findByText(/Couldn't save your attempt/)).toBeInTheDocument();
+    expect(screen.getByText("Yes, remove")).toBeDisabled();
+    fireEvent.click(screen.getByText("Yes, remove"));
+    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+  });
 });
