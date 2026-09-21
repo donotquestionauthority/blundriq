@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useSearchParams } from "react-router";
 import { useApi } from "../hooks/useApi";
+import { getUnsavedAttempt, holdUnsavedAttempt, releaseUnsavedAttempt, subscribeUnsavedAttempt, type UnsavedAttempt } from "../utils/unsavedAttempt";
 import { PuzzleEngine } from "../components/PuzzleEngine";
 import { getPuzzleById, getPuzzles, isRotationPuzzle, LAST_N_OPTIONS, recordAttempt, skipPuzzle } from "../practice";
 import type { PlayablePuzzlePayload, PracticeType, Puzzle, PuzzleGameLink, PuzzleSrs, SrsFilter, SrsLevel } from "../practice";
@@ -166,6 +167,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
       setServerDowngraded(false);
       try {
         const response = await post(attemptId, solved, movesPlayed);
+        releaseUnsavedAttempt(attemptId);
         if (activePuzzleIdRef.current === attemptPuzzleId) {
           setLastResult(response.solved ? "solved" : "wrong");
           if (solved && !response.solved) setServerDowngraded(true);
@@ -173,6 +175,8 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
         onRecorded();
       } catch (err) {
         console.error("Blocking-mode recordAttempt failed:", err);
+        // The only copy of this attempt: keep it where leaving the page cannot lose it.
+        holdUnsavedAttempt({ puzzle_id: attemptPuzzleId, attempt_id: attemptId, session_id: sessionIdRef.current, solved, moves_played: movesPlayed.join(",") });
         if (activePuzzleIdRef.current === attemptPuzzleId) setBlockingError({ attemptId, solved, movesPlayed });
       } finally {
         setSubmitting(false);
@@ -243,6 +247,32 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
   }, [blockingError, runBlockingMode, puzzleId]);
 
   return { lastResult, serverDowngraded, attemptStatus, submitting, blockingError, handleComplete, retry, reset, navigationBlocked: submitting || blockingError !== null };
+}
+
+/** Retry for an attempt held across a page change; the same attempt id, so a save that
+ *  did land server-side replays rather than scoring twice. */
+function HeldAttemptBanner({ attempt, onSaved }: { attempt: UnsavedAttempt; onSaved: () => void }) {
+  const [submitting, setSubmitting] = useState(false);
+  const retry = async () => {
+    setSubmitting(true);
+    try {
+      await recordAttempt(attempt.puzzle_id, { solved: attempt.solved, moves_played: attempt.moves_played, attempt_id: attempt.attempt_id, session_id: attempt.session_id });
+      releaseUnsavedAttempt(attempt.attempt_id);
+      onSaved();
+    } catch (err) {
+      console.error("Retry of a held attempt failed:", err);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+  return (
+    <div className="mt-4 flex items-center justify-between gap-3 rounded border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:border-rose-800 dark:bg-rose-900/30 dark:text-rose-300">
+      <span>Your attempt on puzzle #{attempt.puzzle_id} has not been saved — please retry to continue.</span>
+      <button type="button" onClick={() => void retry()} disabled={submitting} className="shrink-0 rounded border border-rose-300 px-2 py-0.5 text-xs font-medium disabled:opacity-50 dark:border-rose-800">
+        {submitting ? "Retrying…" : "Retry"}
+      </button>
+    </div>
+  );
 }
 
 function BlockingBanner({ error, submitting, onRetry }: { error: unknown; submitting: boolean; onRetry: () => void }) {
@@ -438,8 +468,13 @@ function PlayMode({
 
 // ─── Overlay: one puzzle in a modal (deep link, list rows) ──────────────────
 
-function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded }: { puzzle: Puzzle; onClose: () => void; onAttemptRecorded: () => void }) {
+function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onNavigationLock }: { puzzle: Puzzle; onClose: () => void; onAttemptRecorded: () => void; onNavigationLock: (locked: boolean) => void }) {
   const attempt = useAttemptSubmit(puzzle.id, onAttemptRecorded);
+  const locked = attempt.navigationBlocked;
+  useEffect(() => {
+    onNavigationLock(locked);
+    return () => onNavigationLock(false);
+  }, [locked, onNavigationLock]);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4" role="dialog" aria-label={`Puzzle ${puzzle.id}`}>
       <div className="max-h-[90svh] w-full max-w-xl overflow-y-auto rounded border border-zinc-200 bg-white p-4 shadow-xl dark:border-zinc-800 dark:bg-zinc-950">
@@ -667,7 +702,11 @@ export default function Practice() {
     return Number.isInteger(n) && n > 0 ? n : null;
   });
   const [openPuzzle, setOpenPuzzle] = useState<Puzzle | null>(null);
-  const [navLocked, setNavLocked] = useState(false);
+  const [inPageLock, setInPageLock] = useState(false);
+  // An attempt held from an earlier visit (the page was left, or reloaded into blocking
+  // mode) is offered for retry here, above whatever the page serves, until it is saved.
+  const held = useSyncExternalStore(subscribeUnsavedAttempt, getUnsavedAttempt, getUnsavedAttempt);
+  const navLocked = inPageLock || held !== null;
 
   // Strip the entry params after first render; the state above already holds them.
   const urlStripRef = useRef(false);
@@ -753,6 +792,7 @@ export default function Practice() {
         </div>
       </div>
 
+      {held && !inPageLock && <HeldAttemptBanner attempt={held} onSaved={refetch} />}
       <div className="mt-4">
         {/* `isStale` is checked as well as `isLoading`: on the first render after a filter change the
             effect has not run yet, so isLoading still reads false from the previous fetch. */}
@@ -771,7 +811,7 @@ export default function Practice() {
             prefetchThreshold={data.mint_ahead_threshold ?? 4}
             onAttemptRecorded={noop}
             onNeedRefetch={refetch}
-            onNavigationLock={setNavLocked}
+            onNavigationLock={setInPageLock}
           />
         )}
         {data != null && !isStale && srsFilter !== "due" && (
@@ -785,8 +825,8 @@ export default function Practice() {
       </div>
 
       {deepLinkId != null && deepLinkLoading && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 text-sm text-zinc-200">…</div>}
-      {deepLinkPuzzle && <PuzzleOverlay key={deepLinkPuzzle.id} puzzle={deepLinkPuzzle} onClose={() => setDeepLinkId(null)} onAttemptRecorded={refetch} />}
-      {openPuzzle && !deepLinkPuzzle && <PuzzleOverlay key={openPuzzle.id} puzzle={openPuzzle} onClose={() => setOpenPuzzle(null)} onAttemptRecorded={refetch} />}
+      {deepLinkPuzzle && <PuzzleOverlay key={deepLinkPuzzle.id} puzzle={deepLinkPuzzle} onClose={() => setDeepLinkId(null)} onAttemptRecorded={refetch} onNavigationLock={setInPageLock} />}
+      {openPuzzle && !deepLinkPuzzle && <PuzzleOverlay key={openPuzzle.id} puzzle={openPuzzle} onClose={() => setOpenPuzzle(null)} onAttemptRecorded={refetch} onNavigationLock={setInPageLock} />}
     </div>
   );
 }

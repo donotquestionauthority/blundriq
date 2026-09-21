@@ -1,5 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route, Routes } from "react-router";
+import Layout from "../components/Layout";
+import { _resetUnsavedAttemptForTests } from "../utils/unsavedAttempt";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Practice from "./Practice";
 import { _resetProbesForTests } from "../utils/attemptQueue";
@@ -88,6 +90,7 @@ describe("Practice page", () => {
   beforeEach(() => {
     window.localStorage.clear();
     _resetProbesForTests();
+    _resetUnsavedAttemptForTests();
   });
   afterEach(() => {
     Object.defineProperty(navigator, "locks", { value: undefined, configurable: true });
@@ -297,6 +300,77 @@ describe("Practice page", () => {
     release();
     expect(await screen.findByText("#12")).toBeInTheDocument();
     expect(serves).toBeGreaterThan(servesBefore);
+  });
+
+  it("holds an unsaved attempt across the whole app: the header waits, and leaving and returning offers Retry", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    let attemptCalls = 0;
+    const calls = stubFetch({
+      "/me": () => ({ status: 200, body: { authenticated: true } }),
+      "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1), puzzle(12, 1)], 1, 1) }),
+      "/practice/puzzles/11/attempt": () => {
+        attemptCalls += 1;
+        return attemptCalls === 1
+          ? { status: 500, body: { detail: "boom" } }
+          : { status: 200, body: { detail: "attempt recorded", solved: true, attempt_summary: { total: 1, solved: 1, streak: 1 }, srs: { level: "knight", correct_at_level: 0, advance_threshold: 1, transition: null } } };
+      },
+    });
+    const view = render(
+      <MemoryRouter initialEntries={["/practice"]}>
+        <Routes>
+          <Route element={<Layout onLoggedOut={() => {}} />}>
+            <Route path="/practice" element={<Practice />} />
+            <Route path="/games" element={<p>games page</p>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText("#11")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("drop"));
+    expect(await screen.findByText(/Couldn't save your attempt/)).toBeInTheDocument();
+    // The header no longer offers a way out; the unsaved attempt is the reason.
+    const games = screen.getByText("Games");
+    expect(games.tagName).toBe("SPAN");
+    fireEvent.click(games);
+    expect(screen.queryByText("games page")).not.toBeInTheDocument();
+    expect(screen.getByText("#11")).toBeInTheDocument();
+    expect(screen.getByText("Log out")).toBeDisabled();
+
+    // Leave anyway (the browser's own history, say) and come back: the attempt is still
+    // offered, with the same idempotency key, and saving it frees the header.
+    view.unmount();
+    render(
+      <MemoryRouter initialEntries={["/practice"]}>
+        <Routes>
+          <Route element={<Layout onLoggedOut={() => {}} />}>
+            <Route path="/practice" element={<Practice />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText(/attempt on puzzle #11 has not been saved/)).toBeInTheDocument();
+    expect(screen.getByText("Games").tagName).toBe("SPAN");
+    fireEvent.click(screen.getByText("Retry"));
+    await vi.waitFor(() => expect(screen.queryByText(/has not been saved/)).not.toBeInTheDocument());
+    expect(screen.getByText("Games").tagName).toBe("A");
+    const attempts = calls.filter((c) => c.path === "/practice/puzzles/11/attempt");
+    expect(attempts).toHaveLength(2);
+    expect(attempts[1].body!.attempt_id).toBe(attempts[0].body!.attempt_id);
+    expect(attempts[1].body!.session_id).toBe(attempts[0].body!.session_id);
+  });
+
+  it("holds an unsaved attempt from the overlay too", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1)], 1, 1) }),
+      "/practice/puzzles/11": () => ({ status: 200, body: { id: 11, fen: puzzle(11, 1).fen, solution_line: ["Ra8#"], color: "w", acceptance_map: null, source_types: ["blunder"], themes: [], is_repertoire: false, presentation_ply: null } }),
+      "/practice/puzzles/11/attempt": () => ({ status: 500, body: { detail: "boom" } }),
+    });
+    renderPage("/practice?puzzle=11");
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByText("drop")[0]);
+    expect(await screen.findByText(/Couldn't save your attempt/)).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Motif" })).toBeDisabled();
   });
 
   it("shows the list for srs=all and opens a row in the overlay; ?puzzle= deep-links", async () => {
