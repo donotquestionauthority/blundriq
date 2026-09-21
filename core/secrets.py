@@ -13,8 +13,8 @@ Which variables are required depends on the role of the process:
     DATABASE_URL       api, pipeline     Postgres DSN (pooler)
     SESSION_SECRET     api               signs the login cookie
     PASSWORD_HASH      api               bcrypt hash of the one user's password
-    ANTHROPIC_API_KEY  api               AI explanations (optional feature; still no default)
-    OPENAI_API_KEY     api               AI explanations (optional feature; still no default)
+    ANTHROPIC_API_KEY  api               AI explanations with a claude-* model; read when one is used
+    OPENAI_API_KEY     api               AI explanations with an OpenAI model; read when one is used
     RESEND_API_KEY     pipeline          ops alerts
     ALERT_EMAIL        pipeline          where ops alerts go
     ALERT_FROM         pipeline          the sender address (on the Resend-verified domain)
@@ -53,9 +53,8 @@ class ApiSecrets:
 
 
 @dataclass(frozen=True)
-class AiSecrets:
-    anthropic_api_key: str
-    openai_api_key: str
+class ProviderSecret:
+    api_key: str
 
 
 @dataclass(frozen=True)
@@ -82,11 +81,12 @@ def api() -> ApiSecrets:
     )
 
 
-def ai() -> AiSecrets:
-    return AiSecrets(
-        anthropic_api_key=_require("ANTHROPIC_API_KEY"),
-        openai_api_key=_require("OPENAI_API_KEY"),
-    )
+def anthropic() -> ProviderSecret:
+    return ProviderSecret(api_key=_require("ANTHROPIC_API_KEY"))
+
+
+def openai() -> ProviderSecret:
+    return ProviderSecret(api_key=_require("OPENAI_API_KEY"))
 
 
 def alerts() -> AlertSecrets:

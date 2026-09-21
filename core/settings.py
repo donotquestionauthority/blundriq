@@ -19,11 +19,12 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
+from jinja2 import TemplateSyntaxError
 from psycopg import Connection
 from psycopg.rows import tuple_row
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from core.prompts import DEFAULT_PROMPTS
+from core.prompts import DEFAULT_PROMPTS, compile_template
 
 TimeClass = Literal["bullet", "blitz", "rapid", "classical"]
 DifficultyTier = Literal["easier", "normal", "hard", "very_hard"]
@@ -44,6 +45,16 @@ class AiPrompt(BaseModel):
     thinking_enabled: bool = Field(default=False, description="Extended thinking (Anthropic models).")
     thinking_budget_tokens: int = Field(default=2048, ge=0, le=32000, description="Thinking budget when enabled.")
     prefill: str = Field(default="", description="Assistant prefill, if any.")
+    max_tokens: int = Field(default=512, ge=64, le=8192, description="Longest reply, in tokens.")
+
+    @field_validator("text")
+    @classmethod
+    def _text_is_a_template(cls, value: str) -> str:
+        try:
+            compile_template(value)
+        except TemplateSyntaxError as exc:
+            raise ValueError(f"template syntax error on line {exc.lineno}: {exc.message}") from exc
+        return value
 
 
 class Settings(BaseModel):
@@ -298,10 +309,10 @@ class Settings(BaseModel):
         default=16, ge=6, le=30, description="In-browser engine depth on Explore and Review."
     )
     ai_explain_max_per_hour: int = Field(
-        default=20, ge=0, le=1000, description="Cap on AI explanations per hour (cost guard)."
+        default=20, ge=0, le=1000, description="Most AI calls per hour (cached answers are free). 0 = no cap."
     )
     ai_explain_max_per_day: int = Field(
-        default=50, ge=0, le=5000, description="Cap on AI explanations per day (cost guard)."
+        default=50, ge=0, le=5000, description="Most AI calls per day (cached answers are free). 0 = no cap."
     )
     ai_prompts: dict[str, AiPrompt] = Field(
         default_factory=lambda: {k: AiPrompt.model_validate(v) for k, v in DEFAULT_PROMPTS.items()},

@@ -98,6 +98,9 @@ def test_expected_tables_present(conn: psycopg.Connection[DictRow]) -> None:
         "review_events",
         "settings",
         "pipeline_runs",
+        "ai_calls",
+        "ai_explanation_cache",
+        "dismissed_blunder_fens",
         "schema_version",
     ):
         assert t in names, t

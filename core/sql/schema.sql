@@ -125,7 +125,6 @@ CREATE TABLE public.blunders (
     opening_eco text,
     engine_version text,
     analysis_depth integer,
-    ai_explanation text,
     themes text[],
     canonical_fen text GENERATED ALWAYS AS ((public.bq_canonical_fen(fen) || ' 0 1'::text)) STORED
 );
@@ -1052,6 +1051,21 @@ CREATE SEQUENCE public.pipeline_runs_id_seq AS bigint START WITH 1 INCREMENT BY 
 ALTER SEQUENCE public.pipeline_runs_id_seq OWNED BY public.pipeline_runs.id;
 ALTER TABLE ONLY public.pipeline_runs ALTER COLUMN id SET DEFAULT nextval('public.pipeline_runs_id_seq'::regclass);
 CREATE INDEX ix_pipeline_runs_started_at ON public.pipeline_runs USING btree (started_at DESC);
+
+-- One row per AI call that reached a provider: what the hourly and daily caps count.
+CREATE TABLE public.ai_calls (
+    id bigint NOT NULL,
+    called_at timestamp with time zone DEFAULT now() NOT NULL,
+    prompt_key text NOT NULL,
+    model text NOT NULL,
+    input_tokens integer,
+    output_tokens integer,
+    CONSTRAINT ai_calls_pkey PRIMARY KEY (id)
+);
+CREATE SEQUENCE public.ai_calls_id_seq AS bigint START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+ALTER SEQUENCE public.ai_calls_id_seq OWNED BY public.ai_calls.id;
+ALTER TABLE ONLY public.ai_calls ALTER COLUMN id SET DEFAULT nextval('public.ai_calls_id_seq'::regclass);
+CREATE INDEX ix_ai_calls_called_at ON public.ai_calls USING btree (called_at DESC);
 
 -- Which schema version this database is at. Written by `pipeline db init` (fresh) and `pipeline db upgrade`.
 CREATE TABLE public.schema_version (
