@@ -57,7 +57,7 @@ def validate_line(
         board = chess.Board(fen)
     except (ValueError, AssertionError):
         return False
-    mate, last_player_ply = is_mate_line(fen, line)
+    mate, last_player_ply = is_mate_line(fen, line, color)
     index = 0
     expected = 0
     for i, san in enumerate(line):

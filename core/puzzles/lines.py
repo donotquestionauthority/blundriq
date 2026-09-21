@@ -33,24 +33,26 @@ def fen_sequence(fen: str, solution_line: list[str]) -> list[str]:
     return fens
 
 
-def is_mate_line(fen: str, solution_line: list[str]) -> tuple[bool, int]:
-    """`(the line ends in checkmate, index of the last player ply)`.
+def is_mate_line(fen: str, solution_line: list[str], color: str) -> tuple[bool, int]:
+    """`(the line ends in checkmate, index of the last ply the player moves on)`.
 
     Whether a line is a mate is decided by replaying it, not by its `source_types`:
     a delivered checkmate is a solve whatever the puzzle was generated from. The
     index is where the final-move relaxation applies — any move that mates is
-    accepted there.
+    accepted there. `color` is the player's side ('w'/'b'); a repertoire line may open
+    with the opponent's move, so the player's plies are found by whose turn it is.
     """
     try:
         board = chess.Board(fen)
     except (ValueError, AssertionError):
         return False, -1
+    player_is_white = color == "w"
     last_player_ply = -1
     for index, move_san in enumerate(solution_line):
         move = parse_san(board, move_san)
         if move is None:
             return False, -1
-        if index % 2 == 0:
+        if board.turn == player_is_white:
             last_player_ply = index
         board.push(move)
     return board.is_checkmate(), last_player_ply

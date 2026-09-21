@@ -34,6 +34,7 @@ from typing import Any, LiteralString, cast
 from psycopg import Connection
 
 from core import constants
+from core.chess.eligibility import evidence_sql
 from core.constants import (
     BUCKET_MOTIFS_FIRST_CLASS,
     BUCKET_OWN_MISSED_MATE,
@@ -228,11 +229,11 @@ def skip(conn: Connection[Any], scope: str, batch_id: int, puzzle_id: int, confi
     batch — stale, foreign, or gone invisible; nothing is written)."""
     if _acknowledged(conn, scope, batch_id, puzzle_id):
         return "ALREADY_CONSUMED"
-    visible = {r["id"] for r in visibility.visible_rows(conn, last_n_games=0, lookahead_plies=lookahead_plies(config))}
-    if puzzle_id not in visible:
+    if visibility.visible_by_id(conn, puzzle_id, lookahead_plies=lookahead_plies(config)) is None:
         return "STATE_MISS"
     with conn.cursor() as cur:
-        # Sourced from the exposure log, so a target that was never served writes nothing.
+        # Sourced from the exposure log, so a target that was never served writes nothing;
+        # a second skip racing the first is a no-op rather than an error.
         cur.execute(
             """
             INSERT INTO player_puzzle_skip (player_id, scope, batch_id, puzzle_id)
@@ -240,10 +241,13 @@ def skip(conn: Connection[Any], scope: str, batch_id: int, puzzle_id: int, confi
             FROM player_puzzle_exposure e
             WHERE e.player_id = %s AND e.scope = %s AND e.batch_id = %s AND e.puzzle_id = %s
             LIMIT 1
+            ON CONFLICT (player_id, scope, batch_id, puzzle_id) DO NOTHING
             """,
             (PLAYER_ID, scope, batch_id, puzzle_id),
         )
-        return "DEFERRED" if cur.rowcount == 1 else "STATE_MISS"
+        if cur.rowcount == 1:
+            return "DEFERRED"
+    return "ALREADY_CONSUMED" if _acknowledged(conn, scope, batch_id, puzzle_id) else "STATE_MISS"
 
 
 # --- corpus rotation -----------------------------------------------------------------------
@@ -266,12 +270,13 @@ def place_window(center: int, lo_off: int, hi_off: int, floor: int, ceiling: int
 
 def rating_window(conn: Connection[Any], config: Settings) -> tuple[int | None, int | None]:
     """(lo, hi) for corpus draws, or (None, None) when there is no rated game or no corpus.
-    The centre is the latest rated game's rating brought onto the corpus scale by the
-    offset for its time class; the extent is what is actually loaded, not the import config."""
+    The centre is the latest rated game's rating brought onto the corpus (Lichess) scale by
+    the offset for its time class; the extent is what is actually loaded, not the import
+    config."""
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT pg.player_rating, cg.time_class
+            SELECT pg.player_rating, pg.source, cg.time_class
             FROM player_games pg JOIN chess_games cg ON cg.id = pg.chess_game_id
             WHERE pg.player_id = %s AND pg.player_rating IS NOT NULL
             ORDER BY cg.played_at DESC NULLS LAST, cg.id DESC LIMIT 1
@@ -283,9 +288,12 @@ def rating_window(conn: Connection[Any], config: Settings) -> tuple[int | None, 
         extent = cur.fetchone()
     if not latest or not extent or extent["lo"] is None:
         return None, None
-    offsets = config.lichess_rating_offsets
-    offset = offsets.get(str(latest["time_class"] or ""), offsets.get("default", 0))
-    center = int(latest["player_rating"]) + int(offset)
+    # The offsets are how far a Chess.com rating sits below the corpus scale (negative), so a
+    # Chess.com rating is raised by that much; a Lichess rating is already on the scale.
+    center = int(latest["player_rating"])
+    if latest["source"] == "chesscom":
+        offsets = config.lichess_rating_offsets
+        center -= int(offsets.get(str(latest["time_class"] or ""), offsets.get("default", 0)))
     lo_off, hi_off = getattr(config, f"cc0_tier_{config.cc0_difficulty_tier}")
     return place_window(center, int(lo_off), int(hi_off), int(extent["lo"]), int(extent["hi"]))
 
@@ -376,20 +384,26 @@ def _owned_id_at(conn: Connection[Any], fen: str) -> int | None:
     return int(row["id"]) if row else None
 
 
-def _weak_theme_order(conn: Connection[Any], themes: list[str], min_occurrences: int) -> list[str]:
-    """First-class themes the player misses most, most-missed first; themes below the
-    threshold fall behind in their alphabetical order."""
+def _weak_theme_order(conn: Connection[Any], themes: list[str], config: Settings) -> list[str]:
+    """The first-class themes the player misses most, most-missed first, counting misses in
+    the games he is studying (the time-class focus). When nothing clears the threshold,
+    every theme in alphabetical order."""
     with conn.cursor() as cur:
         cur.execute(
-            """
-            SELECT theme, count(*) AS misses FROM player_motif_events
-            WHERE player_id = %s AND found = FALSE AND metric_type = 'motif' AND theme = ANY(%s)
-            GROUP BY theme HAVING count(*) >= %s ORDER BY misses DESC, theme
+            cast(
+                LiteralString,
+                f"""
+            SELECT pme.theme, count(*) AS misses
+            FROM player_motif_events pme JOIN chess_games cg ON cg.id = pme.chess_game_id
+            WHERE pme.player_id = %s AND pme.found = FALSE AND pme.metric_type = 'motif' AND pme.theme = ANY(%s)
+              AND {evidence_sql("cg", config.time_class_focus)}
+            GROUP BY pme.theme HAVING count(*) >= %s ORDER BY misses DESC, pme.theme
             """,
-            (PLAYER_ID, themes, min_occurrences),
+            ),
+            (PLAYER_ID, themes, config.weak_motif_min_occurrences),
         )
-        weak = [r["theme"] for r in cur.fetchall()]
-    return weak + [t for t in themes if t not in weak]
+        weak = [str(r["theme"]) for r in cur.fetchall()]
+    return weak or themes
 
 
 def last_seen(conn: Connection[Any], puzzle_ids: list[int]) -> dict[int, datetime]:
@@ -511,9 +525,7 @@ def mint_batch(
 
     def rotation_puller(b: str):
         if b == BUCKET_MOTIFS_FIRST_CLASS:
-            order = _weak_theme_order(
-                conn, sorted(ROTATION_FIRST_CLASS_THEMES & allowed[b]), config.weak_motif_min_occurrences
-            )
+            order = _weak_theme_order(conn, sorted(ROTATION_FIRST_CLASS_THEMES & allowed[b]), config)
             keep = MOTIF_THEME_VOCAB
         else:
             order = sorted(ROTATION_BUCKET_THEMES[b] & allowed[b])

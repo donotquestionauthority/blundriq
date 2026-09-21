@@ -13,9 +13,9 @@ at its word, so those moves may be anything.
 
 **Due eligibility.** The set of puzzles the new code counts as due in the scratch
 database is compared with the old rules applied to the archive, restricted to the puzzles
-that came across. Only puzzles the migration kept can agree, so the shared-tier rows the
-old system showed and the migration dropped are listed separately, not counted as
-differences.
+that came across. Puzzles adopted from the old shared tier are listed apart rather than
+counted: the old system showed one only while the player's sources still reached its
+position, and now it is his and always visible.
 
     python tools/oracle/diff_practice.py [--replay] [--due]
 
@@ -97,15 +97,19 @@ def diff_due() -> int:
         migrated = {int(r["id"]) for r in db.execute("SELECT id FROM puzzles").fetchall()}
         old_visible = q.old_visible_ids(old, serve.lookahead_plies(config))
         old_due = q.old_due_ids(old, old_visible)
-        dropped = old_due - migrated
+        shared = {int(r["id"]) for r in old.execute("SELECT id FROM puzzles WHERE player_id IS NULL").fetchall()}
+        adopted = shared & migrated
         old_due_kept = old_due & migrated
     print(
-        f"\n== due eligibility: new {new_count} due ({len(new_due)} listed), old {len(old_due)} due of which {len(dropped)} not migrated"
+        f"\n== due eligibility: new {new_count} due ({len(new_due)} listed), old {len(old_due)} due,"
+        f" {len(adopted)} puzzles adopted from the shared tier"
     )
-    diffs = [f"puzzle {pid}: due only in the new system" for pid in sorted(new_due - old_due_kept)]
-    diffs += [f"puzzle {pid}: due only in the old system" for pid in sorted(old_due_kept - new_due)]
+    diffs = [f"puzzle {pid}: due only in the new system" for pid in sorted(new_due - old_due_kept - adopted)]
+    diffs += [f"puzzle {pid}: due only in the old system" for pid in sorted(old_due_kept - new_due - adopted)]
     for d in diffs[:200]:
         print("  " + d)
+    for pid in sorted(adopted & (new_due ^ old_due_kept)):
+        print(f"  puzzle {pid}: adopted from the shared tier, so visible on ownership now (was gated on sources)")
     if new_count != len(new_due):
         print(f"  count_eligible ({new_count}) and the due list ({len(new_due)}) disagree")
         return 1

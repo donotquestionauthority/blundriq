@@ -768,12 +768,15 @@ def test_the_rating_window_follows_the_latest_game_and_the_loaded_corpus(clean: 
     _corpus(clean, 3, ["fork"], rating=1400, prefix="a")
     _corpus(clean, 3, ["fork"], rating=2000, prefix="b", start=3)
     assert serve.rating_window(clean, _config()) == (None, None)
-    _game(clean, 1, rating=1800)
+    _game(clean, 1, rating=1500)
     config = _config(cc0_difficulty_tier="normal", lichess_rating_offsets={"rapid": -250, "default": -325})
-    # 1800 rapid on the platform is 1550 on the corpus scale; ±150 inside [1400, 2000].
-    assert serve.rating_window(clean, config) == (1400, 1700)
-    only_easy = serve.draw_candidate(clean, ["fork"], 1400, 1700, set(), 40)
-    assert only_easy is not None and only_easy["puzzle_id"].startswith("a")
+    # A Lichess rating is already on the corpus scale: 1500 ±150.
+    assert serve.rating_window(clean, config) == (1400, 1650)
+    # A Chess.com rating sits below it by the offset for its time class: 1500 rapid is 1750.
+    clean.execute("UPDATE player_games SET source = 'chesscom' WHERE chess_game_id = 1")
+    assert serve.rating_window(clean, config) == (1600, 1900)
+    only_hard = serve.draw_candidate(clean, ["fork"], 1600, 2000, set(), 40)
+    assert only_hard is not None and only_hard["puzzle_id"].startswith("b")
 
 
 def test_the_deterministic_draw_is_the_most_popular_unseen(clean: psycopg.Connection[DictRow]) -> None:
@@ -818,3 +821,15 @@ def test_the_browse_list_and_the_due_count_agree_with_the_ladder(clean: psycopg.
         _deviation(clean, g, 2)
     assert serve.count_eligible(clean, config) == 2
     assert rep in _ids(serve.browse(clean, config, last_n_games=0))
+
+
+def test_a_line_that_opens_with_the_opponent_s_move_is_graded_on_the_player_s_plies() -> None:
+    """A black repertoire puzzle starts with White to move; the player's plies are the odd
+    ones, and the mate relaxation applies to the last of those."""
+    from core.puzzles.lines import is_mate_line
+
+    fen = "6k1/8/8/8/8/8/r4PPP/6K1 w - - 0 1"
+    line = ["Kh1", "Ra1#"]
+    assert is_mate_line(fen, line, "b") == (True, 1)
+    assert attempts.validate_line(fen, line, "b", None, "Ra1")
+    assert not attempts.validate_line(fen, line, "b", None, "Kh1,Ra1")

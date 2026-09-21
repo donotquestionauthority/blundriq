@@ -19,8 +19,9 @@ and one puzzle per presented position is served (the most-deviated line wins). D
 does not apply to repertoire puzzles: their gate is the repertoire itself.
 
 `occurrence_count` and `source_breakdown` are how often the position turned up in the
-player's blunders, deviations and scouted opponents' games; they order the queue and are
-shown on the row, they do not gate visibility (every puzzle here is the player's own).
+player's blunders and deviations; they order the queue and are shown on the row, they do
+not gate visibility (every puzzle here is the player's own). Scouted opponents' games are
+not counted here: that count needs Scout's own indexed shape, and it arrives with Scout.
 """
 
 from __future__ import annotations
@@ -78,11 +79,6 @@ def standard_ctes(*, windowed: bool) -> str:
     %(window)s to the player's most recent N games; otherwise all games count."""
     window = _WINDOW_CTE if windowed else _ALL_GAMES_CTE
     return f"""WITH{window}
-    puzzle_boards AS (
-        SELECT DISTINCT p.canonical_fen AS fen, bq_position_key(p.canonical_fen) AS key
-        FROM puzzles p
-        WHERE p.player_id = %(pid)s AND p.active = TRUE AND p.is_repertoire = FALSE
-    ),
     blunder_fens AS (
         SELECT b.canonical_fen AS fen, count(DISTINCT b.chess_game_id) AS cnt
         FROM blunders b JOIN window_games w ON w.chess_game_id = b.chess_game_id
@@ -95,24 +91,16 @@ def standard_ctes(*, windowed: bool) -> str:
         WHERE grr.player_id = %(pid)s AND grr.deviation_by = 'me' AND grr.deviated_at_ply IS NOT NULL
         GROUP BY grr.canonical_fen
     ),
-    scout_fens AS (
-        SELECT pb.fen, count(DISTINCT cg.id) AS cnt
-        FROM puzzle_boards pb
-        JOIN opponent_profiles op ON op.player_id = %(pid)s AND op.active = TRUE
-        JOIN opponent_views ov ON ov.opponent_profile_id = op.id
-        JOIN chess_games cg ON cg.id = ov.chess_game_id AND cg.position_keys @> ARRAY[pb.key]
-        WHERE EXISTS (SELECT 1 FROM jsonb_array_elements_text(cg.fen_sequence) f
-                      WHERE bq_canonical_fen(f) || ' 0 1' = pb.fen)
-        GROUP BY pb.fen
-    ),
     fen_totals AS (
         SELECT fen, sum(cnt)::int AS total_count, jsonb_object_agg(source, cnt) AS source_breakdown
         FROM (SELECT fen, cnt, 'blunder' AS source FROM blunder_fens
-              UNION ALL SELECT fen, cnt, 'deviation' FROM deviation_fens WHERE fen IS NOT NULL
-              UNION ALL SELECT fen, cnt, 'scout' FROM scout_fens) af
+              UNION ALL SELECT fen, cnt, 'deviation' FROM deviation_fens WHERE fen IS NOT NULL) af
         GROUP BY fen
     ),
-    puzzle_fen_steps AS (
+    -- Both step relations are fenced: left inline, the planner joins the two unnested
+    -- sequences before filtering on position and walks millions of pairs (40 s on the
+    -- real data); materialised, the join is a hash on the position text (under a second).
+    puzzle_fen_steps AS MATERIALIZED (
         SELECT p.id AS puzzle_id, p.color AS puzzle_color, step.fen AS position_fen,
                p.solution_fen_sequence->>(step.ord::int) AS next_fen
         FROM puzzles p, LATERAL jsonb_array_elements_text(p.solution_fen_sequence) WITH ORDINALITY AS step(fen, ord)
@@ -120,7 +108,7 @@ def standard_ctes(*, windowed: bool) -> str:
           AND step.ord < jsonb_array_length(p.solution_fen_sequence)
           AND split_part(step.fen, ' ', 2) = p.color
     ),
-    rep_fen_steps AS ({REP_FEN_STEPS}),
+    rep_fen_steps AS MATERIALIZED ({REP_FEN_STEPS}),
     conflicted AS (
         SELECT DISTINCT pfs.puzzle_id
         FROM puzzle_fen_steps pfs
