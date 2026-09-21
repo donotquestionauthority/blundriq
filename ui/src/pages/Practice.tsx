@@ -126,6 +126,9 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
   const [submitting, setSubmitting] = useState(false);
   const [blockingError, setBlockingError] = useState<{ attemptId: string; solved: boolean; movesPlayed: string[] } | null>(null);
   const inFlightRef = useRef<Set<string>>(new Set());
+  // The attempt the server is still owed in blocking mode: in flight, or failed and waiting
+  // for Retry. Only one may exist; handleComplete refuses to open another while it stands.
+  const outstandingRef = useRef<string | null>(null);
   const activePuzzleIdRef = useRef(puzzleId);
   useEffect(() => {
     activePuzzleIdRef.current = puzzleId;
@@ -151,6 +154,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
     setAttemptStatus(null);
     setBlockingError(null);
     pendingRetryUuidRef.current = null;
+    outstandingRef.current = null;
     sessionIdRef.current = crypto.randomUUID();
   }, []);
 
@@ -162,12 +166,14 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
 
   const runBlockingMode = useCallback(
     async (attemptId: string, solved: boolean, movesPlayed: string[], attemptPuzzleId: number) => {
+      outstandingRef.current = attemptId;
       setSubmitting(true);
       setBlockingError(null);
       setServerDowngraded(false);
       try {
         const response = await post(attemptId, solved, movesPlayed);
         releaseUnsavedAttempt(attemptId);
+        outstandingRef.current = null;
         if (activePuzzleIdRef.current === attemptPuzzleId) {
           setLastResult(response.solved ? "solved" : "wrong");
           if (solved && !response.solved) setServerDowngraded(true);
@@ -188,6 +194,10 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
 
   const handleComplete = useCallback(
     async (solved: boolean, movesPlayed: string[]) => {
+      if (outstandingRef.current !== null || getUnsavedAttempt() !== null) {
+        console.error("An attempt is still unsaved; refusing to open another");
+        return;
+      }
       const attemptId = crypto.randomUUID();
       if (inFlightRef.current.has(attemptId)) return;
       inFlightRef.current.add(attemptId);
@@ -457,6 +467,7 @@ function PlayMode({
         isRepertoire={puzzle.is_repertoire}
         serverDowngraded={attempt.serverDowngraded}
         attemptStatus={attempt.attemptStatus}
+        submissionLocked={attempt.navigationBlocked}
       />
       <BlockingBanner error={attempt.blockingError} submitting={attempt.submitting} onRetry={attempt.retry} />
       {((showNext && isLastQueued) || awaitingNext) && !allCaughtUp && <p className="mt-4 text-center text-xs text-zinc-500">Loading more puzzles…</p>}
@@ -501,6 +512,7 @@ function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onNavigationLock }:
           isRepertoire={puzzle.is_repertoire}
           serverDowngraded={attempt.serverDowngraded}
           attemptStatus={attempt.attemptStatus}
+          submissionLocked={attempt.navigationBlocked}
         />
         <BlockingBanner error={attempt.blockingError} submitting={attempt.submitting} onRetry={attempt.retry} />
         <GameLinks puzzle={puzzle} />

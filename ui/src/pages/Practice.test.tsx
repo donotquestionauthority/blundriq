@@ -394,6 +394,100 @@ describe("Practice page", () => {
     expect(screen.getByRole("tab", { name: "Motif" })).toBeDisabled();
   });
 
+  const failThenSucceed = () => {
+    let n = 0;
+    return () => {
+      n += 1;
+      return n === 1
+        ? { status: 500, body: { detail: "boom" } }
+        : { status: 200, body: { detail: "attempt recorded", solved: true, attempt_summary: { total: 1, solved: 1, streak: 1 }, srs: { level: "knight", correct_at_level: 0, advance_threshold: 1, transition: null } } };
+    };
+  };
+
+  it("after a failed save, Replay cannot open a second attempt until the first is saved", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1), puzzle(12, 1)], 1, 1) }),
+      "/practice/puzzles/11/attempt": failThenSucceed(),
+    });
+    renderPage();
+    expect(await screen.findByText("#11")).toBeInTheDocument();
+    nextDrop = { from: "a1", to: "a8" };
+    fireEvent.click(screen.getByText("drop"));
+    expect(await screen.findByText(/Couldn't save your attempt/)).toBeInTheDocument();
+    expect(screen.getByText("Replay")).toBeDisabled();
+    fireEvent.click(screen.getByText("Replay"));
+    fireEvent.click(screen.getByText("drop"));
+    await flush();
+    const attempts = () => calls.filter((c) => c.path === "/practice/puzzles/11/attempt");
+    expect(attempts()).toHaveLength(1);
+    const held = getUnsavedAttempt()!;
+    expect(held.attempt_id).toBe(attempts()[0].body!.attempt_id);
+
+    fireEvent.click(screen.getByText("Retry"));
+    expect(await screen.findByText("Next Puzzle →")).toBeInTheDocument();
+    expect(attempts()).toHaveLength(2);
+    expect(attempts()[1].body!.attempt_id).toBe(held.attempt_id);
+    expect(getUnsavedAttempt()).toBeNull();
+    expect(screen.getByText("Replay")).not.toBeDisabled();
+  });
+
+  it("after a failed save of a wrong attempt, Try Again and the board wait for the save", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1), puzzle(12, 1)], 1, 1) }),
+      "/practice/puzzles/11/attempt": failThenSucceed(),
+    });
+    renderPage();
+    expect(await screen.findByText("#11")).toBeInTheDocument();
+    nextDrop = { from: "a1", to: "b1" };
+    fireEvent.click(screen.getByText("drop"));
+    expect(await screen.findByText(/Couldn't save your attempt/)).toBeInTheDocument();
+    const attempts = () => calls.filter((c) => c.path === "/practice/puzzles/11/attempt");
+    expect(attempts()[0].body).toMatchObject({ solved: false, moves_played: "Rb1" });
+    expect(screen.getByText("Try Again")).toBeDisabled();
+    fireEvent.click(screen.getByText("Try Again"));
+    nextDrop = { from: "a1", to: "a8" };
+    fireEvent.click(screen.getByText("drop"));
+    await flush();
+    expect(attempts()).toHaveLength(1);
+    expect(getUnsavedAttempt()!.attempt_id).toBe(attempts()[0].body!.attempt_id);
+
+    fireEvent.click(screen.getByText("Retry"));
+    expect(await screen.findByText("Next Puzzle →")).toBeInTheDocument();
+    expect(attempts()).toHaveLength(2);
+    expect(attempts()[1].body!.attempt_id).toBe(attempts()[0].body!.attempt_id);
+    expect(getUnsavedAttempt()).toBeNull();
+    expect(screen.getByText("Try Again")).not.toBeDisabled();
+  });
+
+  it("the overlay's Replay and Try Again wait for a failed save as well", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1)], 1, 1) }),
+      "/practice/puzzles/11": () => ({ status: 200, body: { id: 11, fen: puzzle(11, 1).fen, solution_line: ["Ra8#"], color: "w", acceptance_map: null, source_types: ["blunder"], themes: [], is_repertoire: false, presentation_ply: null } }),
+      "/practice/puzzles/11/attempt": failThenSucceed(),
+    });
+    renderPage("/practice?puzzle=11");
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    nextDrop = { from: "a1", to: "a8" };
+    fireEvent.click(screen.getAllByText("drop")[0]);
+    expect(await screen.findByText(/Couldn't save your attempt/)).toBeInTheDocument();
+    expect(screen.getByText("Replay")).toBeDisabled();
+    fireEvent.click(screen.getByText("Replay"));
+    fireEvent.click(screen.getAllByText("drop")[0]);
+    await flush();
+    const attempts = () => calls.filter((c) => c.path === "/practice/puzzles/11/attempt");
+    expect(attempts()).toHaveLength(1);
+    fireEvent.click(screen.getByText("Retry"));
+    await flush();
+    await flush();
+    expect(attempts()).toHaveLength(2);
+    expect(attempts()[1].body!.attempt_id).toBe(attempts()[0].body!.attempt_id);
+    expect(getUnsavedAttempt()).toBeNull();
+    expect(screen.getByText("Replay")).not.toBeDisabled();
+  });
+
   it("shows the list for srs=all and opens a row in the overlay; ?puzzle= deep-links", async () => {
     stubFetch({
       "/practice/puzzles": () => ({ status: 200, body: { ...serve([puzzle(21, 1, { srs: { level: "rook", correct_at_level: 0, last_3_attempts: [true], last_correct_date: null, next_show_at: "2026-10-01T00:00:00Z", updated_at: "" } })], 1), batch_id: null } }),

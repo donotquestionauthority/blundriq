@@ -51,6 +51,9 @@ export interface PuzzleEngineProps {
   serverDowngraded?: boolean;
   /** 'pending_retry' shows a save-failed banner; 'in_flight' is deliberately not surfaced. */
   attemptStatus?: "in_flight" | "pending_retry" | null;
+  /** One attempt at a time: while the parent still owes the server one, no control that
+   *  could produce another (Try Again, Replay, Play On, the board) is available. */
+  submissionLocked?: boolean;
 }
 
 const btn = "rounded border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900 disabled:opacity-40 disabled:pointer-events-none";
@@ -73,6 +76,7 @@ export function PuzzleEngine({
   isRepertoire = false,
   serverDowngraded = false,
   attemptStatus = null,
+  submissionLocked = false,
 }: PuzzleEngineProps) {
   const solutionLine = useMemo(
     () => (presentationPly != null && presentationPly > 0 ? solutionLineProp.slice(0, presentationPly + 1) : solutionLineProp),
@@ -203,7 +207,7 @@ export function PuzzleEngine({
 
   const handleDrop = useCallback(
     (sourceSquare: Square, targetSquare: Square): boolean => {
-      if (puzzleState !== "playing") return false;
+      if (puzzleState !== "playing" || submissionLocked) return false;
       if (!isUserTurn) return false;
       if (moveIndex >= activeSolutionLine.length) return false;
 
@@ -274,13 +278,13 @@ export function PuzzleEngine({
       rejectWrong("Not quite — that's not the best move");
       return false;
     },
-    [game, moveIndex, activeSolutionLine, puzzleState, isUserTurn, movesPlayed, onComplete, finishLineMode, lastMove, mateInfo, mapMode, acceptanceMap],
+    [game, moveIndex, activeSolutionLine, puzzleState, isUserTurn, movesPlayed, onComplete, finishLineMode, lastMove, mateInfo, mapMode, acceptanceMap, submissionLocked],
   );
 
   // Click-to-move: first click selects, second attempts the move with the same validation as a drop.
   const handleSquareClick = useCallback(
     (square: Square) => {
-      if (puzzleState !== "playing" || !isUserTurn) return;
+      if (puzzleState !== "playing" || !isUserTurn || submissionLocked) return;
       const piece = game.get(square);
       const own = piece && piece.color === color;
       if (selectedSquare) {
@@ -289,7 +293,7 @@ export function PuzzleEngine({
         setSelectedSquare(square);
       }
     },
-    [selectedSquare, puzzleState, isUserTurn, game, color, handleDrop],
+    [selectedSquare, puzzleState, isUserTurn, game, color, handleDrop, submissionLocked],
   );
 
   // Wrong-state retry only: restore the checkpoint and slice the wrong move off movesPlayed (it
@@ -430,7 +434,7 @@ export function PuzzleEngine({
             boardStyle: { borderRadius: "4px" },
             ...SQUARES,
             animationDurationInMs: 200,
-            allowDragging: puzzleState === "playing" && isUserTurn,
+            allowDragging: puzzleState === "playing" && isUserTurn && !submissionLocked,
           }}
         />
       </div>
@@ -439,7 +443,7 @@ export function PuzzleEngine({
       <div className="flex min-h-[40px] w-full flex-wrap items-center justify-center gap-3">
         {puzzleState === "wrong" && (
           <>
-            <button type="button" onClick={handleRetry} className={btnAccent}>
+            <button type="button" onClick={handleRetry} disabled={submissionLocked} className={btnAccent}>
               Try Again
             </button>
             <button type="button" onClick={handleShowMe} disabled={solutionShown} className="text-xs text-zinc-500 hover:text-zinc-800 disabled:opacity-40 dark:hover:text-zinc-200">
@@ -450,11 +454,11 @@ export function PuzzleEngine({
         {puzzleState === "solved" && (
           <>
             {canFinishLine && (
-              <button type="button" onClick={handleFinishLine} className={btnAccent}>
+              <button type="button" onClick={handleFinishLine} disabled={submissionLocked} className={btnAccent}>
                 Play On →
               </button>
             )}
-            <button type="button" onClick={handleReplay} className={btn}>
+            <button type="button" onClick={handleReplay} disabled={submissionLocked} className={btn}>
               Replay
             </button>
           </>
