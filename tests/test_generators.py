@@ -491,7 +491,9 @@ def test_renaming_a_chapter_relabels_the_puzzle_without_resetting_progress(clean
     _deviation(clean, 2)
     repertoire.generate(clean, _config())
     puzzle_id = _puzzles(clean)[0]["id"]
-    clean.execute("INSERT INTO player_puzzle_state (player_id, puzzle_id, level) VALUES (%s, %s, 'rook')", (PLAYER_ID, puzzle_id))
+    clean.execute(
+        "INSERT INTO player_puzzle_state (player_id, puzzle_id, level) VALUES (%s, %s, 'rook')", (PLAYER_ID, puzzle_id)
+    )
     clean.execute("UPDATE chapters SET title = 'Renamed' WHERE id = 1")
     stats = repertoire.generate(clean, _config())
     assert stats["retitled"] == 1 and stats["rebuilt"] == 0 and stats["srs_reset"] == 0

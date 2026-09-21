@@ -240,3 +240,79 @@ def generate(conn: Connection[Any], config: Settings) -> dict[str, int]:
     stats.deactivated = deactivate(conn, to_deactivate)
     stats.created = len(create(conn, to_create))
     return stats.as_dict()
+
+
+def _funnel_sql(focus: str) -> LiteralString:
+    return cast(
+        LiteralString,
+        f"""
+WITH windowed AS (
+    SELECT pg.chess_game_id, cg.time_class
+    FROM player_games pg JOIN chess_games cg ON cg.id = pg.chess_game_id
+    WHERE pg.player_id = %(pid)s AND {analysable_sql("cg")}
+    ORDER BY cg.played_at DESC NULLS LAST, cg.id DESC
+    LIMIT %(window)s
+),
+raw AS (
+    SELECT b.canonical_fen, count(DISTINCT b.chess_game_id) AS games
+    FROM blunders b JOIN windowed w ON w.chess_game_id = b.chess_game_id
+    WHERE b.player_id = %(pid)s
+    GROUP BY b.canonical_fen HAVING count(DISTINCT b.chess_game_id) >= %(min_occurrences)s
+),
+evidence AS (SELECT chess_game_id FROM windowed w WHERE {evidence_sql("w", focus)}),
+focused AS (
+    SELECT b.canonical_fen, count(DISTINCT b.chess_game_id) AS games
+    FROM blunders b JOIN evidence e ON e.chess_game_id = b.chess_game_id
+    WHERE b.player_id = %(pid)s
+    GROUP BY b.canonical_fen HAVING count(DISTINCT b.chess_game_id) >= %(min_occurrences)s
+),
+certain AS (
+    SELECT DISTINCT b.canonical_fen
+    FROM blunders b JOIN evidence e ON e.chess_game_id = b.chess_game_id
+    JOIN focused f ON f.canonical_fen = b.canonical_fen
+    WHERE b.player_id = %(pid)s AND b.themes && %(tactical)s::text[] AND NOT ('mate' = ANY(b.themes))
+      AND b.best_move IS NOT NULL AND b.best_line IS NOT NULL
+),
+undismissed AS (
+    SELECT c.canonical_fen FROM certain c
+    WHERE NOT EXISTS (SELECT 1 FROM dismissed_blunder_fens d
+                      WHERE d.player_id = %(pid)s AND d.canonical_fen = c.canonical_fen)
+),
+uncovered AS (
+    SELECT u.canonical_fen FROM undismissed u
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM repertoire_lines rl
+        JOIN chapters ch ON ch.id = rl.chapter_id AND ch.active = TRUE
+        JOIN books bk ON bk.id = ch.book_id AND bk.active = TRUE AND bk.player_id = %(pid)s
+                     AND CASE bk.color WHEN 'white' THEN 'w' WHEN 'black' THEN 'b' END
+                         = split_part(u.canonical_fen, ' ', 2),
+             LATERAL jsonb_array_elements_text(rl.fen_sequence) WITH ORDINALITY AS step(fen, ord)
+        WHERE rl.active = TRUE AND step.ord < jsonb_array_length(rl.fen_sequence)
+          AND bq_canonical_fen(step.fen) || ' 0 1' = u.canonical_fen)
+)
+SELECT 'window games' AS gate, count(*) AS boards FROM windowed
+UNION ALL SELECT 'boards recurring >= threshold (any time class)', count(*) FROM raw
+UNION ALL SELECT 'evidence games after the time-class focus', count(*) FROM evidence
+UNION ALL SELECT 'boards recurring >= threshold (focused)', count(*) FROM focused
+UNION ALL SELECT 'tagged tactical, not mate, with a best line', count(*) FROM certain
+UNION ALL SELECT 'not dismissed', count(*) FROM undismissed
+UNION ALL SELECT 'not already covered by the repertoire', count(*) FROM uncovered
+""",
+    )
+
+
+def funnel(conn: Connection[Any], config: Settings) -> list[tuple[str, int]]:
+    """How many boards survive each gate of the worklist, in order. A diagnostic for when
+    the generator makes nothing and it is not obvious which rule is responsible."""
+    with conn.cursor() as cur:
+        cur.execute(
+            _funnel_sql(config.time_class_focus),
+            {
+                "pid": PLAYER_ID,
+                "window": config.blunders_default_last_n_games,
+                "min_occurrences": config.blunder_puzzle_min_occurrences,
+                "tactical": list(TACTICAL_THEMES),
+            },
+        )
+        return [(str(r["gate"]), int(r["boards"])) for r in cur.fetchall()]

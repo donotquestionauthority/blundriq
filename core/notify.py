@@ -17,6 +17,12 @@ _RESEND = "https://api.resend.com/emails"
 _SANITISE = re.compile(r"[^A-Za-z0-9 _.:()-]")
 
 
+class OperatorError(RuntimeError):
+    """A precondition the person running the command can fix themselves. Its message is
+    written here, names only tables and steps, and is the one message a CLI may print in
+    full; everything else reaches a console as a class chain."""
+
+
 def error_label(exc: BaseException) -> str:
     """The exception class chain and nothing else: 'FetchError<-ConnectError'. This is the
     only form of an error that may reach a console (Actions logs are public); the text

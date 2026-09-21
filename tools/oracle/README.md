@@ -15,6 +15,8 @@ disposable and is modified.
                                                  # real Stockfish 18 depth 18 on the sample, diff
     python tools/oracle/diff_puzzles.py          # regenerate puzzles and diff; rebuild every
                                                  # acceptance map and diff
+    python tools/oracle/diff_practice.py         # replay every solved attempt through the grader;
+                                                 # diff the due set against the old rules
 
 `diff_puzzles.py --generation` deletes the generated puzzles before remaking them, and
 deleting a puzzle cascades its SRS row away, so it refuses to run unless the database name

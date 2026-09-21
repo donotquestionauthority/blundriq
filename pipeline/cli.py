@@ -7,9 +7,11 @@
     pipeline match-repertoire
     pipeline analyze [--workers N] [--limit N] [--game-id ID ...]
     pipeline generate-puzzles
+    pipeline srs-maintain                         un-retire mastered puzzles whose pattern recurred
     pipeline import-corpus --csv FILE             rebuild the Lichess CC0 corpus sample
     pipeline housekeep
     pipeline run [--analyze-limit N]              the hourly chain, logged, alert on failure
+    pipeline blunder-funnel                       why the blunder generator qualifies what it does
     pipeline migrate --mapping FILE [--only T,T]  old database (ORACLE_DATABASE_URL) → this one
 
 Every step is idempotent and safe to rerun; each records a pipeline_runs row.
@@ -30,7 +32,7 @@ from psycopg.rows import DictRow, dict_row
 from core import db, housekeeping, migrate, notify, player, runs, schema, settings
 from core.analysis import run as analysis
 from core.ingest import run as ingest
-from core.puzzles import corpus
+from core.puzzles import corpus, srs
 from core.puzzles.generate import run as puzzles
 from core.repertoire import matching
 
@@ -126,6 +128,10 @@ def _step_import_corpus(conn: psycopg.Connection[Any], args: argparse.Namespace)
     return corpus.import_corpus(conn, settings.load(conn), args.csv)
 
 
+def _step_srs_maintain(conn: psycopg.Connection[Any], _: argparse.Namespace) -> dict[str, Any]:
+    return srs.demote_kings(conn, settings.load(conn))
+
+
 def _step_housekeep(conn: psycopg.Connection[Any], _: argparse.Namespace) -> dict[str, Any]:
     return housekeeping.run(conn, settings.load(conn).analysis_game_limit)
 
@@ -182,10 +188,27 @@ def _run_all(args: argparse.Namespace) -> int:
         ("match", _step_match),
         ("analyze", _step_analyze),
         ("generate-puzzles", _step_generate_puzzles),
+        ("srs-maintain", _step_srs_maintain),
         ("housekeep", _step_housekeep),
     ):
         if _run_step(name, step, args) != 0:
             return 1
+    return 0
+
+
+def _blunder_funnel(_: argparse.Namespace) -> int:
+    """Not a pipeline step: a report, printed as counts only."""
+    from core.puzzles.generate import blunder
+
+    with db.connect() as conn:
+        config = settings.load(conn)
+        rows = blunder.funnel(conn, config)
+    print(
+        f"window {config.blunders_default_last_n_games} games, threshold {config.blunder_puzzle_min_occurrences},"
+        f" focus {config.time_class_focus}"
+    )
+    for gate, boards in rows:
+        print(f"{boards:8d}  {gate}")
     return 0
 
 
@@ -249,6 +272,10 @@ def build_parser() -> argparse.ArgumentParser:
         func=_cmd("generate-puzzles", _step_generate_puzzles)
     )
 
+    sub.add_parser("srs-maintain", help="un-retire mastered puzzles whose pattern has recurred").set_defaults(
+        func=_cmd("srs-maintain", _step_srs_maintain)
+    )
+
     p_corpus = sub.add_parser("import-corpus", help="rebuild the Lichess CC0 corpus sample from the published CSV")
     p_corpus.add_argument("--csv", required=True, help="the decompressed lichess_db_puzzle.csv")
     p_corpus.set_defaults(func=_cmd("import-corpus", _step_import_corpus))
@@ -259,6 +286,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_run = sub.add_parser("run", help="the hourly chain with an alert on failure")
     p_run.add_argument("--analyze-limit", type=int, help="cap on games analysed per run (runners have a time limit)")
     p_run.set_defaults(func=_run_all)
+    sub.add_parser("blunder-funnel", help="boards surviving each gate of the blunder generator").set_defaults(
+        func=_blunder_funnel
+    )
     p_mig = sub.add_parser("migrate", help="copy the old database into this one (once)")
     p_mig.add_argument("--mapping", required=True, help="JSON file with the old schema's column renames and value maps")
     p_mig.add_argument("--only", help="comma-separated tables to migrate; the emptiness check applies to just those")
@@ -270,6 +300,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return int(args.func(args))
+    except notify.OperatorError as exc:  # written for the operator; safe to print in full
+        print(f"pipeline {args.group}: {exc}", file=sys.stderr)
+        return 1
     except Exception as exc:  # never a traceback on a public console
         print(f"pipeline {args.group}: FAILED ({notify.error_label(exc)})", file=sys.stderr)
         return 1

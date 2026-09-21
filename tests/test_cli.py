@@ -132,7 +132,7 @@ def test_the_hourly_chain_generates_puzzles_after_analysis(
     assert cli.main(["run"]) == 0
     capsys.readouterr()
     steps = [r["step"] for r in conn.execute("SELECT step FROM pipeline_runs ORDER BY id").fetchall()]
-    assert steps == ["import", "match", "analyze", "generate-puzzles", "housekeep"]
+    assert steps == ["import", "match", "analyze", "generate-puzzles", "srs-maintain", "housekeep"]
 
 
 def test_generate_puzzles_runs_on_its_own(
@@ -153,3 +153,44 @@ def test_generate_puzzles_runs_on_its_own(
 def test_import_corpus_needs_a_csv() -> None:
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(["import-corpus"])
+
+
+def test_srs_maintain_and_the_funnel_run_on_their_own(
+    clean: psycopg.Connection[DictRow],
+    app_env: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = clean
+    conn.execute("INSERT INTO players (id) VALUES (%s)", (PLAYER_ID,))
+    conn.commit()
+    assert cli.main(["srs-maintain"]) == 0
+    assert '"demoted": 0' in capsys.readouterr().out
+    row = conn.execute("SELECT step, status FROM pipeline_runs ORDER BY id DESC LIMIT 1").fetchone()
+    assert row and (row["step"], row["status"]) == ("srs-maintain", "ok")
+    assert cli.main(["blunder-funnel"]) == 0
+    out = capsys.readouterr().out
+    assert "window 500 games, threshold 3, focus rapid_plus" in out
+    assert "not already covered by the repertoire" in out
+    runs_row = conn.execute("SELECT count(*) AS n FROM pipeline_runs").fetchone()
+    assert runs_row and runs_row["n"] == 1, "a report, not a step"
+
+
+def test_an_operator_error_is_printed_in_full(
+    app_env: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A precondition the operator can fix is told to them in words; everything else
+    stays a class chain."""
+    import argparse
+
+    from core.notify import OperatorError
+
+    def _boom(_args: object) -> int:
+        raise OperatorError("target table puzzles is not empty; migrate only into a fresh database")
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("group")
+    parser.set_defaults(func=_boom)
+    monkeypatch.setattr(cli, "build_parser", lambda: parser)
+    assert cli.main(["migrate"]) == 1
+    err = capsys.readouterr().err
+    assert "target table puzzles is not empty" in err and "Traceback" not in err
