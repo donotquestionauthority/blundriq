@@ -833,3 +833,88 @@ def test_a_line_that_opens_with_the_opponent_s_move_is_graded_on_the_player_s_pl
     assert is_mate_line(fen, line, "b") == (True, 1)
     assert attempts.validate_line(fen, line, "b", None, "Ra1")
     assert not attempts.validate_line(fen, line, "b", None, "Kh1,Ra1")
+
+
+def test_null_themes_come_out_as_an_empty_list(clean: psycopg.Connection[DictRow]) -> None:
+    """Migrated rows may carry NULL themes; every payload shape says []."""
+    _player(clean)
+    pid = _puzzle(clean, sources=["custom"])
+    clean.execute("UPDATE puzzles SET themes = NULL WHERE id = %s", (pid,))
+    clean.execute(
+        "INSERT INTO player_puzzle_state (player_id, puzzle_id, level, next_show_at) VALUES (%s, %s, 'king', %s)",
+        (PLAYER_ID, pid, srs.KING_SENTINEL),
+    )
+    assert visibility.visible_rows(clean, last_n_games=0, lookahead_plies=2)[0]["themes"] == []
+    assert visibility.visible_standard_by_id(clean, [pid], last_n_games=0)[0]["themes"] == []
+    row = visibility.visible_by_id(clean, pid, lookahead_plies=2)
+    assert row is not None and visibility.playable(row)["themes"] == []
+    assert serve.retired(clean)[0]["themes"] == []
+    assert serve.browse(clean, _config(), last_n_games=0)[0]["themes"] == []
+
+
+def test_a_corpus_candidate_the_rules_would_hide_takes_no_slot(clean: psycopg.Connection[DictRow]) -> None:
+    """The five most popular fork candidates start at positions where the white book
+    prescribes a different move, so their puzzles would be conflicted and never served; the
+    sixth is fine. With a pool of five the batch must still find it, and no slot is spent."""
+    _player(clean)
+    book = ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O"]
+    _line(clean, book)
+    fens = _fens(book)
+    for i, ply in enumerate((0, 2, 4, 6, 8)):
+        clean.execute(
+            "INSERT INTO lichess_puzzles (puzzle_id, fen, solution_line, color, rating, rating_bucket, popularity, nb_plays,"
+            " themes) VALUES (%s, %s, %s::jsonb, 'w', 1500, 1500, %s, %s, ARRAY['fork'])",
+            (f"bad{i}", fens[ply], json.dumps(["a3"]), 100 - i, 1000 - i),
+        )
+    _corpus(clean, 1, ["fork"], prefix="good")
+    clean.execute("UPDATE lichess_puzzles SET popularity = 1 WHERE puzzle_id = 'good0'")
+    config = _config(puzzle_mix_batch_size=1, cc0_candidate_pool_size=5)
+    served = serve.play_batch(clean, config, last_n_games=0, ptype="all", subtype=None)
+    assert len(served.rows) == 1 and served.rows[0]["fen"] == _position(0)[0]
+    assert _count(clean, "player_puzzle_exposure") == 1
+
+
+def test_an_existing_row_outside_the_scope_takes_no_slot(clean: psycopg.Connection[DictRow]) -> None:
+    """The corpus row's board already has a puzzle tagged for another theme; under a
+    'motif:pin' scope that row cannot be served, so the draw moves on."""
+    _player(clean)
+    fen0, line0 = _position(0)
+    _puzzle(clean, fen0, line0, sources=["lichess_cc0"], themes=["fork"])
+    _corpus(clean, 2, ["pin"])  # rows 0 and 1; row 0 shares fen0's board
+    config = _config(puzzle_mix_batch_size=1, cc0_candidate_pool_size=5)
+    served = serve.play_batch(clean, config, last_n_games=0, ptype="motif", subtype="pin")
+    assert len(served.rows) == 1 and served.rows[0]["fen"] == _position(1)[0]
+
+
+def test_chess960_games_never_take_a_slot_in_the_new_readers(clean: psycopg.Connection[DictRow]) -> None:
+    _player(clean)
+    pid = _puzzle(clean)
+    # King demotion: a newer analysed Chess960 game must not push a standard recurrence out
+    # of a ten-game lookback.
+    clean.execute(
+        "INSERT INTO player_puzzle_state (player_id, puzzle_id, level, next_show_at, updated_at)"
+        " VALUES (%s, %s, 'king', %s, now() - interval '1 day')",
+        (PLAYER_ID, pid, srs.KING_SENTINEL),
+    )
+    _game(clean, 1, minutes_ago=300)
+    _blunder(clean, 1)
+    _game(clean, 2, minutes_ago=200)
+    _blunder(clean, 2)
+    for g in range(3, 11):  # eight newer standard games without the pattern
+        _game(clean, g, minutes_ago=100 - g)
+    _game(clean, 11, minutes_ago=10, rating=2400)
+    clean.execute("UPDATE chess_games SET variant = 'chess960', starting_fen = %s WHERE id = 11", (START,))
+    config = _config(srs_king_demotion_min_hits=2, srs_king_demotion_lookback_games=10)
+    assert srs.demote_kings(clean, config) == {"candidates": 1, "demoted": 1}
+    # The rating window follows the latest *standard* game, not the 2400 Chess960 one.
+    _corpus(clean, 2, ["fork"], rating=1500)
+    assert serve.rating_window(clean, _config(cc0_difficulty_tier="normal")) == (1500, 1500)
+    # Correct-game links come from standard games only.
+    clean.execute(
+        "UPDATE chess_games SET fen_sequence = %s::jsonb, moves = %s::jsonb,"
+        " starting_fen = CASE WHEN variant = 'chess960' THEN %s END WHERE id IN (2, 11)",
+        (json.dumps([FORK_FEN, START]), json.dumps(["Nxe5"]), FORK_FEN),
+    )
+    rows = visibility.visible_rows(clean, last_n_games=0, lookahead_plies=2)
+    links = attempts.correct_game_links(clean, rows)[pid]
+    assert len(links) == 1

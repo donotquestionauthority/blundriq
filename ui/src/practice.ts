@@ -148,14 +148,20 @@ export const LAST_N_OPTIONS = [
   { label: "All games", value: 0 },
 ] as const;
 
-export function getPuzzles(params: { srs?: SrsFilter; ptype?: PracticeType; subtype?: string | null; last_n_games?: number } = {}): Promise<PuzzlesResponse> {
+/** Migrated rows may carry null themes; the page always works with an array. */
+function withThemes<T extends { themes: string[] | null }>(p: T): T & { themes: string[] } {
+  return { ...p, themes: p.themes ?? [] };
+}
+
+export async function getPuzzles(params: { srs?: SrsFilter; ptype?: PracticeType; subtype?: string | null; last_n_games?: number } = {}): Promise<PuzzlesResponse> {
   const q = new URLSearchParams();
   if (params.srs) q.set("srs", params.srs);
   if (params.ptype && params.ptype !== "all") q.set("ptype", params.ptype);
   if (params.subtype) q.set("subtype", params.subtype);
   if (params.last_n_games) q.set("last_n_games", String(params.last_n_games));
   const qs = q.toString();
-  return api.get<PuzzlesResponse>(`/practice/puzzles${qs ? `?${qs}` : ""}`);
+  const data = await api.get<PuzzlesResponse>(`/practice/puzzles${qs ? `?${qs}` : ""}`);
+  return { ...data, puzzles: data.puzzles.map(withThemes) };
 }
 
 /**
@@ -167,8 +173,8 @@ export function recordAttempt(puzzleId: number, body: { solved: boolean; moves_p
   return api.post<AttemptResponse>(`/practice/puzzles/${puzzleId}/attempt`, body);
 }
 
-export function getPuzzleById(id: number): Promise<PlayablePuzzlePayload> {
-  return api.get<PlayablePuzzlePayload>(`/practice/puzzles/${id}`);
+export async function getPuzzleById(id: number): Promise<PlayablePuzzlePayload> {
+  return withThemes(await api.get<PlayablePuzzlePayload>(`/practice/puzzles/${id}`));
 }
 
 function normalizeSkipStatus(raw: unknown): SkipStatus | null {

@@ -198,6 +198,9 @@ def normalise(row: dict[str, Any]) -> dict[str, Any]:
         out["created_at"] = out["created_at"].isoformat()
     if not isinstance(out.get("source_breakdown"), dict):
         out["source_breakdown"] = {}
+    # Migrated rows may carry NULL themes; the wire shape is always a list.
+    if out.get("themes") is None:
+        out["themes"] = []
     return out
 
 

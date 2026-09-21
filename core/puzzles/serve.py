@@ -34,7 +34,7 @@ from typing import Any, LiteralString, cast
 from psycopg import Connection
 
 from core import constants
-from core.chess.eligibility import evidence_sql
+from core.chess.eligibility import analysable_sql, evidence_sql
 from core.constants import (
     BUCKET_MOTIFS_FIRST_CLASS,
     BUCKET_OWN_MISSED_MATE,
@@ -275,12 +275,15 @@ def rating_window(conn: Connection[Any], config: Settings) -> tuple[int | None, 
     config."""
     with conn.cursor() as cur:
         cur.execute(
-            """
+            cast(
+                LiteralString,
+                f"""
             SELECT pg.player_rating, pg.source, cg.time_class
             FROM player_games pg JOIN chess_games cg ON cg.id = pg.chess_game_id
-            WHERE pg.player_id = %s AND pg.player_rating IS NOT NULL
+            WHERE pg.player_id = %s AND pg.player_rating IS NOT NULL AND {analysable_sql("cg")}
             ORDER BY cg.played_at DESC NULLS LAST, cg.id DESC LIMIT 1
             """,
+            ),
             (PLAYER_ID,),
         )
         latest = cur.fetchone()
@@ -552,6 +555,14 @@ def mint_batch(
                     if new_id is None or new_id in already:
                         lost_races.add(cand["fen"])
                         continue
+                # A corpus position is drawn before the rules that hide a puzzle (a
+                # repertoire contradiction, a dismissed board, a scope it does not match)
+                # can be applied, so they are applied now: a row that would not be served
+                # takes no slot, and the draw moves on to the next candidate.
+                rows = visibility.visible_standard_by_id(conn, [new_id], last_n_games=0)
+                if not rows or not match(rows[0]):
+                    lost_races.add(cand["fen"])
+                    continue
                 served.append((new_id, b))
                 already.add(new_id)
                 return True

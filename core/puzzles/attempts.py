@@ -20,11 +20,12 @@ cannot differ between them; a replay returns the original verdict with the curre
 from __future__ import annotations
 
 import json
-from typing import Any, cast
+from typing import Any, LiteralString, cast
 
 import chess
 from psycopg import Connection
 
+from core.chess.eligibility import analysable_sql
 from core.chess.mate_acceptance import walk_acceptance_map
 from core.chess.san import normalize_san
 from core.chess.san import parse as parse_san
@@ -278,14 +279,18 @@ def correct_game_links(conn: Connection[Any], rows: list[dict[str, Any]]) -> dic
         return out
     with conn.cursor() as cur:
         cur.execute(
-            """
+            cast(
+                LiteralString,
+                f"""
             SELECT t.puzzle_id, t.fen AS target_fen, t.player_move, cg.url, cg.played_at, pg.opponent_username,
                    cg.moves, cg.fen_sequence
             FROM unnest(%(ids)s::int[], %(fens)s::text[], %(moves)s::text[]) AS t(puzzle_id, fen, player_move)
             JOIN player_games pg ON pg.player_id = %(pid)s
             JOIN chess_games cg ON cg.id = pg.chess_game_id AND cg.position_keys @> ARRAY[bq_position_key(t.fen)]
+                 AND {analysable_sql("cg")}
             ORDER BY t.puzzle_id, cg.played_at DESC NULLS LAST, cg.id DESC
             """,
+            ),
             {
                 "ids": [t[0] for t in targets],
                 "fens": [t[1] for t in targets],

@@ -20,10 +20,11 @@ idempotent, so it is a pipeline step (`pipeline srs-maintain`), not a read-time 
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
-from typing import Any, cast
+from typing import Any, LiteralString, cast
 
 from psycopg import Connection
 
+from core.chess.eligibility import analysable_sql
 from core.constants import LOCK_SRS_ATTEMPT, PLAYER_ID, SRS_LEVELS
 from core.settings import Settings
 
@@ -202,7 +203,9 @@ def apply_attempt(
 
 # --- king demotion (pipeline step) ------------------------------------------------------
 
-_KING_HITS = """
+_KING_HITS = cast(
+    LiteralString,
+    f"""
 WITH kings AS (
     SELECT pps.puzzle_id, pps.updated_at, p.canonical_fen, p.is_repertoire, p.repertoire_line_id
     FROM player_puzzle_state pps JOIN puzzles p ON p.id = pps.puzzle_id
@@ -211,7 +214,7 @@ WITH kings AS (
 lookback AS (
     SELECT pg.chess_game_id, cg.played_at
     FROM player_games pg JOIN chess_games cg ON cg.id = pg.chess_game_id
-    WHERE pg.player_id = %(pid)s AND pg.analyzed_at_depth IS NOT NULL
+    WHERE pg.player_id = %(pid)s AND pg.analyzed_at_depth IS NOT NULL AND {analysable_sql("cg")}
     ORDER BY cg.played_at DESC NULLS LAST, cg.id DESC
     LIMIT %(lookback)s
 ),
@@ -242,7 +245,8 @@ LEFT JOIN standard_hits s ON s.puzzle_id = k.puzzle_id
 LEFT JOIN repertoire_hits r ON r.puzzle_id = k.puzzle_id
 WHERE COALESCE(s.hits, r.hits, 0) >= %(min_hits)s
 ORDER BY k.puzzle_id
-"""
+""",
+)
 
 
 def demote_kings(conn: Connection[Any], config: Settings) -> dict[str, int]:

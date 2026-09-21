@@ -96,7 +96,7 @@ function PuzzleHeader({ puzzle, note }: { puzzle: Puzzle; note?: string | null }
       {puzzle.source_types.map((s) => (
         <SourceBadge key={s} type={s} />
       ))}
-      {puzzle.themes.length > 0 && <span>{puzzle.themes.join(", ")}</span>}
+      {(puzzle.themes ?? []).length > 0 && <span>{(puzzle.themes ?? []).join(", ")}</span>}
       {puzzle.title && <span className="text-zinc-700 dark:text-zinc-300">{puzzle.title}</span>}
       {puzzle.occurrence_count > 0 && <span>encountered {puzzle.occurrence_count}× in your games</span>}
       {note && <span className="text-emerald-600 dark:text-emerald-400">· {note}</span>}
@@ -277,6 +277,7 @@ function PlayMode({
   prefetchThreshold,
   onAttemptRecorded,
   onNeedRefetch,
+  onNavigationLock,
 }: {
   batch: Puzzle[];
   batchId: number | null;
@@ -286,6 +287,7 @@ function PlayMode({
   prefetchThreshold: number;
   onAttemptRecorded: () => void;
   onNeedRefetch: () => void;
+  onNavigationLock: (locked: boolean) => void;
 }) {
   // Every hook precedes the `if (!puzzle)` early return: on a batch boundary `puzzle` is briefly
   // undefined, and a hook declared after that return would be skipped on that render.
@@ -311,8 +313,24 @@ function PlayMode({
   }, [batch]);
 
   const puzzle: Puzzle | undefined = items[currentIndex];
-  const attempt = useAttemptSubmit(puzzle?.id ?? -1, onAttemptRecorded);
+  // A save that lands while the cursor waits at the end of the queue is what lets the server
+  // mint again: the boundary refetch may have run before the acknowledgement committed, and
+  // nothing else would ask again.
+  const awaitingNextRef = useRef(false);
+  awaitingNextRef.current = awaitingNext;
+  const recorded = useCallback(() => {
+    onAttemptRecorded();
+    if (awaitingNextRef.current) onNeedRefetch();
+  }, [onAttemptRecorded, onNeedRefetch]);
+  const attempt = useAttemptSubmit(puzzle?.id ?? -1, recorded);
   const showNext = attempt.lastResult !== null;
+  // While an attempt is unsaved (blocking mode), every way of leaving this puzzle is closed:
+  // Previous, the type tabs and the filters would all discard the only copy of it.
+  const navigationBlocked = attempt.navigationBlocked;
+  useEffect(() => {
+    onNavigationLock(navigationBlocked);
+    return () => onNavigationLock(false);
+  }, [navigationBlocked, onNavigationLock]);
 
   // Look-ahead prefetch. The server mints when `pending <= threshold`, and pending INCLUDES the
   // displayed un-acknowledged item, so fire at `remainingAhead + 1 <= threshold`; firing one
@@ -379,6 +397,7 @@ function PlayMode({
   };
 
   const handlePrev = () => {
+    if (attempt.navigationBlocked) return;
     if (currentIndex > 0) {
       attempt.reset();
       setCurrentIndex((prev) => prev - 1);
@@ -400,7 +419,7 @@ function PlayMode({
         acceptanceMap={puzzle.acceptance_map}
         onPrev={handlePrev}
         onNext={exhausted ? null : showNext ? advance : () => void handleSkip()}
-        prevDisabled={currentIndex === 0}
+        prevDisabled={currentIndex === 0 || attempt.navigationBlocked}
         nextDisabled={exhausted || attempt.navigationBlocked || skipping}
         nextLabel={showNext ? "Next Puzzle →" : skipping ? "Skipping…" : "Skip →"}
         nextHighlighted={attempt.lastResult === "solved"}
@@ -504,8 +523,8 @@ function PuzzleList({ puzzles, onOpen }: { puzzles: Puzzle[]; onOpen: (p: Puzzle
                   <SourceBadge key={s} type={s} />
                 ))}
               </td>
-              <td className="max-w-[14rem] truncate px-2 py-1.5 text-xs" title={p.themes.join(", ")}>
-                {p.themes.join(", ") || "—"}
+              <td className="max-w-[14rem] truncate px-2 py-1.5 text-xs" title={(p.themes ?? []).join(", ")}>
+                {(p.themes ?? []).join(", ") || "—"}
               </td>
               <td className="px-2 py-1.5 font-mono text-xs">{p.occurrence_count || "—"}</td>
               <td className="px-2 py-1.5 font-mono text-xs">
@@ -526,6 +545,7 @@ function PuzzleList({ puzzles, onOpen }: { puzzles: Puzzle[]; onOpen: (p: Puzzle
 // ─── Filters ────────────────────────────────────────────────────────────────
 
 function FiltersPopover({
+  disabled = false,
   subtype,
   onSubtypeChange,
   subtypeOptions,
@@ -534,6 +554,7 @@ function FiltersPopover({
   lastNGames,
   onPeriodChange,
 }: {
+  disabled?: boolean;
   subtype: string | null;
   onSubtypeChange: (v: string | null) => void;
   subtypeOptions: { value: string; label: string }[];
@@ -565,7 +586,15 @@ function FiltersPopover({
 
   return (
     <div ref={rootRef} className="relative">
-      <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-haspopup="dialog" className={chip(open || activeCount > 0)}>
+      <button
+        type="button"
+        disabled={disabled}
+        title={disabled ? "Save your attempt first" : undefined}
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        className={chip(open || activeCount > 0)}
+      >
         Filters{activeCount > 0 ? ` (${activeCount})` : ""}
       </button>
       {open && (
@@ -638,6 +667,7 @@ export default function Practice() {
     return Number.isInteger(n) && n > 0 ? n : null;
   });
   const [openPuzzle, setOpenPuzzle] = useState<Puzzle | null>(null);
+  const [navLocked, setNavLocked] = useState(false);
 
   // Strip the entry params after first render; the state above already holds them.
   const urlStripRef = useRef(false);
@@ -683,7 +713,7 @@ export default function Practice() {
   const puzzles = data?.puzzles ?? [];
   const subtypeOptions = (() => {
     if (type === "motif") return (data?.served_themes ?? []).map((t) => ({ value: t, label: t }));
-    if (type === "blunder") return [...new Set(puzzles.flatMap((p) => p.themes))].sort().map((t) => ({ value: t, label: t }));
+    if (type === "blunder") return [...new Set(puzzles.flatMap((p) => p.themes ?? []))].sort().map((t) => ({ value: t, label: t }));
     if (type === "repertoire") {
       const lines = new Map<number, string>();
       for (const p of puzzles) if (p.repertoire_line_id != null && !lines.has(p.repertoire_line_id)) lines.set(p.repertoire_line_id, p.title ?? `line ${p.repertoire_line_id}`);
@@ -704,6 +734,8 @@ export default function Practice() {
                 type="button"
                 role="tab"
                 aria-selected={type === t}
+                disabled={navLocked}
+                title={navLocked ? "Save your attempt first" : undefined}
                 onClick={() => {
                   setType(t);
                   setSubtype(null);
@@ -717,7 +749,7 @@ export default function Practice() {
         </div>
         <div className="flex items-center gap-3">
           {data && srsFilter === "due" && <span className="text-xs text-zinc-500">{data.mastered_count} mastered</span>}
-          <FiltersPopover subtype={subtype} onSubtypeChange={setSubtype} subtypeOptions={subtypeOptions} srsFilter={srsFilter} onSrsChange={setSrsFilter} lastNGames={lastNGames} onPeriodChange={setLastNGames} />
+          <FiltersPopover disabled={navLocked} subtype={subtype} onSubtypeChange={setSubtype} subtypeOptions={subtypeOptions} srsFilter={srsFilter} onSrsChange={setSrsFilter} lastNGames={lastNGames} onPeriodChange={setLastNGames} />
         </div>
       </div>
 
@@ -739,6 +771,7 @@ export default function Practice() {
             prefetchThreshold={data.mint_ahead_threshold ?? 4}
             onAttemptRecorded={noop}
             onNeedRefetch={refetch}
+            onNavigationLock={setNavLocked}
           />
         )}
         {data != null && !isStale && srsFilter !== "due" && (

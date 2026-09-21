@@ -218,6 +218,87 @@ describe("Practice page", () => {
     await vi.waitFor(() => expect(JSON.parse(window.localStorage.getItem("blundriq_pending_attempts_v1")!)).toHaveLength(0));
   });
 
+  it("renders migrated rows whose themes are null, in the queue and the list", async () => {
+    const raw = { ...puzzle(11, 1), themes: null } as unknown as Puzzle;
+    stubFetch({ "/practice/puzzles": () => ({ status: 200, body: serve([raw], 1, 1) }) });
+    renderPage();
+    expect(await screen.findByText("#11")).toBeInTheDocument();
+    renderPage("/practice?srs=all");
+    expect((await screen.findAllByText("#11")).length).toBeGreaterThan(0);
+  });
+
+  it("keeps an unsaved attempt in reach: Previous, the type tabs and the filters wait for the save", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    let attemptCalls = 0;
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1), puzzle(12, 1)], 1, 1) }),
+      "/practice/skip": () => ({ status: 200, body: { status: "DEFERRED" } }),
+      "/practice/puzzles/12/attempt": () => {
+        attemptCalls += 1;
+        return attemptCalls === 1
+          ? { status: 500, body: { detail: "boom" } }
+          : { status: 200, body: { detail: "attempt recorded", solved: true, attempt_summary: { total: 1, solved: 1, streak: 1 }, srs: { level: "knight", correct_at_level: 0, advance_threshold: 1, transition: null } } };
+      },
+    });
+    renderPage();
+    expect(await screen.findByText("#11")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Skip →"));
+    expect(await screen.findByText("#12")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("drop"));
+    expect(await screen.findByText(/Couldn't save your attempt/)).toBeInTheDocument();
+    expect(screen.getByText("← Previous")).toBeDisabled();
+    expect(screen.getByRole("tab", { name: "Motif" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Filters/ })).toBeDisabled();
+    fireEvent.click(screen.getByText("← Previous"));
+    expect(screen.getByText("#12")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Retry"));
+    expect(await screen.findByText("Next Puzzle →")).toBeInTheDocument();
+    expect(screen.getByText("← Previous")).not.toBeDisabled();
+    expect(screen.getByRole("tab", { name: "Motif" })).not.toBeDisabled();
+    const attempts = calls.filter((c) => c.path === "/practice/puzzles/12/attempt");
+    expect(attempts).toHaveLength(2);
+    expect(attempts[1].body!.attempt_id).toBe(attempts[0].body!.attempt_id);
+  });
+
+  it("asks again once a late save lands while the queue waits at its end", async () => {
+    Object.defineProperty(navigator, "locks", { value: { request: (_n: string, cb: () => Promise<unknown>) => cb() }, configurable: true });
+    _resetProbesForTests();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let saved = false;
+    let serves = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const path = url.replace(/^.*\/api/, "").split("?")[0];
+        if (path === "/practice/puzzles") {
+          serves += 1;
+          // Until the attempt is acknowledged the server can only return the same batch;
+          // afterwards it mints the next one.
+          return { ok: true, status: 200, json: async () => (saved ? serve([puzzle(12, 2)], 2, 1) : serve([puzzle(11, 1)], 1, 1)) };
+        }
+        if (path === "/practice/puzzles/11/attempt") {
+          await gate;
+          saved = true;
+          const body = JSON.parse(String(init?.body));
+          return { ok: true, status: 200, json: async () => ({ detail: "attempt recorded", solved: body.solved, attempt_summary: { total: 1, solved: 1, streak: 1 }, srs: { level: "knight", correct_at_level: 0, advance_threshold: 1, transition: null } }) };
+        }
+        return { ok: false, status: 404, statusText: "Not Found", json: async () => ({ detail: "no route" }) };
+      }),
+    );
+    renderPage();
+    expect(await screen.findByText("#11")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("drop"));
+    fireEvent.click(await screen.findByText("Next Puzzle →"));
+    // The boundary refetch ran before the save committed: nothing new, the page waits.
+    expect(await screen.findByText(/Loading next puzzle/)).toBeInTheDocument();
+    const servesBefore = serves;
+    release();
+    expect(await screen.findByText("#12")).toBeInTheDocument();
+    expect(serves).toBeGreaterThan(servesBefore);
+  });
+
   it("shows the list for srs=all and opens a row in the overlay; ?puzzle= deep-links", async () => {
     stubFetch({
       "/practice/puzzles": () => ({ status: 200, body: { ...serve([puzzle(21, 1, { srs: { level: "rook", correct_at_level: 0, last_3_attempts: [true], last_correct_date: null, next_show_at: "2026-10-01T00:00:00Z", updated_at: "" } })], 1), batch_id: null } }),
