@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useSearchParams } from "react-router";
 import { useApi } from "../hooks/useApi";
-import { getUnsavedAttempt, holdUnsavedAttempt, releaseUnsavedAttempt, subscribeUnsavedAttempt, type UnsavedAttempt } from "../utils/unsavedAttempt";
+import { disownUnsavedAttempt, getUnsavedAttempt, holdUnsavedAttempt, isUnsavedAttemptOwned, releaseUnsavedAttempt, subscribeUnsavedAttempt, type UnsavedAttempt } from "../utils/unsavedAttempt";
 import { PuzzleEngine } from "../components/PuzzleEngine";
 import { getPuzzleById, getPuzzles, isRotationPuzzle, LAST_N_OPTIONS, recordAttempt, skipPuzzle } from "../practice";
 import type { PlayablePuzzlePayload, PracticeType, Puzzle, PuzzleGameLink, PuzzleSrs, SrsFilter, SrsLevel } from "../practice";
@@ -129,6 +129,12 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
   // The attempt the server is still owed in blocking mode: in flight, or failed and waiting
   // for Retry. Only one may exist; handleComplete refuses to open another while it stands.
   const outstandingRef = useRef<string | null>(null);
+  // This hook instance, as the held attempt's owner while it is mounted.
+  const ownerRef = useRef<object>({});
+  useEffect(() => {
+    const owner = ownerRef.current;
+    return () => disownUnsavedAttempt(owner);
+  }, []);
   const activePuzzleIdRef = useRef(puzzleId);
   useEffect(() => {
     activePuzzleIdRef.current = puzzleId;
@@ -167,6 +173,11 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
   const runBlockingMode = useCallback(
     async (attemptId: string, solved: boolean, movesPlayed: string[], attemptPuzzleId: number) => {
       outstandingRef.current = attemptId;
+      // Held from before the request goes out, not from its failure: the whole app treats the
+      // attempt as unsaved until its id is acknowledged, so leaving and returning mid-request
+      // cannot open a second one.
+      const payload = { puzzle_id: attemptPuzzleId, attempt_id: attemptId, session_id: sessionIdRef.current, solved, moves_played: movesPlayed.join(",") };
+      holdUnsavedAttempt(payload, ownerRef.current);
       setSubmitting(true);
       setBlockingError(null);
       setServerDowngraded(false);
@@ -181,9 +192,14 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
         onRecorded();
       } catch (err) {
         console.error("Blocking-mode recordAttempt failed:", err);
-        // The only copy of this attempt: keep it where leaving the page cannot lose it.
-        holdUnsavedAttempt({ puzzle_id: attemptPuzzleId, attempt_id: attemptId, session_id: sessionIdRef.current, solved, moves_played: movesPlayed.join(",") });
-        if (activePuzzleIdRef.current === attemptPuzzleId) setBlockingError({ attemptId, solved, movesPlayed });
+        // Still held (since before the request) unless a retry from elsewhere — the recovery
+        // banner, after this solver was left — landed it meanwhile.
+        if (getUnsavedAttempt()?.attempt_id === attemptId) {
+          if (activePuzzleIdRef.current === attemptPuzzleId) setBlockingError({ attemptId, solved, movesPlayed });
+        } else {
+          outstandingRef.current = null;
+          onRecorded();
+        }
       } finally {
         setSubmitting(false);
         inFlightRef.current.delete(attemptId);
@@ -718,6 +734,10 @@ export default function Practice() {
   // An attempt held from an earlier visit (the page was left, or reloaded into blocking
   // mode) is offered for retry here, above whatever the page serves, until it is saved.
   const held = useSyncExternalStore(subscribeUnsavedAttempt, getUnsavedAttempt, getUnsavedAttempt);
+  const heldOwnedHere = useSyncExternalStore(subscribeUnsavedAttempt, isUnsavedAttemptOwned, isUnsavedAttemptOwned);
+  // Ownership, not the effect-driven in-page lock, decides whether a solver stays mounted:
+  // it is known in the same render in which the hold appears.
+  const orphaned = held !== null && !heldOwnedHere;
   const navLocked = inPageLock || held !== null;
 
   // Strip the entry params after first render; the state above already holds them.
@@ -806,8 +826,8 @@ export default function Practice() {
 
       {/* An attempt held from an earlier visit is the only thing on the page until it is
           saved: no board, no Skip, no list, no overlay — a second attempt must not be possible. */}
-      {held && !inPageLock && <HeldAttemptBanner attempt={held} onSaved={refetch} />}
-      {!(held && !inPageLock) && (
+      {orphaned && held && <HeldAttemptBanner attempt={held} onSaved={refetch} />}
+      {!orphaned && (
       <div className="mt-4">
         {/* `isStale` is checked as well as `isLoading`: on the first render after a filter change the
             effect has not run yet, so isLoading still reads false from the previous fetch. */}
@@ -841,8 +861,8 @@ export default function Practice() {
       )}
 
       {deepLinkId != null && deepLinkLoading && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 text-sm text-zinc-200">…</div>}
-      {!(held && !inPageLock) && deepLinkPuzzle && <PuzzleOverlay key={deepLinkPuzzle.id} puzzle={deepLinkPuzzle} onClose={() => setDeepLinkId(null)} onAttemptRecorded={refetch} onNavigationLock={setInPageLock} />}
-      {!(held && !inPageLock) && openPuzzle && !deepLinkPuzzle && <PuzzleOverlay key={openPuzzle.id} puzzle={openPuzzle} onClose={() => setOpenPuzzle(null)} onAttemptRecorded={refetch} onNavigationLock={setInPageLock} />}
+      {!orphaned && deepLinkPuzzle && <PuzzleOverlay key={deepLinkPuzzle.id} puzzle={deepLinkPuzzle} onClose={() => setDeepLinkId(null)} onAttemptRecorded={refetch} onNavigationLock={setInPageLock} />}
+      {!orphaned && openPuzzle && !deepLinkPuzzle && <PuzzleOverlay key={openPuzzle.id} puzzle={openPuzzle} onClose={() => setOpenPuzzle(null)} onAttemptRecorded={refetch} onNavigationLock={setInPageLock} />}
     </div>
   );
 }

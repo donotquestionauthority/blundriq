@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import Layout from "../components/Layout";
-import { _resetUnsavedAttemptForTests, getUnsavedAttempt, holdUnsavedAttempt, releaseUnsavedAttempt } from "../utils/unsavedAttempt";
+import { _resetUnsavedAttemptForTests, disownUnsavedAttempt, getUnsavedAttempt, holdUnsavedAttempt, isUnsavedAttemptOwned, releaseUnsavedAttempt } from "../utils/unsavedAttempt";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Practice from "./Practice";
 import { _resetProbesForTests } from "../utils/attemptQueue";
@@ -55,7 +55,8 @@ const serve = (puzzles: Puzzle[], batchId: number, threshold = 1): PuzzlesRespon
   served_themes: ["fork", "pin"],
 });
 
-type Handler = (method: string, body: unknown) => { status: number; body: unknown };
+type Reply = { status: number; body: unknown };
+type Handler = (method: string, body: unknown) => Reply | Promise<Reply>;
 
 /** A fetch stub routed by path; returns the list of calls for assertions. */
 function stubFetch(routes: Record<string, Handler>) {
@@ -69,7 +70,7 @@ function stubFetch(routes: Record<string, Handler>) {
       calls.push({ path, method, body });
       const h = routes[path];
       if (!h) return { ok: false, status: 404, statusText: "Not Found", json: async () => ({ detail: "no route" }) };
-      const r = h(method, body);
+      const r = await h(method, body);
       return { ok: r.status < 400, status: r.status, statusText: String(r.status), json: async () => r.body };
     }),
   );
@@ -366,6 +367,63 @@ describe("Practice page", () => {
     expect(attempts[1].body!.session_id).toBe(attempts[0].body!.session_id);
   });
 
+  it("holds a blocking-mode attempt from the moment its request goes out: leaving mid-save opens no second one", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    let resolveFirst: (r: Reply) => void = () => {};
+    let attemptCalls = 0;
+    const calls = stubFetch({
+      "/me": () => ({ status: 200, body: { authenticated: true } }),
+      "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1), puzzle(12, 1)], 1, 1) }),
+      "/practice/puzzles/11/attempt": () => {
+        attemptCalls += 1;
+        if (attemptCalls === 1) return new Promise<Reply>((r) => (resolveFirst = r));
+        return { status: 200, body: { detail: "attempt recorded", solved: true, attempt_summary: { total: 1, solved: 1, streak: 1 }, srs: { level: "knight", correct_at_level: 0, advance_threshold: 1, transition: null } } };
+      },
+    });
+    const app = (
+      <Routes>
+        <Route element={<Layout onLoggedOut={() => {}} />}>
+          <Route path="/practice" element={<Practice />} />
+          <Route path="/games" element={<p>games page</p>} />
+        </Route>
+      </Routes>
+    );
+    const view = render(<MemoryRouter initialEntries={["/practice"]}>{app}</MemoryRouter>);
+    expect(await screen.findByText("#11")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("drop"));
+    await flush();
+    // The request is out and unanswered; the app already treats the attempt as unsaved.
+    const attempts = () => calls.filter((c) => c.path === "/practice/puzzles/11/attempt");
+    expect(attempts()).toHaveLength(1);
+    const first = attempts()[0].body!;
+    expect(getUnsavedAttempt()?.attempt_id).toBe(first.attempt_id);
+    expect(screen.getByText("Games").tagName).toBe("SPAN");
+    expect(screen.getByText("Log out")).toBeDisabled();
+
+    // Leave through history regardless and come back while it is still pending: no board,
+    // no second submission, only the held attempt.
+    view.unmount();
+    render(<MemoryRouter initialEntries={["/games", "/practice"]} initialIndex={1}>{app}</MemoryRouter>);
+    expect(await screen.findByText(/attempt on puzzle #11 has not been saved/)).toBeInTheDocument();
+    await flush();
+    expect(screen.queryByText("drop")).not.toBeInTheDocument();
+    expect(attempts()).toHaveLength(1);
+
+    // The original request now fails: still one held attempt, the original.
+    resolveFirst({ status: 500, body: { detail: "boom" } });
+    await flush();
+    expect(getUnsavedAttempt()?.attempt_id).toBe(first.attempt_id);
+    expect(screen.getByText(/has not been saved/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Retry"));
+    await vi.waitFor(() => expect(screen.queryByText(/has not been saved/)).not.toBeInTheDocument());
+    expect(await screen.findByText("#11")).toBeInTheDocument();
+    expect(attempts()).toHaveLength(2);
+    expect(attempts()[1].body!.attempt_id).toBe(first.attempt_id);
+    expect(attempts()[1].body!.session_id).toBe(first.session_id);
+    expect(getUnsavedAttempt()).toBeNull();
+  });
+
   it("never lets a second unsaved attempt displace the one it holds", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const first = { puzzle_id: 11, attempt_id: "a-1", session_id: "s-1", solved: true, moves_played: "Ra8#" };
@@ -378,6 +436,17 @@ describe("Practice page", () => {
     expect(getUnsavedAttempt()).toEqual(first);
     releaseUnsavedAttempt("a-1");
     expect(getUnsavedAttempt()).toBeNull();
+    // Ownership: held by a solver until that solver disowns it; only the owner can.
+    const solver = {};
+    holdUnsavedAttempt(first, solver);
+    expect(isUnsavedAttemptOwned()).toBe(true);
+    disownUnsavedAttempt({});
+    expect(isUnsavedAttemptOwned()).toBe(true);
+    disownUnsavedAttempt(solver);
+    expect(isUnsavedAttemptOwned()).toBe(false);
+    expect(getUnsavedAttempt()).toEqual(first);
+    releaseUnsavedAttempt();
+    expect(isUnsavedAttemptOwned()).toBe(false);
   });
 
   it("holds an unsaved attempt from the overlay too", async () => {
