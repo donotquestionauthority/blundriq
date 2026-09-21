@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import Layout from "../components/Layout";
-import { _resetUnsavedAttemptForTests } from "../utils/unsavedAttempt";
+import { _resetUnsavedAttemptForTests, getUnsavedAttempt, holdUnsavedAttempt, releaseUnsavedAttempt } from "../utils/unsavedAttempt";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Practice from "./Practice";
 import { _resetProbesForTests } from "../utils/attemptQueue";
@@ -350,13 +350,34 @@ describe("Practice page", () => {
     );
     expect(await screen.findByText(/attempt on puzzle #11 has not been saved/)).toBeInTheDocument();
     expect(screen.getByText("Games").tagName).toBe("SPAN");
+    // Nothing else is offered until it is saved: no board, no Skip, no queue.
+    await flush();
+    expect(screen.queryByText("drop")).not.toBeInTheDocument();
+    expect(screen.queryByText("Skip →")).not.toBeInTheDocument();
+    expect(screen.queryByText("#11")).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("Retry"));
     await vi.waitFor(() => expect(screen.queryByText(/has not been saved/)).not.toBeInTheDocument());
     expect(screen.getByText("Games").tagName).toBe("A");
+    // ... and the queue comes back once it is.
+    expect(await screen.findByText("#11")).toBeInTheDocument();
     const attempts = calls.filter((c) => c.path === "/practice/puzzles/11/attempt");
     expect(attempts).toHaveLength(2);
     expect(attempts[1].body!.attempt_id).toBe(attempts[0].body!.attempt_id);
     expect(attempts[1].body!.session_id).toBe(attempts[0].body!.session_id);
+  });
+
+  it("never lets a second unsaved attempt displace the one it holds", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const first = { puzzle_id: 11, attempt_id: "a-1", session_id: "s-1", solved: true, moves_played: "Ra8#" };
+    holdUnsavedAttempt(first);
+    holdUnsavedAttempt({ ...first, attempt_id: "a-2", solved: false });
+    expect(getUnsavedAttempt()).toEqual(first);
+    // The same attempt may be re-held (a retry that failed again); a foreign id may not release it.
+    holdUnsavedAttempt({ ...first, moves_played: "Ra8#" });
+    releaseUnsavedAttempt("a-2");
+    expect(getUnsavedAttempt()).toEqual(first);
+    releaseUnsavedAttempt("a-1");
+    expect(getUnsavedAttempt()).toBeNull();
   });
 
   it("holds an unsaved attempt from the overlay too", async () => {

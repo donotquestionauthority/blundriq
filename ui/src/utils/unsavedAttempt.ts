@@ -28,7 +28,13 @@ function onBeforeUnload(e: BeforeUnloadEvent) {
   e.preventDefault();
 }
 
+/** Holds one attempt. A different one cannot displace it: the first is the one with no
+ *  other copy, and the page does not let a second be made while it is held. */
 export function holdUnsavedAttempt(attempt: UnsavedAttempt): void {
+  if (current !== null && current.attempt_id !== attempt.attempt_id) {
+    console.error("An unsaved attempt is already held; refusing to replace it");
+    return;
+  }
   const wasHeld = current !== null;
   current = attempt;
   if (!wasHeld) window.addEventListener("beforeunload", onBeforeUnload);

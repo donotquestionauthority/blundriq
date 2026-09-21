@@ -792,7 +792,10 @@ export default function Practice() {
         </div>
       </div>
 
+      {/* An attempt held from an earlier visit is the only thing on the page until it is
+          saved: no board, no Skip, no list, no overlay — a second attempt must not be possible. */}
       {held && !inPageLock && <HeldAttemptBanner attempt={held} onSaved={refetch} />}
+      {!(held && !inPageLock) && (
       <div className="mt-4">
         {/* `isStale` is checked as well as `isLoading`: on the first render after a filter change the
             effect has not run yet, so isLoading still reads false from the previous fetch. */}
@@ -823,10 +826,11 @@ export default function Practice() {
           </>
         )}
       </div>
+      )}
 
       {deepLinkId != null && deepLinkLoading && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 text-sm text-zinc-200">…</div>}
-      {deepLinkPuzzle && <PuzzleOverlay key={deepLinkPuzzle.id} puzzle={deepLinkPuzzle} onClose={() => setDeepLinkId(null)} onAttemptRecorded={refetch} onNavigationLock={setInPageLock} />}
-      {openPuzzle && !deepLinkPuzzle && <PuzzleOverlay key={openPuzzle.id} puzzle={openPuzzle} onClose={() => setOpenPuzzle(null)} onAttemptRecorded={refetch} onNavigationLock={setInPageLock} />}
+      {!(held && !inPageLock) && deepLinkPuzzle && <PuzzleOverlay key={deepLinkPuzzle.id} puzzle={deepLinkPuzzle} onClose={() => setDeepLinkId(null)} onAttemptRecorded={refetch} onNavigationLock={setInPageLock} />}
+      {!(held && !inPageLock) && openPuzzle && !deepLinkPuzzle && <PuzzleOverlay key={openPuzzle.id} puzzle={openPuzzle} onClose={() => setOpenPuzzle(null)} onAttemptRecorded={refetch} onNavigationLock={setInPageLock} />}
     </div>
   );
 }
