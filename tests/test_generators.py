@@ -123,6 +123,29 @@ def test_truncation_stops_when_the_material_gain_survives_the_reply() -> None:
     assert short is not None and len(short) >= 1
 
 
+# A knight fork of king and rook: Nc7+ wins the rook on a8, and Nxa8 cashes the point.
+KNIGHT_FORK_FEN = "r3k3/8/8/3N4/8/8/8/4K3 w - - 0 1"
+# A free rook: Rxa1 is up a rook after any reply, so the puzzle is that one move.
+FREE_ROOK_FEN = "4k3/8/8/8/8/8/8/rR2K3 w - - 0 1"
+# The same capture, but a bishop recaptures: the gain does not survive, so the line goes on.
+RECAPTURE_FEN = "4k3/8/8/4b3/8/8/8/rR2K3 w - - 0 1"
+
+
+def test_truncation_cuts_where_the_point_is_cashed() -> None:
+    assert truncate_solution(KNIGHT_FORK_FEN, "Nc7+ Kd8 Nxa8 Kc8 Nb6+ Kb7", 6) == ["Nc7+", "Kd8", "Nxa8"]
+
+
+def test_truncation_cuts_when_the_gain_survives_the_reply() -> None:
+    assert truncate_solution(FREE_ROOK_FEN, "Rxa1 Kd7 Ra7+ Kd6 Rb7", 6) == ["Rxa1"]
+
+
+def test_truncation_continues_past_a_recapture_up_to_the_cap() -> None:
+    line = "Rxa1 Bxa1 Kd2 Kd7 Kc2"
+    assert truncate_solution(RECAPTURE_FEN, line, 6) == ["Rxa1", "Bxa1", "Kd2", "Kd7", "Kc2"]
+    assert truncate_solution(RECAPTURE_FEN, line, 2) == ["Rxa1", "Bxa1", "Kd2"]
+    assert truncate_solution(RECAPTURE_FEN, line, 1) == ["Rxa1"]
+
+
 def test_truncation_refuses_an_empty_or_unplayable_line() -> None:
     assert truncate_solution(FORK_FEN, "", 3) is None
     assert truncate_solution(FORK_FEN, None, 3) is None
@@ -282,6 +305,24 @@ def test_a_hand_made_puzzle_is_never_displaced(clean: psycopg.Connection[DictRow
     assert [r["source_types"] for r in _puzzles(clean)] == [["custom"]]
 
 
+def test_a_hand_made_puzzle_keeps_its_origin_tag_and_is_still_protected(clean: psycopg.Connection[DictRow]) -> None:
+    """A puzzle the player made from a corpus position carries both tags; the corpus tag
+    must not make it displaceable."""
+    _player(clean)
+    _game(clean, 1)
+    _game(clean, 2)
+    _blunder(clean, 1)
+    _blunder(clean, 2)
+    clean.execute(
+        "INSERT INTO puzzles (fen, solution_line, source_types, color, player_id)"
+        " VALUES (%s, %s::jsonb, ARRAY['lichess_cc0', 'custom'], 'w', %s)",
+        (FORK_FEN, json.dumps(["Nxe5"]), PLAYER_ID),
+    )
+    stats = blunder.generate(clean, _config())
+    assert stats["created"] == 0 and stats["deactivated"] == 0 and stats["skipped_stronger"] == 1
+    assert [(r["source_types"], r["active"]) for r in _puzzles(clean)] == [(["lichess_cc0", "custom"], True)]
+
+
 def test_a_corpus_puzzle_gives_way_to_the_real_thing(clean: psycopg.Connection[DictRow]) -> None:
     _player(clean)
     _game(clean, 1)
@@ -439,7 +480,24 @@ def test_a_line_puzzle_is_rooted_at_the_line_start(clean: psycopg.Connection[Dic
     assert row["fen"] == TABIYA
     assert row["is_repertoire"] is True and row["repertoire_line_id"] == 1
     assert row["solution_line"] == ["Nf3", "Nc6"]
-    assert row["title"] == "Book > Ch > main"
+    assert row["title"] == "Book › Ch › main"
+    assert repertoire.generate(clean, _config())["unchanged"] == 1
+
+
+def test_renaming_a_chapter_relabels_the_puzzle_without_resetting_progress(clean: psycopg.Connection[DictRow]) -> None:
+    _player(clean)
+    _line(clean)
+    _deviation(clean, 1)
+    _deviation(clean, 2)
+    repertoire.generate(clean, _config())
+    puzzle_id = _puzzles(clean)[0]["id"]
+    clean.execute("INSERT INTO player_puzzle_state (player_id, puzzle_id, level) VALUES (%s, %s, 'rook')", (PLAYER_ID, puzzle_id))
+    clean.execute("UPDATE chapters SET title = 'Renamed' WHERE id = 1")
+    stats = repertoire.generate(clean, _config())
+    assert stats["retitled"] == 1 and stats["rebuilt"] == 0 and stats["srs_reset"] == 0
+    assert _puzzles(clean)[0]["title"] == "Book › Renamed › main"
+    level = clean.execute("SELECT level FROM player_puzzle_state WHERE puzzle_id = %s", (puzzle_id,)).fetchone()
+    assert level and level["level"] == "rook"
     assert repertoire.generate(clean, _config())["unchanged"] == 1
 
 
@@ -533,6 +591,20 @@ def test_an_inactive_line_takes_its_puzzle_with_it(clean: psycopg.Connection[Dic
     stats = repertoire.generate(clean, _config())
     assert stats["orphaned"] == 1
     assert _puzzles(clean)[0]["active"] is False
+
+
+def test_a_hand_made_mate_puzzle_is_not_the_generator_s_to_retire(clean: psycopg.Connection[DictRow]) -> None:
+    """Tagged own_mate and custom, with the mate event gone: the missed-mate generator only
+    cleans up its own rows, and a hand-made puzzle is not one of them."""
+    _player(clean)
+    clean.execute(
+        "INSERT INTO puzzles (fen, solution_line, source_types, color, player_id, acceptance_map)"
+        " VALUES (%s, %s::jsonb, ARRAY['own_mate', 'custom'], 'w', %s, '{}'::jsonb)",
+        (MATE_FEN, json.dumps(["Ra8#"]), PLAYER_ID),
+    )
+    stats = missed_mate.generate(clean, _config())
+    assert stats["deactivated"] == 0
+    assert [r["active"] for r in _puzzles(clean)] == [True]
 
 
 def test_a_hand_made_puzzle_survives_a_missed_mate_too(clean: psycopg.Connection[DictRow]) -> None:

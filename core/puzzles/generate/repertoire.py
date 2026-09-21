@@ -77,7 +77,7 @@ line_events AS (
 SELECT rl.id AS line_id, rl.line_name, rl.moves, rl.fen_sequence, bk.color,
        bk.title AS book_title, ch.title AS chapter_title,
        COALESCE(ev.games, 0) AS event_count,
-       pz.id AS existing_id, pz.active AS existing_active, pz.fen AS existing_fen,
+       pz.id AS existing_id, pz.active AS existing_active, pz.fen AS existing_fen, pz.title AS existing_title,
        pz.solution_line AS existing_solution_line,
        pz.solution_fen_sequence AS existing_solution_fen_sequence
 FROM repertoire_lines rl
@@ -130,6 +130,7 @@ class Stats:
     deactivated: int = 0
     orphaned: int = 0
     srs_reset: int = 0
+    retitled: int = 0
     skipped_bad_line: int = 0
 
     def as_dict(self) -> dict[str, int]:
@@ -142,6 +143,7 @@ class Stats:
             "deactivated": self.deactivated,
             "orphaned": self.orphaned,
             "srs_reset": self.srs_reset,
+            "retitled": self.retitled,
             "skipped_bad_line": self.skipped_bad_line,
         }
 
@@ -161,6 +163,7 @@ def generate(conn: Connection[Any], config: Settings) -> dict[str, int]:
 
     to_deactivate: list[int] = []
     to_reset: list[int] = []
+    retitle: list[tuple[str, int]] = []
     upserts: list[dict[str, Any]] = []
 
     for row in rows:
@@ -181,6 +184,7 @@ def generate(conn: Connection[Any], config: Settings) -> dict[str, int]:
             continue
 
         fresh_fen = str(fens[0])
+        title = f"{row['book_title']} › {row['chapter_title']} › {row['line_name']}"
         drifted = existing_id is not None and (
             str(row["existing_fen"]) != fresh_fen
             or _as_list(row["existing_solution_line"]) != moves
@@ -188,7 +192,11 @@ def generate(conn: Connection[Any], config: Settings) -> dict[str, int]:
         )
         if existing_id is not None and not drifted:
             if row["existing_active"]:
-                stats.unchanged += 1
+                # A renamed book or chapter is a label, not a new lesson: no reset.
+                if row["existing_title"] != title:
+                    retitle.append((title, int(existing_id)))
+                else:
+                    stats.unchanged += 1
                 continue  # steady state writes nothing at all
             stats.reactivated += 1
         elif existing_id is None:
@@ -203,7 +211,7 @@ def generate(conn: Connection[Any], config: Settings) -> dict[str, int]:
                 "line": json.dumps(moves),
                 "seq": json.dumps(fens),
                 "color": "w" if str(row["color"]) == "white" else "b",
-                "title": f"{row['book_title']} > {row['chapter_title']} > {row['line_name']}",
+                "title": title,
                 "line_id": int(row["line_id"]),
                 "player": PLAYER_ID,
             }
@@ -220,6 +228,9 @@ def generate(conn: Connection[Any], config: Settings) -> dict[str, int]:
             stats.srs_reset = cur.rowcount
         for params in upserts:
             cur.execute(_UPSERT, params)
+        for title, puzzle_id in retitle:
+            cur.execute("UPDATE puzzles SET title = %s, updated_at = now() WHERE id = %s", (title, puzzle_id))
+        stats.retitled = len(retitle)
     return stats.as_dict()
 
 
