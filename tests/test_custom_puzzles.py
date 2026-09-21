@@ -57,7 +57,9 @@ def test_a_hand_made_puzzle_is_stored_like_a_generated_one_and_always_tagged_cus
 @pytest.mark.parametrize(
     ("kw", "message"),
     [
-        ({"fen": "not a fen"}, "valid FEN"),
+        ({"fen": "not a fen"}, "six-field"),
+        ({"fen": "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w"}, "six-field"),
+        ({"fen": "xyz/8/8/8/8/8/8/8 w - - 0 1"}, "valid FEN"),
         ({"fen": "8/8/8/8/8/8/8/8 w - - 0 1"}, "legal chess position"),
         ({"solution_line": []}, "1 to 30"),
         ({"solution_line": ["Nxe5"] * 31}, "1 to 30"),
@@ -71,6 +73,14 @@ def test_a_puzzle_that_cannot_be_played_is_refused(
     with pytest.raises(custom.InvalidPuzzle, match=message):
         _make(db, **kw)
     assert db.execute("SELECT count(*) AS n FROM puzzles").fetchone() == {"n": 0}
+
+
+def test_a_short_fen_is_refused_because_it_has_no_board_key(db: psycopg.Connection[DictRow]) -> None:
+    assert db.execute("SELECT bq_canonical_fen(%s) AS k", (FORK.rsplit(" ", 4)[0],)).fetchone() == {"k": None}
+    with pytest.raises(custom.InvalidPuzzle):
+        _make(db, fen=FORK.rsplit(" ", 4)[0])
+    made = db.execute("SELECT canonical_fen FROM puzzles WHERE id = %s", (_make(db),)).fetchone()
+    assert made is not None and made["canonical_fen"] is not None
 
 
 def test_the_line_may_open_with_the_opponents_move(db: psycopg.Connection[DictRow]) -> None:
@@ -178,6 +188,10 @@ def test_dismiss_and_restore_round_trip_and_refuse_a_non_position(client: TestCl
     assert client.post("/blunders/restore", json={"fen": FORK}).status_code == 200
     assert client.get("/blunders").json()["active_count"] == 1
     assert client.post("/blunders/dismiss", json={"fen": "'; DROP TABLE blunders; --"}).status_code == 422
+    assert (
+        client.post("/blunders/dismiss", json={"fen": FORK.rsplit(" ", 4)[0]}).status_code == 422
+    )  # short: no board key
+    assert client.get("/blunders").json()["active_count"] == 1
 
 
 def test_create_and_remove_a_puzzle_over_http(client: TestClient) -> None:

@@ -5,13 +5,13 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, Literal
 
-import chess
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
 from api import auth
 from core import ai, blunders, db, settings
 from core.constants import BLUNDER_CLASSES
+from core.puzzles import custom
 
 router = APIRouter(prefix="/blunders", tags=["blunders"], dependencies=[auth.Authed])
 
@@ -57,10 +57,9 @@ class FenBody(BaseModel):
     @classmethod
     def _is_a_position(cls, value: str) -> str:
         try:
-            chess.Board(value)
-        except ValueError as exc:
-            raise ValueError("not a valid FEN") from exc
-        return value
+            return custom.full_fen(value)  # a short FEN has no board key and would dismiss nothing
+        except custom.InvalidPuzzle as exc:
+            raise ValueError(str(exc)) from exc
 
 
 @router.post("/dismiss")

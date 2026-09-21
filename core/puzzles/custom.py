@@ -35,15 +35,26 @@ class BoardTaken(Exception):
     """The board already has an active puzzle."""
 
 
-def validate(fen: str, solution_line: list[str], color: str) -> list[str]:
-    """The line in canonical SAN, or `InvalidPuzzle`. The line may open with the opponent's
-    move, but the player has to move in it somewhere."""
+def full_fen(fen: str) -> str:
+    """A six-field FEN of a legal position, or `InvalidPuzzle`. The board key every rule
+    below hangs on (`bq_canonical_fen`) is NULL for a short FEN, so a short one is never
+    stored: it would be keyed to nothing, own no board, and crash the solver."""
+    if len(fen.split()) != 6:
+        raise InvalidPuzzle("the position is not a full six-field FEN")
     try:
         board = chess.Board(fen)
     except ValueError as exc:
         raise InvalidPuzzle("the position is not a valid FEN") from exc
     if not board.is_valid():
         raise InvalidPuzzle("the position is not a legal chess position")
+    return board.fen()
+
+
+def validate(fen: str, solution_line: list[str], color: str) -> tuple[str, list[str]]:
+    """The FEN and line in canonical form, or `InvalidPuzzle`. The line may open with the
+    opponent's move, but the player has to move in it somewhere."""
+    start = full_fen(fen)
+    board = chess.Board(start)
     if not 1 <= len(solution_line) <= MAX_PLIES:
         raise InvalidPuzzle(f"the solution must have 1 to {MAX_PLIES} moves")
     player_is_white = color == "w"
@@ -58,7 +69,7 @@ def validate(fen: str, solution_line: list[str], color: str) -> list[str]:
         board.push(move)
     if player_moves == 0:
         raise InvalidPuzzle("the solution has no move for your colour")
-    return canonical
+    return start, canonical
 
 
 def create(
@@ -73,7 +84,7 @@ def create(
 ) -> int:
     """Create the puzzle and return its id. `custom` is always stamped here, never taken
     from the request. Raises `InvalidPuzzle` or `BoardTaken`."""
-    line = validate(fen, solution_line, color)
+    fen, line = validate(fen, solution_line, color)
     tags = [t for t in CONTEXT_TAGS if t in context_tags] + [CUSTOM]
     created = _write.create(
         conn,

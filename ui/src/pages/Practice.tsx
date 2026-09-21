@@ -507,15 +507,17 @@ function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onNavigationLock }:
 
   // A hand-made puzzle can be retired from here. Not while an attempt on it is unsaved or
   // still on its way: the solver must not unmount owing the server an attempt, and an
-  // attempt that lands after the puzzle is gone is refused.
+  // attempt that lands after the puzzle is gone is refused. The board is locked for the
+  // whole removal, so no attempt can start once the request is out, and the overlay closes
+  // only if none did.
   const removable = !puzzle.is_repertoire && puzzle.source_types.includes("custom");
   const held = useSyncExternalStore(subscribeUnsavedAttempt, getUnsavedAttempt, getUnsavedAttempt) !== null; // by any solver on the page
-  const removeBlocked = locked || held || attempt.attemptStatus !== null;
   const [confirming, setConfirming] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
+  const removeBlocked = locked || held || attempt.attemptStatus !== null || removing;
   async function remove() {
-    if (removing || removeBlocked) return;
+    if (removeBlocked) return;
     setRemoving(true);
     setRemoveError(null);
     try {
@@ -527,6 +529,10 @@ function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onNavigationLock }:
         setRemoving(false);
         return;
       }
+    }
+    if (getUnsavedAttempt() !== null) {
+      setRemoving(false); // an attempt slipped in before the lock: the page keeps the solver until it is saved
+      return;
     }
     onAttemptRecorded(); // refetch the list it was on
     onClose();
@@ -558,7 +564,7 @@ function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onNavigationLock }:
           isRepertoire={puzzle.is_repertoire}
           serverDowngraded={attempt.serverDowngraded}
           attemptStatus={attempt.attemptStatus}
-          submissionLocked={attempt.navigationBlocked}
+          submissionLocked={attempt.navigationBlocked || removing}
         />
         <BlockingBanner error={attempt.blockingError} submitting={attempt.submitting} onRetry={attempt.retry} />
         <GameLinks puzzle={puzzle} />
@@ -572,7 +578,7 @@ function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onNavigationLock }:
             {confirming ? (
               <>
                 <span className="text-zinc-500">Remove this puzzle? Its history is kept.</span>
-                <button type="button" disabled={removing || removeBlocked} onClick={remove} className="font-medium text-red-600 disabled:opacity-40 dark:text-red-400">
+                <button type="button" disabled={removeBlocked} onClick={remove} className="font-medium text-red-600 disabled:opacity-40 dark:text-red-400">
                   {removing ? "Removing…" : "Yes, remove"}
                 </button>
                 <button type="button" disabled={removing} onClick={() => setConfirming(false)} className="text-zinc-500 disabled:opacity-40">

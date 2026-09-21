@@ -27,7 +27,12 @@ function List({ filters, setFilters }: { filters: BlunderFilters; setFilters: (f
   const [creating, setCreating] = useState<CreatePuzzleSource | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const key = JSON.stringify(filters);
-  const { data, isLoading, error, refetch, isStale } = useApi(() => getBlunders(filters, page), [key, page]);
+  const { data, isLoading, error, refetch, isStale } = useApi(async () => {
+    const r = await getBlunders(filters, page);
+    // A dismissal can empty the last page: step back onto the new last page.
+    if (page > 0 && page > r.total_pages - 1) setPage(r.total_pages - 1);
+    return r;
+  }, [key, page]);
 
   useEffect(() => {
     if (!toast) return;

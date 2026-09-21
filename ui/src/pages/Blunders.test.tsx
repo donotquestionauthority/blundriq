@@ -310,4 +310,27 @@ describe("Blunders page", () => {
     expect(await within(modal).findByText("You already have a puzzle for this position")).toBeInTheDocument();
     expect(within(modal).getByRole("button", { name: "Create puzzle" })).toBeEnabled();
   });
+
+  it("steps back a page when a dismissal empties the last one", async () => {
+    let dismissed = 0;
+    const calls = stubFetch({
+      "/settings": () => ({ status: 200, body: SETTINGS }),
+      "/blunders": (_m, _b, q) => {
+        const p = Number(q.get("page"));
+        const total = 51 - dismissed;
+        const pages = Math.max(1, Math.ceil(total / 50));
+        const rows = p < pages ? [position({ fen: p === 0 ? FORK : OTHER })] : [];
+        return { status: 200, body: page(rows, { active_count: total, page: p, total_pages: pages }) };
+      },
+      "/blunders/dismiss": () => ((dismissed += 1), { status: 200, body: { detail: "dismissed" } }),
+    });
+    renderPage();
+    fireEvent.click(await screen.findByText("Next →"));
+    await vi.waitFor(() => expect(calls.at(-1)?.query.get("page")).toBe("1"));
+    expect(await screen.findByText("2 / 2")).toBeInTheDocument(); // the second page has rendered
+    fireEvent.click(screen.getByLabelText("Dismiss"));
+    await vi.waitFor(() => expect(calls.at(-1)?.query.get("page")).toBe("0"));
+    expect(await screen.findByText("50 positions · 1 dismissed")).toBeInTheDocument();
+    expect(screen.getAllByTestId("position-card")).toHaveLength(1);
+  });
 });

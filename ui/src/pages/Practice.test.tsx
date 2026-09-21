@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import Layout from "../components/Layout";
 import { _resetUnsavedAttemptForTests, disownUnsavedAttempt, getUnsavedAttempt, holdUnsavedAttempt, isUnsavedAttemptOwned, releaseUnsavedAttempt } from "../utils/unsavedAttempt";
@@ -612,5 +612,23 @@ describe("Practice page", () => {
     expect(screen.getByText("Yes, remove")).toBeDisabled();
     fireEvent.click(screen.getByText("Yes, remove"));
     expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+  });
+
+  it("locks the board while the removal is in flight, so no attempt can start on a puzzle that is going away", async () => {
+    let finishDelete: (() => void) | null = null;
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1)], 1, 1) }),
+      "/practice/puzzles/11": () => ({ status: 200, body: { id: 11, fen: puzzle(11, 1).fen, solution_line: ["Ra8#"], color: "w", acceptance_map: null, source_types: ["custom"], themes: [], is_repertoire: false, presentation_ply: null } }),
+      "/puzzles/11": () => new Promise<Reply>((resolve) => (finishDelete = () => resolve({ status: 200, body: { detail: "removed" } }))),
+    });
+    renderPage("/practice?puzzle=11");
+    fireEvent.click(await screen.findByText("Remove puzzle"));
+    fireEvent.click(screen.getByText("Yes, remove"));
+    expect(await screen.findByText("Removing…")).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole("dialog")).getByText("drop")); // the overlay's board is locked: nothing happens
+    expect(calls.some((c) => c.path === "/practice/puzzles/11/attempt")).toBe(false);
+    finishDelete!();
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(calls.some((c) => c.path === "/practice/puzzles/11/attempt")).toBe(false);
   });
 });

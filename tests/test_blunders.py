@@ -88,19 +88,21 @@ def test_a_board_is_counted_in_distinct_games_and_scored_by_each_games_worst_ins
     _blunder(db, 1, A, cls="mistake", cp=120, ply=4)
     _blunder(db, 1, A_LATER, cls="miss", cp=500, ply=16, played="h3")  # same board, same game: the worse one counts
     _blunder(db, 2, A, cls="blunder", cp=250)
+    _game(db, 0, days_ago=0.1)  # the newest game, but a milder occurrence: not the example
+    _blunder(db, 0, A, cls="mistake", cp=130, ply=4, played="Bb5")
     _game(db, 3)
     _blunder(db, 3, B)  # seen once: below the threshold
     out = _list(db)
     assert out["active_count"] == 1 and out["dismissed_count"] == 0 and out["total_pages"] == 1
     (card,) = out["positions"]
-    assert card["count"] == 2 and card["score"] == 8 + 4
-    assert card["classifications"] == {"miss": 1, "blunder": 1}
+    assert card["count"] == 3 and card["score"] == 8 + 4 + 2
+    assert card["classifications"] == {"miss": 1, "blunder": 1, "mistake": 1}
     assert sum(card["classifications"].values()) == card["count"]
     # The example is the most severe occurrence, with that occurrence's own FEN and move.
     assert card["fen"] == A_LATER and card["move_played"] == "h3" and card["ply"] == 16 and card["cp_loss"] == 500
     assert card["chess_game_id"] == 1 and card["moves"] == ["e4", "e5"]
-    assert [g["chess_game_id"] for g in card["games"]] == [1, 2]  # newest first, one row per game
-    assert card["games"][0]["classification"] == "miss" and card["games"][0]["result"] == "loss"
+    assert [g["chess_game_id"] for g in card["games"]] == [0, 1, 2]  # newest first, one row per game
+    assert [g["classification"] for g in card["games"]] == ["mistake", "miss", "blunder"] and card["games"][1]["result"] == "loss"
     assert card["context"] == "Italian Game" and card["book"] is None
 
 
@@ -177,8 +179,16 @@ def test_a_page_past_the_end_is_empty_and_still_carries_the_counts(db: psycopg.C
     for gid in (1, 2):
         _game(db, gid)
         _blunder(db, gid)
+        _blunder(db, gid, B, ply=2)
+    blunders.dismiss(db, B)
     out = blunders.positions(db, BlunderFilters(ALL, time_class="all"), "rapid_plus", page=7)
-    assert out["positions"] == [] and out["active_count"] == 1 and out["page"] == 7
+    assert out["positions"] == [] and out["active_count"] == 1 and out["page"] == 7 and out["total_pages"] == 1
+    # Each view's page count is over its own rows.
+    for gid in range(3, 60):
+        _game(db, gid)
+        _blunder(db, gid, B, ply=2)
+    assert _list(db)["total_pages"] == 1 and _list(db, show_dismissed=True)["total_pages"] == 1
+    assert _list(db, min_occurrences=1, show_dismissed=True)["total_pages"] == 1
     assert _list(db, classifications=())["active_count"] == 0
 
 

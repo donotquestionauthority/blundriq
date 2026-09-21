@@ -87,10 +87,12 @@ def effective_params(prompt: AiPrompt) -> dict[str, Any]:
     provider = provider_of(prompt.model)
     system = prompt.system_prompt.strip()
     if provider == "openai":
+        # The reasoning (o*) models refuse any temperature but their default.
+        reasoning = re.match(r"^o\d", prompt.model) is not None
         return {
             "provider": provider,
             "system_prompt": system,
-            "temperature": prompt.temperature,
+            "temperature": None if reasoning else prompt.temperature,
             "max_tokens": prompt.max_tokens,
         }
     params: dict[str, Any] = {"provider": provider, "system_prompt": system}
@@ -108,7 +110,7 @@ def effective_params(prompt: AiPrompt) -> dict[str, Any]:
         params |= {
             "temperature": prompt.temperature,
             "thinking_enabled": False,
-            "thinking_budget_tokens": prompt.thinking_budget_tokens,
+            "thinking_budget_tokens": 0,  # not sent, so not in the hash either
             "prefill": prompt.prefill.rstrip(),
             "max_tokens": prompt.max_tokens,
         }

@@ -35,13 +35,27 @@ def test_thinking_forbids_prefill_and_temperature_and_makes_room_for_the_answer(
     assert "temperature" not in body and len(body["messages"]) == 1 and body["max_tokens"] == 1280
 
 
-def test_thinking_off_is_said_explicitly_only_to_a_model_that_thinks_by_default() -> None:
+def test_thinking_off_is_said_explicitly_only_to_a_model_that_thinks_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     assert ai.effective_params(_prompt(model="claude-sonnet-5"))["thinking"] == {"type": "disabled"}
     eff = ai.effective_params(_prompt(prefill="**Because ", temperature=0.3, system_prompt="  coach  "))
     assert "thinking" not in eff
+    reply = ai.call_provider("claude-haiku-4-5", "hi", eff, _anthropic("it hangs."))
+    assert reply.text == "**Becauseit hangs."  # the prefill is part of the answer
     body = ai.request_body("claude-haiku-4-5", "hi", eff)
     assert body["system"] == "coach" and body["temperature"] == 0.3
     assert body["messages"][-1] == {"role": "assistant", "content": "**Because"}  # no trailing whitespace
+
+
+def test_a_reasoning_model_is_sent_no_temperature_and_its_hash_agrees() -> None:
+    a, b = _prompt(model="o3-mini", temperature=0.2), _prompt(model="o3-mini", temperature=0.9)
+    assert ai.prompt_hash(a) == ai.prompt_hash(b)
+    assert "temperature" not in ai.request_body("o3-mini", "hi", ai.effective_params(a))
+    assert ai.prompt_hash(_prompt(thinking_budget_tokens=100)) == ai.prompt_hash(
+        _prompt(thinking_budget_tokens=900)
+    )  # not sent while off
 
 
 def test_openai_gets_only_what_it_understands_and_its_hash_ignores_the_rest() -> None:
@@ -98,7 +112,7 @@ def _row(**kw: Any) -> dict[str, Any]:
 
 
 def test_the_context_is_all_strings_with_lines_numbered_from_where_they_start() -> None:
-    ctx = ai.build_context(_row(), ply=7)
+    ctx = ai.build_context(_row(moves=[*_row()["moves"], "Nf6", "Ng5"]), ply=7)
     assert ctx["best_line"] == "12... d6 13. O-O Nf6"
     assert ctx["post_blunder_line"] == "13. Ng5 d5"  # after Black's move the number has advanced
     assert ctx["pgn_context"] == "2. Nf3 Nc6 3. Bc4 h6 4. d3"
@@ -203,6 +217,27 @@ def test_a_miss_calls_the_provider_once_then_the_cache_answers_for_free(
     second = ai.explain(tx, 1, 7, "a", client=_anthropic(status=500))  # would fail if it were called
     assert second["cached"] is True and second["explanation"] == first["explanation"]
     (call,) = _calls(tx)
+    # Another blunder at the same board with a different move is another explanation.
+    with tx() as conn:
+        conn.execute(
+            "INSERT INTO chess_games (id, platform, platform_game_id, played_at, variant, time_class, moves) VALUES (2, 'lichess', 'g2', now(), 'standard', 'rapid', '[]'::jsonb)"
+        )
+        conn.execute(
+            "INSERT INTO player_games (player_id, chess_game_id, player_color, source) VALUES (%s, 2, 'black', 'lichess')",
+            (PLAYER_ID,),
+        )
+        conn.execute(
+            "INSERT INTO blunders (player_id, chess_game_id, ply, fen, move_played, best_move, classification) VALUES (%s, 2, 7, %s, 'a6', 'd6', 'mistake')",
+            (PLAYER_ID, FEN.replace(" 7 12", " 1 12")),
+        )
+    other = ai.explain(tx, 2, 7, "a", client=_anthropic("Different answer."))
+    assert other == {
+        "explanation": "Different answer.",
+        "cached": False,
+        "model": "claude-haiku-4-5",
+        "prompt_label": "Explain",
+    }
+    assert len(_calls(tx)) == 2
     assert (call["prompt_key"], call["model"], call["input_tokens"], call["output_tokens"]) == (
         "a",
         "claude-haiku-4-5",
