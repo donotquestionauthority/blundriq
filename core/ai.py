@@ -26,7 +26,7 @@ import re
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, LiteralString, cast
 
 import httpx
 import psycopg
@@ -34,6 +34,7 @@ from jinja2 import TemplateError
 from psycopg import Connection
 
 from core import prompts, secrets
+from core.chess.eligibility import analysable_sql
 from core.constants import (
     AI_ADAPTIVE_THINKING_MODELS,
     AI_THINKING_HEADROOM_TOKENS,
@@ -217,15 +218,18 @@ def build_context(row: dict[str, Any], ply: int) -> dict[str, Any]:
 def _blunder_row(conn: Connection[Any], chess_game_id: int, ply: int) -> dict[str, Any] | None:
     with conn.cursor() as cur:
         cur.execute(
-            """
+            cast(
+                LiteralString,
+                f"""
             SELECT b.fen, b.move_played, b.best_move, b.best_line, b.post_blunder_line, b.centipawn_loss,
                    b.classification, b.phase, pg.player_color, pg.player_rating, cg.moves, cg.opening_name
             FROM blunders b
             JOIN player_games pg ON pg.player_id = b.player_id AND pg.chess_game_id = b.chess_game_id
             JOIN chess_games cg ON cg.id = b.chess_game_id
-            WHERE b.player_id = %s AND b.chess_game_id = %s AND b.ply = %s
+            WHERE b.player_id = %s AND b.chess_game_id = %s AND b.ply = %s AND {analysable_sql("cg")}
             ORDER BY b.id LIMIT 1
             """,
+            ),
             (PLAYER_ID, chess_game_id, ply),
         )
         row = cur.fetchone()

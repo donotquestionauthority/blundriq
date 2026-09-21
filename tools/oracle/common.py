@@ -35,7 +35,7 @@ def sample_ids() -> list[int]:
 
 def report(title: str, diffs: list[str], checked: int) -> int:
     games = {d.split(":", 1)[0].split(" ply", 1)[0] for d in diffs}
-    print(f"\n== {title}: {checked} games checked, {len(games)} games with {len(diffs)} field differences")
+    print(f"\n== {title}: {checked} entries checked, {len(games)} with {len(diffs)} field differences")
     for d in diffs[:200]:
         print("  " + d)
     if len(diffs) > 200:

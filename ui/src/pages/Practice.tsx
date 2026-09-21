@@ -2,12 +2,13 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import { useSearchParams } from "react-router";
 import { ApiError } from "../api";
 import { removePuzzle } from "../blunders";
+import { beginRemoval, endRemoval, getRemovals, subscribeRemovals } from "../utils/puzzleRemoval";
 import { useApi } from "../hooks/useApi";
 import { disownUnsavedAttempt, getUnsavedAttempt, holdUnsavedAttempt, isUnsavedAttemptOwned, releaseUnsavedAttempt, subscribeUnsavedAttempt, type UnsavedAttempt } from "../utils/unsavedAttempt";
 import { PuzzleEngine } from "../components/PuzzleEngine";
 import { getPuzzleById, getPuzzles, isRotationPuzzle, LAST_N_OPTIONS, recordAttempt, skipPuzzle } from "../practice";
 import type { PlayablePuzzlePayload, PracticeType, Puzzle, PuzzleGameLink, PuzzleSrs, SrsFilter, SrsLevel } from "../practice";
-import { enqueue as enqueueAttempt, hasPendingAttempt, initQueueTriggers, isQueueModeAvailable, markCompleted as markAttemptCompleted, type PendingAttempt } from "../utils/attemptQueue";
+import { enqueue as enqueueAttempt, hasPendingAttempt, hasPendingAttemptForPuzzle, initQueueTriggers, isQueueModeAvailable, markCompleted as markAttemptCompleted, type PendingAttempt } from "../utils/attemptQueue";
 
 /**
  * Practice: the puzzle queue. `srs=due` is the play queue (a streaming batch consumer);
@@ -108,6 +109,12 @@ function PuzzleHeader({ puzzle, note }: { puzzle: Puzzle; note?: string | null }
 }
 
 // ─── Attempt submission ─────────────────────────────────────────────────────
+
+/** True while a removal of this puzzle is in flight, wherever it was started. */
+function useBeingRemoved(puzzleId: number): boolean {
+  return useSyncExternalStore(subscribeRemovals, getRemovals, getRemovals).has(puzzleId);
+}
+
 
 const ATTEMPT_RESOLVED_EVENT = "blundriq:attempt-resolved";
 
@@ -381,6 +388,7 @@ function PlayMode({
     if (awaitingNextRef.current) onNeedRefetch();
   }, [onAttemptRecorded, onNeedRefetch]);
   const attempt = useAttemptSubmit(puzzle?.id ?? -1, recorded);
+  const beingRemoved = useBeingRemoved(puzzle?.id ?? -1);
   const showNext = attempt.lastResult !== null;
   // While an attempt is unsaved (blocking mode), every way of leaving this puzzle is closed:
   // Previous, the type tabs and the filters would all discard the only copy of it.
@@ -485,7 +493,7 @@ function PlayMode({
         isRepertoire={puzzle.is_repertoire}
         serverDowngraded={attempt.serverDowngraded}
         attemptStatus={attempt.attemptStatus}
-        submissionLocked={attempt.navigationBlocked}
+        submissionLocked={attempt.navigationBlocked || beingRemoved}
       />
       <BlockingBanner error={attempt.blockingError} submitting={attempt.submitting} onRetry={attempt.retry} />
       {((showNext && isLastQueued) || awaitingNext) && !allCaughtUp && <p className="mt-4 text-center text-xs text-zinc-500">Loading more puzzles…</p>}
@@ -500,42 +508,45 @@ function PlayMode({
 function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onNavigationLock }: { puzzle: Puzzle; onClose: () => void; onAttemptRecorded: () => void; onNavigationLock: (locked: boolean) => void }) {
   const attempt = useAttemptSubmit(puzzle.id, onAttemptRecorded);
   const locked = attempt.navigationBlocked;
-  useEffect(() => {
-    onNavigationLock(locked);
-    return () => onNavigationLock(false);
-  }, [locked, onNavigationLock]);
 
-  // A hand-made puzzle can be retired from here. Not while an attempt on it is unsaved or
-  // still on its way: the solver must not unmount owing the server an attempt, and an
-  // attempt that lands after the puzzle is gone is refused. The board is locked for the
-  // whole removal, so no attempt can start once the request is out, and the overlay closes
-  // only if none did.
+  // A hand-made puzzle can be retired from here. Not while an attempt on it exists anywhere
+  // unsaved — held in memory, in flight, or waiting in the durable queue from this or an
+  // earlier page load — because an attempt that lands after the puzzle is gone is refused.
+  // From the moment the request goes out until it is answered the puzzle is on the removal
+  // list (utils/puzzleRemoval), which locks every solver showing it, this one included, and
+  // this overlay's Close and the page's navigation wait with it.
   const removable = !puzzle.is_repertoire && puzzle.source_types.includes("custom");
   const held = useSyncExternalStore(subscribeUnsavedAttempt, getUnsavedAttempt, getUnsavedAttempt) !== null; // by any solver on the page
+  const removing = useBeingRemoved(puzzle.id);
   const [confirming, setConfirming] = useState(false);
-  const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
-  const removeBlocked = locked || held || attempt.attemptStatus !== null || removing;
+  const queued = confirming && hasPendingAttemptForPuzzle(puzzle.id);
+  const removeBlocked = locked || held || queued || attempt.attemptStatus !== null || removing;
+  const closeBlocked = locked || removing;
+  useEffect(() => {
+    onNavigationLock(closeBlocked);
+    return () => onNavigationLock(false);
+  }, [closeBlocked, onNavigationLock]);
   async function remove() {
-    if (removeBlocked) return;
-    setRemoving(true);
+    if (removeBlocked || hasPendingAttemptForPuzzle(puzzle.id)) return;
+    beginRemoval(puzzle.id);
     setRemoveError(null);
+    let gone = false;
     try {
       await removePuzzle(puzzle.id);
+      gone = true;
     } catch (e) {
-      if (!(e instanceof ApiError && e.status === 404)) {
+      if (e instanceof ApiError && e.status === 404) gone = true;
+      else {
         setRemoveError("Could not remove this puzzle. Try again.");
         setConfirming(false);
-        setRemoving(false);
-        return;
       }
+    } finally {
+      endRemoval(puzzle.id);
     }
-    if (getUnsavedAttempt() !== null) {
-      setRemoving(false); // an attempt slipped in before the lock: the page keeps the solver until it is saved
-      return;
-    }
+    if (!gone) return;
     onAttemptRecorded(); // refetch the list it was on
-    onClose();
+    if (getUnsavedAttempt() === null) onClose();
   }
 
   return (
@@ -546,8 +557,8 @@ function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onNavigationLock }:
           <button
             type="button"
             onClick={onClose}
-            disabled={attempt.navigationBlocked}
-            title={attempt.navigationBlocked ? "Saving — please wait or retry" : "Close"}
+            disabled={closeBlocked}
+            title={locked ? "Saving — please wait or retry" : removing ? "Removing — please wait" : "Close"}
             aria-label="Close"
             className="text-zinc-500 hover:text-zinc-900 disabled:opacity-40 dark:hover:text-zinc-100"
           >
@@ -578,6 +589,7 @@ function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onNavigationLock }:
             {confirming ? (
               <>
                 <span className="text-zinc-500">Remove this puzzle? Its history is kept.</span>
+                {queued && <span className="text-zinc-500">An attempt on it is still being saved.</span>}
                 <button type="button" disabled={removeBlocked} onClick={remove} className="font-medium text-red-600 disabled:opacity-40 dark:text-red-400">
                   {removing ? "Removing…" : "Yes, remove"}
                 </button>

@@ -4,7 +4,8 @@ import Layout from "../components/Layout";
 import { _resetUnsavedAttemptForTests, disownUnsavedAttempt, getUnsavedAttempt, holdUnsavedAttempt, isUnsavedAttemptOwned, releaseUnsavedAttempt } from "../utils/unsavedAttempt";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Practice from "./Practice";
-import { _resetProbesForTests } from "../utils/attemptQueue";
+import { _resetProbesForTests, QUEUE_STORE } from "../utils/attemptQueue";
+import { _resetRemovalsForTests } from "../utils/puzzleRemoval";
 import type { Puzzle, PuzzlesResponse } from "../practice";
 
 // The board is not under test: the mock exposes a button that drops the move the test set up.
@@ -92,6 +93,7 @@ describe("Practice page", () => {
     window.localStorage.clear();
     _resetProbesForTests();
     _resetUnsavedAttemptForTests();
+    _resetRemovalsForTests();
   });
   afterEach(() => {
     Object.defineProperty(navigator, "locks", { value: undefined, configurable: true });
@@ -630,5 +632,70 @@ describe("Practice page", () => {
     finishDelete!();
     await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(calls.some((c) => c.path === "/practice/puzzles/11/attempt")).toBe(false);
+  });
+
+  it("will not retire a puzzle while an attempt on it waits in the durable queue, even after the overlay is reopened", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    // Queue mode: localStorage and Web Locks are available, so a failed save is kept in the queue.
+    Object.defineProperty(navigator, "locks", { value: { request: (_n: string, cb: () => Promise<unknown>) => cb() }, configurable: true });
+    _resetProbesForTests();
+    const custom = puzzle(21, 1, { source_types: ["custom"] });
+    let attempts = 0;
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: { ...serve([custom], 1), batch_id: null } }),
+      "/practice/puzzles/21/attempt": () => ((attempts += 1), { status: 500, body: { detail: "boom" } }),
+      "/puzzles/21": () => ({ status: 200, body: { detail: "removed" } }),
+    });
+    renderPage("/practice?srs=all");
+    fireEvent.click(await screen.findByText("#21"));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByText("drop"));
+    await vi.waitFor(() => expect(attempts).toBeGreaterThan(0));
+    expect(JSON.parse(window.localStorage.getItem(QUEUE_STORE) ?? "[]")).toHaveLength(1); // still queued
+    fireEvent.click(screen.getByLabelText("Close"));
+    fireEvent.click(screen.getByText("#21")); // a fresh overlay, no memory of that attempt
+    fireEvent.click(await screen.findByText("Remove puzzle"));
+    expect(screen.getByText("Yes, remove")).toBeDisabled();
+    expect(screen.getByText("An attempt on it is still being saved.")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Yes, remove"));
+    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+  });
+
+  it("keeps a reopened solver locked while a removal started elsewhere is still in flight", async () => {
+    let finishDelete: (() => void) | null = null;
+    const custom = puzzle(21, 1, { source_types: ["custom"] });
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: { ...serve([custom], 1), batch_id: null } }),
+      "/puzzles/21": () => new Promise<Reply>((resolve) => (finishDelete = () => resolve({ status: 200, body: { detail: "removed" } }))),
+    });
+    renderPage("/practice?srs=all");
+    fireEvent.click(await screen.findByText("#21"));
+    fireEvent.click(await screen.findByText("Remove puzzle"));
+    fireEvent.click(screen.getByText("Yes, remove"));
+    expect(await screen.findByText("Removing…")).toBeInTheDocument();
+    expect(screen.getByLabelText("Close")).toBeDisabled(); // the overlay waits for the answer
+    expect(screen.getByRole("tab", { name: "Motif" })).toBeDisabled(); // and so does the page
+    finishDelete!();
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(1);
+  });
+
+  it("a solver mounted while its puzzle is being removed cannot play it", async () => {
+    const { beginRemoval, endRemoval } = await import("../utils/puzzleRemoval");
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1, { source_types: ["custom"] })], 1, 1) }),
+      "/practice/puzzles/11/attempt": () => ({ status: 200, body: { detail: "attempt recorded", solved: true, attempt_summary: { total: 1, solved: 1, streak: 1 }, srs: null } }),
+    });
+    beginRemoval(11); // started from another overlay, or the page before this one
+    renderPage();
+    expect(await screen.findByText("#11")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("drop"));
+    await flush();
+    expect(calls.some((c) => c.path === "/practice/puzzles/11/attempt")).toBe(false);
+    endRemoval(11);
+    await flush();
+    fireEvent.click(screen.getByText("drop"));
+    await flush();
+    await vi.waitFor(() => expect(calls.some((c) => c.path === "/practice/puzzles/11/attempt")).toBe(true));
   });
 });

@@ -18,7 +18,7 @@ disposable and is modified.
     python tools/oracle/diff_practice.py         # replay every solved attempt through the grader;
                                                  # diff the due set against the old rules
     python tools/oracle/diff_blunders.py         # the Blunders page's ranked list against the old
-                                                 # ranking query: count, score, classes, order
+                                                 # ranking query (core/oracle.py, weights frozen there)
 
 `diff_puzzles.py --generation` deletes the generated puzzles before remaking them, and
 deleting a puzzle cascades its SRS row away, so it refuses to run unless the database name

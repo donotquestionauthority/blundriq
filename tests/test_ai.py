@@ -350,3 +350,20 @@ def test_templates_are_sandboxed_and_checked_when_saved() -> None:
         AiPrompt(text="{% if x %}")
     with pytest.raises(SecurityError):
         prompts.render("{{ fen.__class__.__mro__ }}", {"fen": "x"})
+
+
+def test_a_chess960_blunder_row_cannot_be_explained(tx: Tx, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The list never shows one; a stray row must not be reachable by identifiers either, and
+    must cost nothing: no provider call, no budget row, no cache row, in either mode."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    _configure(tx)
+    with tx() as conn:
+        conn.execute("UPDATE chess_games SET variant = 'chess960', starting_fen = %s WHERE id = 1", (FEN,))
+    seen: list[httpx.Request] = []
+    for dry in (True, False):
+        with pytest.raises(ai.ExplainError) as err:
+            ai.explain(tx, 1, 7, "a", dry_run=dry, client=_anthropic(seen=seen))
+        assert err.value.status == 404
+    assert seen == [] and _calls(tx) == []
+    with tx() as conn:
+        assert conn.execute("SELECT count(*) AS n FROM ai_explanation_cache").fetchone() == {"n": 0}
