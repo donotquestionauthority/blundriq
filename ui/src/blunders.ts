@@ -39,6 +39,8 @@ export interface BlunderPosition {
   classifications: Partial<Record<BlunderClass, number>>;
   color: "white" | "black";
   dismissed: boolean;
+  /** Crossed the list's threshold after the request's `new_since` (Home's visit boundary). */
+  is_new: boolean;
   last_seen: string | null;
   context: string;
   book: string | null;
@@ -59,6 +61,8 @@ export interface BlundersResponse {
   positions: BlunderPosition[];
   active_count: number;
   dismissed_count: number;
+  /** Active boards marked new under `new_since`; 0 without one. They are listed first. */
+  new_count: number;
   page: number;
   page_size: number;
   total_pages: number;
@@ -71,6 +75,9 @@ export interface BlunderFilters {
   time_class: TimeClass;
   classifications: BlunderClass[];
   show_dismissed: boolean;
+  /** When the list was last looked at (`/blunders/seen`), read once as the page opens; boards that
+   *  crossed the threshold after it are marked NEW for the whole stay, whatever the filters. */
+  new_since: string | null;
 }
 
 export function buildQuery(f: BlunderFilters, page: number): string {
@@ -81,12 +88,14 @@ export function buildQuery(f: BlunderFilters, page: number): string {
   q.set("time_class", f.time_class);
   for (const c of f.classifications) q.append("classifications", c);
   if (f.show_dismissed) q.set("show_dismissed", "true");
+  if (f.new_since) q.set("new_since", f.new_since);
   q.set("page", String(page));
   return q.toString();
 }
 
-/** The page's opening filters, from the settings row. */
-export function defaultFilters(s: Record<string, unknown>): BlunderFilters {
+/** The page's opening filters, from the settings row (core/blunders.py `default_filters` is the
+ *  same recipe server-side, so Home's count is over the list this page opens on), and the marker. */
+export function defaultFilters(s: Record<string, unknown>, newSince: string | null = null): BlunderFilters {
   const num = (k: string, d: number) => (typeof s[k] === "number" ? (s[k] as number) : d);
   const byGames = s.blunders_default_filter_mode === "games";
   const classes = Array.isArray(s.blunders_default_classifications) ? s.blunders_default_classifications.filter((c): c is BlunderClass => BLUNDER_CLASSES.includes(c as BlunderClass)) : [];
@@ -97,6 +106,7 @@ export function defaultFilters(s: Record<string, unknown>): BlunderFilters {
     time_class: "focus",
     classifications: classes.length ? classes : ["miss", "blunder", "mistake"],
     show_dismissed: false,
+    new_since: newSince,
   };
 }
 
@@ -124,6 +134,7 @@ export function toCard(p: BlunderPosition): PositionCardData {
     chessGameId: p.chess_game_id,
     lastSeen: p.last_seen,
     dismissed: p.dismissed,
+    isNew: p.is_new,
     games: p.games,
   };
 }
@@ -138,6 +149,10 @@ export function daysAgo(iso: string | null | undefined): string | null {
 export const getBlunders = (f: BlunderFilters, page: number) => api.get<BlundersResponse>(`/blunders?${buildQuery(f, page)}`);
 export const dismissBoard = (fen: string) => api.post<{ detail: string }>("/blunders/dismiss", { fen });
 export const restoreBoard = (fen: string) => api.post<{ detail: string }>("/blunders/restore", { fen });
+/** The marker: when the list was last looked at. The page reads it as it opens and moves it once
+ *  the list is on screen; Home only reads it, so a new board waits until it has been seen. */
+export const getSeen = () => api.get<{ seen_at: string | null }>("/blunders/seen");
+export const markSeen = () => api.post<{ seen_at: string }>("/blunders/seen");
 
 // --- explanations ---
 
