@@ -775,4 +775,66 @@ describe("Practice page", () => {
     expect(await screen.findByRole("link", { name: "Games" })).toBeInTheDocument();
     expect(screen.queryByText("#21")).not.toBeInTheDocument();
   });
+
+  for (const following of [false, true]) {
+    it(`retiring an entry before the cursor moves nothing: the showing puzzle, its failed attempt and Retry stay${following ? " (with an entry after it)" : ""}`, async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const { confirmGone } = await import("../utils/puzzleRemoval");
+      const queue = [puzzle(21, 1, { source_types: ["custom"] }), puzzle(22, 1), ...(following ? [puzzle(23, 1)] : [])];
+      const calls = stubFetch({
+        "/practice/puzzles": () => ({ status: 200, body: serve(queue, 1, 1) }),
+        "/practice/skip": () => ({ status: 200, body: { status: "DEFERRED" } }),
+        "/practice/puzzles/22/attempt": failThenSucceed(),
+      });
+      renderPage();
+      expect(await screen.findByText("#21")).toBeInTheDocument();
+      fireEvent.click(screen.getByText("Skip →"));
+      expect(await screen.findByText("#22")).toBeInTheDocument();
+      fireEvent.click(screen.getByText("drop")); // blocking mode: the first save fails
+      expect(await screen.findByText(/Couldn't save your attempt/)).toBeInTheDocument();
+
+      confirmGone(21); // retired from elsewhere on the page
+      await flush();
+      expect(screen.getByText("#22")).toBeInTheDocument(); // not 23, not "Loading next puzzle…"
+      expect(screen.queryByText("#23")).not.toBeInTheDocument();
+      expect(screen.getByText("Retry")).toBeInTheDocument();
+      fireEvent.click(screen.getByText("Retry"));
+      expect(await screen.findByText("Next Puzzle →")).toBeInTheDocument();
+      const posts = calls.filter((c) => c.path.endsWith("/attempt")).map((c) => c.path);
+      expect(posts).toEqual(["/practice/puzzles/22/attempt", "/practice/puzzles/22/attempt"]); // never 23
+      expect(getUnsavedAttempt()).toBeNull();
+      // Previous is offered only for a live entry: 21 is gone.
+      expect(screen.getByText("← Previous")).toBeDisabled();
+    });
+  }
+
+  it("retiring an entry before the cursor with no attempt outstanding still shows the same puzzle", async () => {
+    const { confirmGone } = await import("../utils/puzzleRemoval");
+    stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(21, 1, { source_types: ["custom"] }), puzzle(22, 1), puzzle(23, 1)], 1, 1) }),
+      "/practice/skip": () => ({ status: 200, body: { status: "DEFERRED" } }),
+    });
+    renderPage();
+    fireEvent.click(await screen.findByText("Skip →"));
+    expect(await screen.findByText("#22")).toBeInTheDocument();
+    confirmGone(21);
+    await flush();
+    expect(screen.getByText("#22")).toBeInTheDocument();
+  });
+
+  it("Skip is disabled while the showing puzzle's removal is pending, and the cursor steps off it once it is gone", async () => {
+    const { beginRemoval, confirmGone } = await import("../utils/puzzleRemoval");
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(21, 1, { source_types: ["custom"] }), puzzle(22, 1)], 1, 1) }),
+      "/practice/skip": () => ({ status: 200, body: { status: "DEFERRED" } }),
+    });
+    beginRemoval(21);
+    renderPage();
+    expect(await screen.findByText("#21")).toBeInTheDocument();
+    expect(screen.getByText("Skip →")).toBeDisabled();
+    confirmGone(21);
+    expect(await screen.findByText("#22")).toBeInTheDocument();
+    expect(calls.some((c) => c.path === "/practice/skip")).toBe(false); // stepped off, not skipped
+    expect(screen.getByText("← Previous")).toBeDisabled();
+  });
 });
