@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useSearchParams } from "react-router";
 import { ApiError } from "../api";
 import { removePuzzle } from "../blunders";
-import { beginRemoval, endRemoval, getRemovals, subscribeRemovals } from "../utils/puzzleRemoval";
+import { beginRemoval, confirmGone, getUnplayable, isGone, removalFailed, subscribeRemovals } from "../utils/puzzleRemoval";
 import { useApi } from "../hooks/useApi";
 import { disownUnsavedAttempt, getUnsavedAttempt, holdUnsavedAttempt, isUnsavedAttemptOwned, releaseUnsavedAttempt, subscribeUnsavedAttempt, type UnsavedAttempt } from "../utils/unsavedAttempt";
 import { PuzzleEngine } from "../components/PuzzleEngine";
@@ -110,9 +110,9 @@ function PuzzleHeader({ puzzle, note }: { puzzle: Puzzle; note?: string | null }
 
 // ─── Attempt submission ─────────────────────────────────────────────────────
 
-/** True while a removal of this puzzle is in flight, wherever it was started. */
-function useBeingRemoved(puzzleId: number): boolean {
-  return useSyncExternalStore(subscribeRemovals, getRemovals, getRemovals).has(puzzleId);
+/** Ids no solver may play right now: a removal in flight, or confirmed gone (utils/puzzleRemoval). */
+function useUnplayable(): ReadonlySet<number> {
+  return useSyncExternalStore(subscribeRemovals, getUnplayable, getUnplayable);
 }
 
 
@@ -357,7 +357,11 @@ function PlayMode({
   // Every hook precedes the `if (!puzzle)` early return: on a batch boundary `puzzle` is briefly
   // undefined, and a hook declared after that return would be skipped on that render.
   const batchKeyOf = (p: Puzzle): number | "null" => p.play_batch_id ?? batchId ?? "null";
-  const [items, setItems] = useState<Puzzle[]>(() => batch);
+  const [queued, setQueued] = useState<Puzzle[]>(() => batch);
+  const unplayable = useUnplayable();
+  // A puzzle the server has confirmed gone leaves the queue at once, wherever its removal was
+  // asked for; the cursor then rests on whatever follows it.
+  const items = useMemo(() => queued.filter((p) => !isGone(p.id)), [queued, unplayable]); // eslint-disable-line react-hooks/exhaustive-deps
   const appendedBatchIdsRef = useRef<Set<number | "null">>(new Set(batch.map((p) => p.play_batch_id ?? batchId ?? "null")));
   const [currentIndex, setCurrentIndex] = useState(0);
   const [awaitingNext, setAwaitingNext] = useState(false);
@@ -372,7 +376,7 @@ function PlayMode({
     const fresh = batch.filter((p) => !appendedBatchIdsRef.current.has(batchKeyOf(p)));
     if (fresh.length === 0) return;
     for (const p of fresh) appendedBatchIdsRef.current.add(batchKeyOf(p));
-    setItems((prev) => [...prev, ...fresh]);
+    setQueued((prev) => [...prev, ...fresh]);
     setAwaitingNext(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [batch]);
@@ -388,7 +392,7 @@ function PlayMode({
     if (awaitingNextRef.current) onNeedRefetch();
   }, [onAttemptRecorded, onNeedRefetch]);
   const attempt = useAttemptSubmit(puzzle?.id ?? -1, recorded);
-  const beingRemoved = useBeingRemoved(puzzle?.id ?? -1);
+  const beingRemoved = puzzle !== undefined && unplayable.has(puzzle.id);
   const showNext = attempt.lastResult !== null;
   // While an attempt is unsaved (blocking mode), every way of leaving this puzzle is closed:
   // Previous, the type tabs and the filters would all discard the only copy of it.
@@ -517,36 +521,39 @@ function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onNavigationLock }:
   // this overlay's Close and the page's navigation wait with it.
   const removable = !puzzle.is_repertoire && puzzle.source_types.includes("custom");
   const held = useSyncExternalStore(subscribeUnsavedAttempt, getUnsavedAttempt, getUnsavedAttempt) !== null; // by any solver on the page
-  const removing = useBeingRemoved(puzzle.id);
+  const unplayable = useUnplayable();
+  const removing = unplayable.has(puzzle.id) && !isGone(puzzle.id);
+  const gone = isGone(puzzle.id);
   const [confirming, setConfirming] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const queued = confirming && hasPendingAttemptForPuzzle(puzzle.id);
-  const removeBlocked = locked || held || queued || attempt.attemptStatus !== null || removing;
+  const removeBlocked = locked || held || queued || attempt.attemptStatus !== null || removing || gone;
   const closeBlocked = locked || removing;
   useEffect(() => {
     onNavigationLock(closeBlocked);
     return () => onNavigationLock(false);
   }, [closeBlocked, onNavigationLock]);
+  // Any copy of a puzzle that is confirmed gone closes itself — this overlay whether or not it
+  // asked — unless an attempt is still unsaved, in which case it stays, locked, until it is.
+  useEffect(() => {
+    if (gone && !locked) onClose();
+  }, [gone, locked, onClose]);
   async function remove() {
     if (removeBlocked || hasPendingAttemptForPuzzle(puzzle.id)) return;
     beginRemoval(puzzle.id);
     setRemoveError(null);
-    let gone = false;
     try {
       await removePuzzle(puzzle.id);
-      gone = true;
     } catch (e) {
-      if (e instanceof ApiError && e.status === 404) gone = true;
-      else {
+      if (!(e instanceof ApiError && e.status === 404)) {
+        removalFailed(puzzle.id);
         setRemoveError("Could not remove this puzzle. Try again.");
         setConfirming(false);
+        return;
       }
-    } finally {
-      endRemoval(puzzle.id);
     }
-    if (!gone) return;
+    confirmGone(puzzle.id); // every list drops it and every solver showing it locks, then closes
     onAttemptRecorded(); // refetch the list it was on
-    if (getUnsavedAttempt() === null) onClose();
   }
 
   return (
@@ -575,7 +582,7 @@ function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onNavigationLock }:
           isRepertoire={puzzle.is_repertoire}
           serverDowngraded={attempt.serverDowngraded}
           attemptStatus={attempt.attemptStatus}
-          submissionLocked={attempt.navigationBlocked || removing}
+          submissionLocked={attempt.navigationBlocked || removing || gone}
         />
         <BlockingBanner error={attempt.blockingError} submitting={attempt.submitting} onRetry={attempt.retry} />
         <GameLinks puzzle={puzzle} />
@@ -853,7 +860,12 @@ export default function Practice() {
     return initQueueTriggers(handler, onSuccess);
   }, [refetch]);
 
-  const puzzles = data?.puzzles ?? [];
+  // A puzzle confirmed gone this page load never shows in a list or queue again, even from a
+  // response that predates its removal.
+  const unplayable = useUnplayable();
+  const puzzles = useMemo(() => (data?.puzzles ?? []).filter((p) => !isGone(p.id)), [data, unplayable]); // eslint-disable-line react-hooks/exhaustive-deps
+  const closeDeepLink = useCallback(() => setDeepLinkId(null), []);
+  const closeOpenPuzzle = useCallback(() => setOpenPuzzle(null), []);
   const subtypeOptions = (() => {
     if (type === "motif") return (data?.served_themes ?? []).map((t) => ({ value: t, label: t }));
     if (type === "blunder") return [...new Set(puzzles.flatMap((p) => p.themes ?? []))].sort().map((t) => ({ value: t, label: t }));
@@ -933,8 +945,8 @@ export default function Practice() {
       )}
 
       {deepLinkId != null && deepLinkLoading && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 text-sm text-zinc-200">…</div>}
-      {!orphaned && deepLinkPuzzle && <PuzzleOverlay key={deepLinkPuzzle.id} puzzle={deepLinkPuzzle} onClose={() => setDeepLinkId(null)} onAttemptRecorded={refetch} onNavigationLock={setInPageLock} />}
-      {!orphaned && openPuzzle && !deepLinkPuzzle && <PuzzleOverlay key={openPuzzle.id} puzzle={openPuzzle} onClose={() => setOpenPuzzle(null)} onAttemptRecorded={refetch} onNavigationLock={setInPageLock} />}
+      {!orphaned && deepLinkPuzzle && <PuzzleOverlay key={deepLinkPuzzle.id} puzzle={deepLinkPuzzle} onClose={closeDeepLink} onAttemptRecorded={refetch} onNavigationLock={setInPageLock} />}
+      {!orphaned && openPuzzle && !deepLinkPuzzle && <PuzzleOverlay key={openPuzzle.id} puzzle={openPuzzle} onClose={closeOpenPuzzle} onAttemptRecorded={refetch} onNavigationLock={setInPageLock} />}
     </div>
   );
 }

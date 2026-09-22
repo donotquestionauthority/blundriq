@@ -680,8 +680,8 @@ describe("Practice page", () => {
     expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(1);
   });
 
-  it("a solver mounted while its puzzle is being removed cannot play it", async () => {
-    const { beginRemoval, endRemoval } = await import("../utils/puzzleRemoval");
+  it("a failed removal unlocks the board again; a solver mounted mid-removal waits for the answer", async () => {
+    const { beginRemoval, removalFailed } = await import("../utils/puzzleRemoval");
     const calls = stubFetch({
       "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1, { source_types: ["custom"] })], 1, 1) }),
       "/practice/puzzles/11/attempt": () => ({ status: 200, body: { detail: "attempt recorded", solved: true, attempt_summary: { total: 1, solved: 1, streak: 1 }, srs: null } }),
@@ -692,10 +692,87 @@ describe("Practice page", () => {
     fireEvent.click(screen.getByText("drop"));
     await flush();
     expect(calls.some((c) => c.path === "/practice/puzzles/11/attempt")).toBe(false);
-    endRemoval(11);
+    removalFailed(11); // the server refused: the puzzle is still there
     await flush();
     fireEvent.click(screen.getByText("drop"));
-    await flush();
     await vi.waitFor(() => expect(calls.some((c) => c.path === "/practice/puzzles/11/attempt")).toBe(true));
+  });
+
+  for (const status of [200, 404]) {
+    it(`a puzzle removed from a deep link (${status}) leaves the queue underneath: no copy can be played`, async () => {
+      const custom = puzzle(21, 1, { source_types: ["custom"] });
+      const calls = stubFetch({
+        "/practice/puzzles": () => ({ status: 200, body: serve([custom, puzzle(22, 1)], 1, 1) }), // the stale queue still lists 21
+        "/practice/puzzles/21": () => ({ status: 200, body: { id: 21, fen: custom.fen, solution_line: ["Ra8#"], color: "w", acceptance_map: null, source_types: ["custom"], themes: [], is_repertoire: false, presentation_ply: null } }),
+        "/practice/puzzles/21/attempt": () => ({ status: 404, body: { detail: "puzzle not found" } }),
+        "/practice/puzzles/22/attempt": () => ({ status: 200, body: { detail: "attempt recorded", solved: true, attempt_summary: { total: 1, solved: 1, streak: 1 }, srs: null } }),
+        "/puzzles/21": () => (status === 200 ? { status, body: { detail: "removed" } } : { status, body: { detail: "puzzle not found" } }),
+      });
+      renderPage("/practice?puzzle=21");
+      expect(await screen.findByRole("dialog", { name: "Puzzle 21" })).toBeInTheDocument();
+      expect(await screen.findAllByText("#21")).toHaveLength(2); // the overlay and the queue copy underneath
+      fireEvent.click(screen.getByText("Remove puzzle"));
+      fireEvent.click(screen.getByText("Yes, remove"));
+      await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      // The queue has moved past the retired puzzle to the next one.
+      expect(await screen.findByText("#22")).toBeInTheDocument();
+      expect(screen.queryByText("#21")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByText("drop"));
+      await vi.waitFor(() => expect(calls.some((c) => c.path === "/practice/puzzles/22/attempt")).toBe(true));
+      expect(calls.some((c) => c.path === "/practice/puzzles/21/attempt")).toBe(false);
+      await vi.waitFor(() => expect(getUnsavedAttempt()).toBeNull()); // 22's attempt saved normally
+    });
+  }
+
+  it("a retired puzzle stays unplayable after leaving and re-entering the page, whenever the answer arrives", async () => {
+    let finishDelete: (() => void) | null = null;
+    const custom = puzzle(21, 1, { source_types: ["custom"] });
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: serve([custom], 1, 1) }),
+      "/practice/puzzles/21": () => ({ status: 200, body: { id: 21, fen: custom.fen, solution_line: ["Ra8#"], color: "w", acceptance_map: null, source_types: ["custom"], themes: [], is_repertoire: false, presentation_ply: null } }),
+      "/practice/puzzles/21/attempt": () => ({ status: 404, body: { detail: "puzzle not found" } }),
+      "/puzzles/21": () => new Promise<Reply>((resolve) => (finishDelete = () => resolve({ status: 200, body: { detail: "removed" } }))),
+    });
+    const first = renderPage("/practice?puzzle=21");
+    fireEvent.click(await screen.findByText("Remove puzzle"));
+    fireEvent.click(screen.getByText("Yes, remove"));
+    expect(await screen.findByText("Removing…")).toBeInTheDocument();
+    first.unmount(); // the browser's back button: the request is still out
+
+    renderPage("/practice?puzzle=21"); // and forward again, before the answer
+    expect(await screen.findByRole("dialog", { name: "Puzzle 21" })).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole("dialog")).getByText("drop")); // still pending: locked
+    await flush();
+    finishDelete!();
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument()); // gone: the copy closes itself
+    expect(await screen.findByText("You're all caught up")).toBeInTheDocument(); // and the queue dropped it
+    expect(calls.some((c) => c.path === "/practice/puzzles/21/attempt")).toBe(false);
+    expect(getUnsavedAttempt()).toBeNull();
+  });
+
+  it("the header links wait while a removal is pending", async () => {
+    let finishDelete: (() => void) | null = null;
+    const custom = puzzle(21, 1, { source_types: ["custom"] });
+    stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: { ...serve([custom], 1), batch_id: null } }),
+      "/puzzles/21": () => new Promise<Reply>((resolve) => (finishDelete = () => resolve({ status: 200, body: { detail: "removed" } }))),
+    });
+    render(
+      <MemoryRouter initialEntries={["/practice?srs=all"]}>
+        <Routes>
+          <Route element={<Layout onLoggedOut={() => {}} />}>
+            <Route path="/practice" element={<Practice />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+    fireEvent.click(await screen.findByText("#21"));
+    fireEvent.click(await screen.findByText("Remove puzzle"));
+    fireEvent.click(screen.getByText("Yes, remove"));
+    expect(await screen.findByText("Removing…")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Games" })).not.toBeInTheDocument(); // a disabled span instead
+    finishDelete!();
+    expect(await screen.findByRole("link", { name: "Games" })).toBeInTheDocument();
+    expect(screen.queryByText("#21")).not.toBeInTheDocument();
   });
 });

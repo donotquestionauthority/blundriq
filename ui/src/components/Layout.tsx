@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router";
 import { api } from "../api";
+import { getUnplayable, isGone, subscribeRemovals } from "../utils/puzzleRemoval";
 import { getUnsavedAttempt, subscribeUnsavedAttempt } from "../utils/unsavedAttempt";
 
 // Pages arrive phase by phase; a link is added here when its page exists.
@@ -16,8 +17,11 @@ export default function Layout({ onLoggedOut }: { onLoggedOut: () => void }) {
   const navigate = useNavigate();
   // While Practice holds an attempt it could not save, leaving the page would lose it, so
   // the header's links wait for the save.
-  const held = useSyncExternalStore(subscribeUnsavedAttempt, getUnsavedAttempt, getUnsavedAttempt) !== null;
-  const heldTitle = "Save your attempt on the Practice page first";
+  const unsaved = useSyncExternalStore(subscribeUnsavedAttempt, getUnsavedAttempt, getUnsavedAttempt) !== null;
+  // Likewise while a puzzle removal is waiting for the server's answer.
+  const removing = [...useSyncExternalStore(subscribeRemovals, getUnplayable, getUnplayable)].some((id) => !isGone(id));
+  const held = unsaved || removing;
+  const heldTitle = unsaved ? "Save your attempt on the Practice page first" : "A puzzle is being removed — one moment";
   async function logout() {
     if (held) return;
     await api.post("/logout");

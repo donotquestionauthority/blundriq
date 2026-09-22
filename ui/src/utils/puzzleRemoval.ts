@@ -1,35 +1,55 @@
 /**
- * Puzzles whose removal has been requested and not yet answered.
+ * Puzzles that must not be played: a removal is in flight, or the server has confirmed the
+ * puzzle is gone.
  *
- * Kept outside any component: a removal is a request in flight against the server, and the
- * overlay that started it can be closed, the row reopened, the page re-entered, before the
- * answer comes back. Every solver checks here and locks its board while its puzzle is on the
- * list, so no attempt can be made on a puzzle that may already be gone (an attempt that lands
- * after the removal is refused by the server and could never be credited).
+ * Kept outside any component. The overlay that asks for a removal can be closed, the row
+ * reopened, the page left and re-entered, before the answer arrives — and other copies of the
+ * puzzle may be mounted at the same time (the due queue under a deep link, an earlier list
+ * row). Every solver and every list consults this store, so:
+ *
+ *   * while the request is **pending**, every copy is locked and the page waits;
+ *   * once the server says the puzzle is **gone** (200, or a 404 saying it already was), it
+ *     stays unplayable for the rest of the page load and every list and queue drops it, so
+ *     no copy can accept a move the server would refuse;
+ *   * a **failed** request clears the lock and play resumes.
  */
 
-const removing = new Set<number>();
+const pending = new Set<number>();
+const gone = new Set<number>();
 const listeners = new Set<() => void>();
 let snapshot: ReadonlySet<number> = new Set();
 
 function notify() {
-  snapshot = new Set(removing);
+  snapshot = new Set([...pending, ...gone]);
   for (const l of listeners) l();
 }
 
 export function beginRemoval(puzzleId: number): void {
-  removing.add(puzzleId);
+  pending.add(puzzleId);
   notify();
 }
 
-export function endRemoval(puzzleId: number): void {
-  removing.delete(puzzleId);
+/** The server refused or could not be reached: the puzzle is still there and playable. */
+export function removalFailed(puzzleId: number): void {
+  pending.delete(puzzleId);
   notify();
 }
 
-/** For useSyncExternalStore: a fresh set after every change, the same one between changes. */
-export function getRemovals(): ReadonlySet<number> {
+/** The server confirmed the puzzle no longer exists (for this page load, permanently). */
+export function confirmGone(puzzleId: number): void {
+  pending.delete(puzzleId);
+  gone.add(puzzleId);
+  notify();
+}
+
+/** Ids no solver may play: pending and gone together. For useSyncExternalStore: a fresh set
+ *  after every change, the same one between changes. */
+export function getUnplayable(): ReadonlySet<number> {
   return snapshot;
+}
+
+export function isGone(puzzleId: number): boolean {
+  return gone.has(puzzleId);
 }
 
 export function subscribeRemovals(listener: () => void): () => void {
@@ -40,6 +60,7 @@ export function subscribeRemovals(listener: () => void): () => void {
 }
 
 export function _resetRemovalsForTests(): void {
-  removing.clear();
+  pending.clear();
+  gone.clear();
   notify();
 }
