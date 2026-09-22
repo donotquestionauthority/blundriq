@@ -161,7 +161,8 @@ def save_analysis(conn: Connection[Any], task: Task, result: GameAnalysis) -> bo
             """
             UPDATE chess_games
             SET analysis_status = 'completed', analysis_engine = %s, analysis_depth = %s, peak_advantage = %s,
-                final_eval = %s, ply_analysis = %s::jsonb, ply_analysis_depth = %s
+                final_eval = %s, ply_analysis = %s::jsonb, ply_analysis_depth = %s,
+                analyzed_at = COALESCE(analyzed_at, now())
             WHERE id = %s AND %s >= COALESCE(GREATEST(analysis_depth, ply_analysis_depth), 0)
             """,
             (

@@ -212,6 +212,7 @@ CREATE TABLE public.chess_games (
     canonical_variation text,
     position_keys bigint[] GENERATED ALWAYS AS (public.bq_position_keys(fen_sequence)) STORED,
     clocks jsonb,
+    analyzed_at timestamp with time zone,
     CONSTRAINT chess_games_analysis_status_check CHECK ((analysis_status = ANY (ARRAY['unanalyzed'::text, 'pending'::text, 'completed'::text, 'failed_retryable'::text, 'failed_permanent'::text]))),
     CONSTRAINT chess_games_canonical_pair_coherent CHECK (((canonical_family IS NULL) = (canonical_variation IS NULL))),
     CONSTRAINT chess_games_chess960_starting_fen_matches_seq CHECK (((variant = 'standard'::text) OR (fen_sequence IS NULL) OR ((fen_sequence ->> 0) = starting_fen))),
@@ -260,7 +261,8 @@ CREATE TABLE public.game_repertoire_results (
     expected_move text,
     played_move text,
     deviation_fen text,
-    canonical_fen text GENERATED ALWAYS AS ((public.bq_canonical_fen(deviation_fen) || ' 0 1'::text)) STORED
+    canonical_fen text GENERATED ALWAYS AS ((public.bq_canonical_fen(deviation_fen) || ' 0 1'::text)) STORED,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 CREATE SEQUENCE public.game_repertoire_results_id_seq
@@ -485,10 +487,10 @@ CREATE TABLE public.player_puzzle_state (
     CONSTRAINT player_puzzle_state_level_check CHECK ((level = ANY (ARRAY['pawn'::text, 'knight'::text, 'bishop'::text, 'rook'::text, 'queen'::text, 'king'::text])))
 );
 
--- Exactly one row (id = 1). Platform usernames and last-checked timestamps live here; home_seen_at drives the Home page's since-last-visit counts.
+-- Exactly one row (id = 1). Platform usernames and last-checked timestamps live here; blunders_seen_at is when the Blunders list was last looked at, the boundary of Home's "new since your last visit".
 CREATE TABLE public.players (
     id integer NOT NULL,
-    home_seen_at timestamp with time zone,
+    blunders_seen_at timestamp with time zone,
     chesscom_username text,
     chesscom_id text,
     lichess_username text,

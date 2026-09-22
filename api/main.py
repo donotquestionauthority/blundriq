@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.routes import auth as auth_routes
 from api.routes import blunders as blunders_routes
 from api.routes import games as games_routes
+from api.routes import home as home_routes
 from api.routes import practice as practice_routes
 from api.routes import puzzles as puzzles_routes
 from api.routes import settings as settings_routes
@@ -54,6 +55,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_routes.router)
     app.include_router(settings_routes.router)
     app.include_router(games_routes.router)
+    app.include_router(home_routes.router)
     app.include_router(practice_routes.router)
     app.include_router(blunders_routes.router)
     app.include_router(puzzles_routes.router)

@@ -1,4 +1,4 @@
-"""GET /blunders, POST /blunders/dismiss|restore|explain, GET /blunders/prompts — the Blunders page."""
+"""GET /blunders, GET|POST /blunders/seen, POST /blunders/dismiss|restore|explain, GET /blunders/prompts."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from dataclasses import replace
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, Field, field_validator
 
 from api import auth
 from core import ai, blunders, db, settings
@@ -25,6 +25,7 @@ def _filters(
     last_n_games: int = Query(0, ge=0, le=20000),
     time_class: TimeClass = Query("focus"),
     show_dismissed: bool = Query(False),
+    new_since: AwareDatetime | None = Query(None, description="Mark boards that crossed the threshold after this"),
 ) -> blunders.BlunderFilters:
     unknown = [c for c in classifications if c not in BLUNDER_CLASSES]
     if unknown:
@@ -36,6 +37,7 @@ def _filters(
         last_n_games=last_n_games,
         time_class=time_class,
         show_dismissed=show_dismissed,
+        new_since=new_since,
     )
 
 
@@ -60,6 +62,21 @@ class FenBody(BaseModel):
             return custom.full_fen(value)  # a short FEN has no board key and would dismiss nothing
         except custom.InvalidPuzzle as exc:
             raise ValueError(str(exc)) from exc
+
+
+@router.get("/seen")
+def seen() -> dict[str, str | None]:
+    """The boundary the page opens with; Home's count uses the same value."""
+    with db.transaction() as conn:
+        at = blunders.seen_at(conn)
+    return {"seen_at": at.isoformat() if at is not None else None}
+
+
+@router.post("/seen")
+def mark_seen() -> dict[str, str]:
+    """Called by the page once the list is on screen."""
+    with db.transaction() as conn:
+        return {"seen_at": blunders.mark_seen(conn).isoformat()}
 
 
 @router.post("/dismiss")
