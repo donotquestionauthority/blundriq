@@ -1,10 +1,11 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import Layout from "../components/Layout";
 import { _resetUnsavedAttemptForTests, disownUnsavedAttempt, getUnsavedAttempt, holdUnsavedAttempt, isUnsavedAttemptOwned, releaseUnsavedAttempt } from "../utils/unsavedAttempt";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Practice from "./Practice";
-import { _resetProbesForTests } from "../utils/attemptQueue";
+import { _resetProbesForTests, QUEUE_STORE } from "../utils/attemptQueue";
+import { _resetRemovalsForTests } from "../utils/puzzleRemoval";
 import type { Puzzle, PuzzlesResponse } from "../practice";
 
 // The board is not under test: the mock exposes a button that drops the move the test set up.
@@ -92,6 +93,7 @@ describe("Practice page", () => {
     window.localStorage.clear();
     _resetProbesForTests();
     _resetUnsavedAttemptForTests();
+    _resetRemovalsForTests();
   });
   afterEach(() => {
     Object.defineProperty(navigator, "locks", { value: undefined, configurable: true });
@@ -571,5 +573,268 @@ describe("Practice page", () => {
     expect(screen.getByText("rook")).toBeInTheDocument();
     fireEvent.click(screen.getByText("#21"));
     expect(await screen.findByRole("dialog", { name: "Puzzle 21" })).toBeInTheDocument();
+  });
+
+  it("retires a hand-made puzzle from the overlay after a confirmation, and offers it for no other kind", async () => {
+    const custom = puzzle(21, 1, { source_types: ["blunder", "custom"] });
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: { ...serve([custom, puzzle(22, 1)], 1), batch_id: null } }),
+      "/puzzles/21": (method) => (method === "DELETE" ? { status: 200, body: { detail: "removed" } } : { status: 405, body: {} }),
+    });
+    renderPage("/practice?srs=all");
+    fireEvent.click(await screen.findByText("#22"));
+    expect(await screen.findByRole("dialog", { name: "Puzzle 22" })).toBeInTheDocument();
+    expect(screen.queryByText("Remove puzzle")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Close"));
+
+    fireEvent.click(screen.getByText("#21"));
+    fireEvent.click(await screen.findByText("Remove puzzle"));
+    expect(calls.some((c) => c.method === "DELETE")).toBe(false); // the first click only asks
+    fireEvent.click(screen.getByText("Keep"));
+    fireEvent.click(screen.getByText("Remove puzzle"));
+    const lists = calls.filter((c) => c.path === "/practice/puzzles").length;
+    fireEvent.click(screen.getByText("Yes, remove"));
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(calls.filter((c) => c.method === "DELETE").map((c) => c.path)).toEqual(["/puzzles/21"]);
+    expect(calls.filter((c) => c.path === "/practice/puzzles").length).toBe(lists + 1); // the list is refetched
+  });
+
+  it("will not retire a puzzle while an attempt on it is unsaved", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1)], 1, 1) }),
+      "/practice/puzzles/11": () => ({ status: 200, body: { id: 11, fen: puzzle(11, 1).fen, solution_line: ["Ra8#"], color: "w", acceptance_map: null, source_types: ["custom"], themes: [], is_repertoire: false, presentation_ply: null } }),
+      "/practice/puzzles/11/attempt": () => ({ status: 500, body: { detail: "boom" } }),
+    });
+    renderPage("/practice?puzzle=11");
+    expect(await screen.findByText("Remove puzzle")).toBeEnabled();
+    fireEvent.click(screen.getByText("Remove puzzle"));
+    fireEvent.click(screen.getAllByText("drop")[0]);
+    expect(await screen.findByText(/Couldn't save your attempt/)).toBeInTheDocument();
+    expect(screen.getByText("Yes, remove")).toBeDisabled();
+    fireEvent.click(screen.getByText("Yes, remove"));
+    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+  });
+
+  it("locks the board while the removal is in flight, so no attempt can start on a puzzle that is going away", async () => {
+    let finishDelete: (() => void) | null = null;
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1)], 1, 1) }),
+      "/practice/puzzles/11": () => ({ status: 200, body: { id: 11, fen: puzzle(11, 1).fen, solution_line: ["Ra8#"], color: "w", acceptance_map: null, source_types: ["custom"], themes: [], is_repertoire: false, presentation_ply: null } }),
+      "/puzzles/11": () => new Promise<Reply>((resolve) => (finishDelete = () => resolve({ status: 200, body: { detail: "removed" } }))),
+    });
+    renderPage("/practice?puzzle=11");
+    fireEvent.click(await screen.findByText("Remove puzzle"));
+    fireEvent.click(screen.getByText("Yes, remove"));
+    expect(await screen.findByText("Removing…")).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole("dialog")).getByText("drop")); // the overlay's board is locked: nothing happens
+    expect(calls.some((c) => c.path === "/practice/puzzles/11/attempt")).toBe(false);
+    finishDelete!();
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(calls.some((c) => c.path === "/practice/puzzles/11/attempt")).toBe(false);
+  });
+
+  it("will not retire a puzzle while an attempt on it waits in the durable queue, even after the overlay is reopened", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    // Queue mode: localStorage and Web Locks are available, so a failed save is kept in the queue.
+    Object.defineProperty(navigator, "locks", { value: { request: (_n: string, cb: () => Promise<unknown>) => cb() }, configurable: true });
+    _resetProbesForTests();
+    const custom = puzzle(21, 1, { source_types: ["custom"] });
+    let attempts = 0;
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: { ...serve([custom], 1), batch_id: null } }),
+      "/practice/puzzles/21/attempt": () => ((attempts += 1), { status: 500, body: { detail: "boom" } }),
+      "/puzzles/21": () => ({ status: 200, body: { detail: "removed" } }),
+    });
+    renderPage("/practice?srs=all");
+    fireEvent.click(await screen.findByText("#21"));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByText("drop"));
+    await vi.waitFor(() => expect(attempts).toBeGreaterThan(0));
+    expect(JSON.parse(window.localStorage.getItem(QUEUE_STORE) ?? "[]")).toHaveLength(1); // still queued
+    fireEvent.click(screen.getByLabelText("Close"));
+    fireEvent.click(screen.getByText("#21")); // a fresh overlay, no memory of that attempt
+    fireEvent.click(await screen.findByText("Remove puzzle"));
+    expect(screen.getByText("Yes, remove")).toBeDisabled();
+    expect(screen.getByText("An attempt on it is still being saved.")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Yes, remove"));
+    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+  });
+
+  it("keeps a reopened solver locked while a removal started elsewhere is still in flight", async () => {
+    let finishDelete: (() => void) | null = null;
+    const custom = puzzle(21, 1, { source_types: ["custom"] });
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: { ...serve([custom], 1), batch_id: null } }),
+      "/puzzles/21": () => new Promise<Reply>((resolve) => (finishDelete = () => resolve({ status: 200, body: { detail: "removed" } }))),
+    });
+    renderPage("/practice?srs=all");
+    fireEvent.click(await screen.findByText("#21"));
+    fireEvent.click(await screen.findByText("Remove puzzle"));
+    fireEvent.click(screen.getByText("Yes, remove"));
+    expect(await screen.findByText("Removing…")).toBeInTheDocument();
+    expect(screen.getByLabelText("Close")).toBeDisabled(); // the overlay waits for the answer
+    expect(screen.getByRole("tab", { name: "Motif" })).toBeDisabled(); // and so does the page
+    finishDelete!();
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(1);
+  });
+
+  it("a failed removal unlocks the board again; a solver mounted mid-removal waits for the answer", async () => {
+    const { beginRemoval, removalFailed } = await import("../utils/puzzleRemoval");
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1, { source_types: ["custom"] })], 1, 1) }),
+      "/practice/puzzles/11/attempt": () => ({ status: 200, body: { detail: "attempt recorded", solved: true, attempt_summary: { total: 1, solved: 1, streak: 1 }, srs: null } }),
+    });
+    beginRemoval(11); // started from another overlay, or the page before this one
+    renderPage();
+    expect(await screen.findByText("#11")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("drop"));
+    await flush();
+    expect(calls.some((c) => c.path === "/practice/puzzles/11/attempt")).toBe(false);
+    removalFailed(11); // the server refused: the puzzle is still there
+    await flush();
+    fireEvent.click(screen.getByText("drop"));
+    await vi.waitFor(() => expect(calls.some((c) => c.path === "/practice/puzzles/11/attempt")).toBe(true));
+  });
+
+  for (const status of [200, 404]) {
+    it(`a puzzle removed from a deep link (${status}) leaves the queue underneath: no copy can be played`, async () => {
+      const custom = puzzle(21, 1, { source_types: ["custom"] });
+      const calls = stubFetch({
+        "/practice/puzzles": () => ({ status: 200, body: serve([custom, puzzle(22, 1)], 1, 1) }), // the stale queue still lists 21
+        "/practice/puzzles/21": () => ({ status: 200, body: { id: 21, fen: custom.fen, solution_line: ["Ra8#"], color: "w", acceptance_map: null, source_types: ["custom"], themes: [], is_repertoire: false, presentation_ply: null } }),
+        "/practice/puzzles/21/attempt": () => ({ status: 404, body: { detail: "puzzle not found" } }),
+        "/practice/puzzles/22/attempt": () => ({ status: 200, body: { detail: "attempt recorded", solved: true, attempt_summary: { total: 1, solved: 1, streak: 1 }, srs: null } }),
+        "/puzzles/21": () => (status === 200 ? { status, body: { detail: "removed" } } : { status, body: { detail: "puzzle not found" } }),
+      });
+      renderPage("/practice?puzzle=21");
+      expect(await screen.findByRole("dialog", { name: "Puzzle 21" })).toBeInTheDocument();
+      expect(await screen.findAllByText("#21")).toHaveLength(2); // the overlay and the queue copy underneath
+      fireEvent.click(screen.getByText("Remove puzzle"));
+      fireEvent.click(screen.getByText("Yes, remove"));
+      await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      // The queue has moved past the retired puzzle to the next one.
+      expect(await screen.findByText("#22")).toBeInTheDocument();
+      expect(screen.queryByText("#21")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByText("drop"));
+      await vi.waitFor(() => expect(calls.some((c) => c.path === "/practice/puzzles/22/attempt")).toBe(true));
+      expect(calls.some((c) => c.path === "/practice/puzzles/21/attempt")).toBe(false);
+      await vi.waitFor(() => expect(getUnsavedAttempt()).toBeNull()); // 22's attempt saved normally
+    });
+  }
+
+  it("a retired puzzle stays unplayable after leaving and re-entering the page, whenever the answer arrives", async () => {
+    let finishDelete: (() => void) | null = null;
+    const custom = puzzle(21, 1, { source_types: ["custom"] });
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: serve([custom], 1, 1) }),
+      "/practice/puzzles/21": () => ({ status: 200, body: { id: 21, fen: custom.fen, solution_line: ["Ra8#"], color: "w", acceptance_map: null, source_types: ["custom"], themes: [], is_repertoire: false, presentation_ply: null } }),
+      "/practice/puzzles/21/attempt": () => ({ status: 404, body: { detail: "puzzle not found" } }),
+      "/puzzles/21": () => new Promise<Reply>((resolve) => (finishDelete = () => resolve({ status: 200, body: { detail: "removed" } }))),
+    });
+    const first = renderPage("/practice?puzzle=21");
+    fireEvent.click(await screen.findByText("Remove puzzle"));
+    fireEvent.click(screen.getByText("Yes, remove"));
+    expect(await screen.findByText("Removing…")).toBeInTheDocument();
+    first.unmount(); // the browser's back button: the request is still out
+
+    renderPage("/practice?puzzle=21"); // and forward again, before the answer
+    expect(await screen.findByRole("dialog", { name: "Puzzle 21" })).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole("dialog")).getByText("drop")); // still pending: locked
+    await flush();
+    finishDelete!();
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument()); // gone: the copy closes itself
+    expect(await screen.findByText("You're all caught up")).toBeInTheDocument(); // and the queue dropped it
+    expect(calls.some((c) => c.path === "/practice/puzzles/21/attempt")).toBe(false);
+    expect(getUnsavedAttempt()).toBeNull();
+  });
+
+  it("the header links wait while a removal is pending", async () => {
+    let finishDelete: (() => void) | null = null;
+    const custom = puzzle(21, 1, { source_types: ["custom"] });
+    stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: { ...serve([custom], 1), batch_id: null } }),
+      "/puzzles/21": () => new Promise<Reply>((resolve) => (finishDelete = () => resolve({ status: 200, body: { detail: "removed" } }))),
+    });
+    render(
+      <MemoryRouter initialEntries={["/practice?srs=all"]}>
+        <Routes>
+          <Route element={<Layout onLoggedOut={() => {}} />}>
+            <Route path="/practice" element={<Practice />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+    fireEvent.click(await screen.findByText("#21"));
+    fireEvent.click(await screen.findByText("Remove puzzle"));
+    fireEvent.click(screen.getByText("Yes, remove"));
+    expect(await screen.findByText("Removing…")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Games" })).not.toBeInTheDocument(); // a disabled span instead
+    finishDelete!();
+    expect(await screen.findByRole("link", { name: "Games" })).toBeInTheDocument();
+    expect(screen.queryByText("#21")).not.toBeInTheDocument();
+  });
+
+  for (const following of [false, true]) {
+    it(`retiring an entry before the cursor moves nothing: the showing puzzle, its failed attempt and Retry stay${following ? " (with an entry after it)" : ""}`, async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const { confirmGone } = await import("../utils/puzzleRemoval");
+      const queue = [puzzle(21, 1, { source_types: ["custom"] }), puzzle(22, 1), ...(following ? [puzzle(23, 1)] : [])];
+      const calls = stubFetch({
+        "/practice/puzzles": () => ({ status: 200, body: serve(queue, 1, 1) }),
+        "/practice/skip": () => ({ status: 200, body: { status: "DEFERRED" } }),
+        "/practice/puzzles/22/attempt": failThenSucceed(),
+      });
+      renderPage();
+      expect(await screen.findByText("#21")).toBeInTheDocument();
+      fireEvent.click(screen.getByText("Skip →"));
+      expect(await screen.findByText("#22")).toBeInTheDocument();
+      fireEvent.click(screen.getByText("drop")); // blocking mode: the first save fails
+      expect(await screen.findByText(/Couldn't save your attempt/)).toBeInTheDocument();
+
+      confirmGone(21); // retired from elsewhere on the page
+      await flush();
+      expect(screen.getByText("#22")).toBeInTheDocument(); // not 23, not "Loading next puzzle…"
+      expect(screen.queryByText("#23")).not.toBeInTheDocument();
+      expect(screen.getByText("Retry")).toBeInTheDocument();
+      fireEvent.click(screen.getByText("Retry"));
+      expect(await screen.findByText("Next Puzzle →")).toBeInTheDocument();
+      const posts = calls.filter((c) => c.path.endsWith("/attempt")).map((c) => c.path);
+      expect(posts).toEqual(["/practice/puzzles/22/attempt", "/practice/puzzles/22/attempt"]); // never 23
+      expect(getUnsavedAttempt()).toBeNull();
+      // Previous is offered only for a live entry: 21 is gone.
+      expect(screen.getByText("← Previous")).toBeDisabled();
+    });
+  }
+
+  it("retiring an entry before the cursor with no attempt outstanding still shows the same puzzle", async () => {
+    const { confirmGone } = await import("../utils/puzzleRemoval");
+    stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(21, 1, { source_types: ["custom"] }), puzzle(22, 1), puzzle(23, 1)], 1, 1) }),
+      "/practice/skip": () => ({ status: 200, body: { status: "DEFERRED" } }),
+    });
+    renderPage();
+    fireEvent.click(await screen.findByText("Skip →"));
+    expect(await screen.findByText("#22")).toBeInTheDocument();
+    confirmGone(21);
+    await flush();
+    expect(screen.getByText("#22")).toBeInTheDocument();
+  });
+
+  it("Skip is disabled while the showing puzzle's removal is pending, and the cursor steps off it once it is gone", async () => {
+    const { beginRemoval, confirmGone } = await import("../utils/puzzleRemoval");
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(21, 1, { source_types: ["custom"] }), puzzle(22, 1)], 1, 1) }),
+      "/practice/skip": () => ({ status: 200, body: { status: "DEFERRED" } }),
+    });
+    beginRemoval(21);
+    renderPage();
+    expect(await screen.findByText("#21")).toBeInTheDocument();
+    expect(screen.getByText("Skip →")).toBeDisabled();
+    confirmGone(21);
+    expect(await screen.findByText("#22")).toBeInTheDocument();
+    expect(calls.some((c) => c.path === "/practice/skip")).toBe(false); // stepped off, not skipped
+    expect(screen.getByText("← Previous")).toBeDisabled();
   });
 });

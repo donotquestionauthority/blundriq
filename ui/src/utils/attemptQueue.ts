@@ -249,6 +249,19 @@ export async function markCompleted(attempt_id: string): Promise<void> {
  * doubt the attempt is still pending, so the caller shows the retry banner rather than hiding an
  * unresolved error). False without storage: no queued record can exist in blocking mode.
  */
+/** Any attempt on this puzzle still waiting in the durable queue, from this page load or an
+ *  earlier one. A read failure counts as pending: the safe answer for anything that would
+ *  make such an attempt unsaveable. */
+export function hasPendingAttemptForPuzzle(puzzle_id: number): boolean {
+  if (!isStorageAvailable()) return false;
+  try {
+    return readQueueStrict().some((r) => r.puzzle_id === puzzle_id);
+  } catch (err) {
+    console.warn(`${LOG_TAG} hasPendingAttemptForPuzzle read failed; assuming still pending`, err);
+    return true;
+  }
+}
+
 export function hasPendingAttempt(attempt_id: string): boolean {
   if (!isStorageAvailable()) return false;
   try {

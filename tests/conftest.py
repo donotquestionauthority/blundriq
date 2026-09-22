@@ -61,7 +61,7 @@ def reset_game_data(conn: psycopg.Connection[DictRow]) -> None:
     conn.execute(
         "TRUNCATE chess_games, player_games, blunders, player_motif_events, books, chapters, repertoire_lines,"
         " repertoire_annotations, game_repertoire_results, game_result_lines, puzzles, opponent_profiles,"
-        " pipeline_runs, players RESTART IDENTITY CASCADE"
+        " pipeline_runs, ai_calls, ai_explanation_cache, players RESTART IDENTITY CASCADE"
     )
     conn.commit()
 

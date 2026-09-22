@@ -27,6 +27,9 @@ Chess.com / Lichess APIs
         │
         └─► pipeline review ──► review_events (regenerated, never migrated)
 
+  Blunders (api) reads blunders by board ──► dismissed_blunder_fens; explain ──► ai_explanation_cache, ai_calls;
+           create puzzle ──► puzzles (tagged 'custom', which no generator displaces)
+
   Home page reads: due count (Practice eligibility), games today/week, streaks, since-last-visit, pipeline_runs.
 ```
 
@@ -62,7 +65,9 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `core/puzzles/attempts.py` | Grading (line replay or acceptance map) and recording an attempt in one transaction. |
 | `core/scout/` (to come) | Opponent profiles and on-the-fly position stats. |
 | `core/review/` (to come) | Review detection (no tablebase rung; see decisions/001). |
-| `core/ai.py` (to come) | Explanations with cache. |
+| `core/blunders.py` | The Blunders page: boards ranked by distinct games and severity, their games, dismissal. |
+| `core/ai.py`, `core/prompts.py` | Explaining a blunder: context read from the database, sandboxed prompt templates, provider call over HTTP, cache, hourly and daily caps. |
+| `core/puzzles/custom.py` | Creating and retiring a hand-made puzzle. |
 | `api/auth.py` | One password, one signed cookie. |
 | `api/routes/*` | Thin routes. |
 | `pipeline/cli.py` | The `pipeline` command. |
@@ -72,7 +77,7 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 
 ## Tables at a glance
 
-Games: `chess_games` (shared, deduplicated by platform id, generated `position_keys` + GIN index), `player_games` (the player's side). Analysis: `blunders`, `player_motif_events`. Repertoire: `books` → `chapters` → `repertoire_lines` (generated `position_keys`/`material_keys`), `repertoire_annotations`, `game_repertoire_results` → `game_result_lines`. Puzzles: `puzzles` (at most one active non-repertoire puzzle per board, one per repertoire line), `lichess_puzzles` (corpus sample), `puzzle_attempts` (idempotent by `attempt_id`), `player_puzzle_state` (SRS), `player_puzzle_exposure`, `player_puzzle_skip`, `dismissed_blunder_fens`. Scout: `opponent_profiles` → `opponent_sources`, `opponent_views`. Review: `review_events`, `review_pool_state`, `review_detection_state`, `learn_commits`. System: `players` (one row), `settings` (one row), `pipeline_runs`, `schema_version`, `ai_explanation_cache`.
+Games: `chess_games` (shared, deduplicated by platform id, generated `position_keys` + GIN index), `player_games` (the player's side). Analysis: `blunders`, `player_motif_events`. Repertoire: `books` → `chapters` → `repertoire_lines` (generated `position_keys`/`material_keys`), `repertoire_annotations`, `game_repertoire_results` → `game_result_lines`. Puzzles: `puzzles` (at most one active non-repertoire puzzle per board, one per repertoire line), `lichess_puzzles` (corpus sample), `puzzle_attempts` (idempotent by `attempt_id`), `player_puzzle_state` (SRS), `player_puzzle_exposure`, `player_puzzle_skip`, `dismissed_blunder_fens`. Scout: `opponent_profiles` → `opponent_sources`, `opponent_views`. Review: `review_events`, `review_pool_state`, `review_detection_state`, `learn_commits`. System: `players` (one row), `settings` (one row), `pipeline_runs`, `schema_version`, `ai_explanation_cache`, `ai_calls` (what the AI caps count).
 
 The six `bq_*` SQL functions (`core/sql/schema.sql`, top) canonicalise FENs and hash positions; ten generated columns and several GIN and partial unique indexes depend on them. They are why matching is a single indexed query rather than a Python loop.
 

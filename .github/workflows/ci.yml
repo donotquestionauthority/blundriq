@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   python:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:17
@@ -21,8 +21,8 @@ jobs:
     env:
       TEST_DATABASE_URL: postgresql://postgres:ci@localhost:5432/blundriq_test
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -49,13 +49,13 @@ jobs:
           grep -qx "database: ${expected}; latest: ${expected}" /tmp/version.txt || { echo "unexpected version output"; exit 1; }
 
   ui:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: ui
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: npm
@@ -70,9 +70,9 @@ jobs:
     # this catches anything that got past it and blocks the merge. Runs the
     # gitleaks binary directly over the FULL history (the marketplace action
     # computes a commit range that breaks on a repository's first push).
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - name: Install gitleaks 8.24.3

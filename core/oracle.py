@@ -411,3 +411,55 @@ def old_due_ids(conn: Connection[Any], visible: set[int]) -> set[int]:
         for pid in visible
         if pid not in state or (state[pid]["level"] != "king" and state[pid]["next_show_at"] <= now["now"])
     }
+
+
+# --- the Blunders page's ranking, as the old system computed it ----------------------------
+
+# The archived `config.CLASSIFICATION_WEIGHTS`, frozen here as a reference: this is what the
+# old page scored with, written down independently of core/constants.py so a wrong port of
+# the weights is a difference the oracle reports, not one it inherits.
+OLD_BLUNDER_WEIGHTS = {"miss": 8, "blunder": 4, "mistake": 2, "inaccuracy": 1}
+
+_OLD_WEIGHT_CASE = "CASE " + " ".join(f"WHEN b.classification = '{k}' THEN {v}" for k, v in OLD_BLUNDER_WEIGHTS.items())
+
+
+def old_blunder_ranking(
+    conn: Connection[Any], classifications: tuple[str, ...], min_occurrences: int, last_n_games: int
+) -> list[dict[str, Any]]:
+    """The archived `db/blunders.py::_ranked_sql`, run against the old database: one row per
+    board with its distinct-game count, score, classification map and last played date, in
+    the old page's order. Two deliberate differences are applied so that everything else
+    must match: Chess960 rows are excluded (they are not migrated), and the game window is
+    the player's most recent N *standard* games (the old one counted every variant)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            cast(
+                LiteralString,
+                f"""
+                WITH per_game AS (
+                    SELECT DISTINCT ON (b.player_id, b.canonical_fen, b.chess_game_id)
+                        b.canonical_fen, b.classification, cg.played_at,
+                        ({_OLD_WEIGHT_CASE} ELSE 0 END) AS rep_score
+                    FROM blunders b
+                    JOIN player_games pg ON pg.chess_game_id = b.chess_game_id AND pg.player_id = b.player_id
+                    JOIN chess_games cg ON cg.id = b.chess_game_id
+                    WHERE b.player_id = %(pid)s AND b.classification = ANY(%(cls)s) AND {analysable_sql("cg")}
+                      AND (%(window)s = 0 OR b.chess_game_id IN (
+                            SELECT pg2.chess_game_id FROM player_games pg2
+                            JOIN chess_games cg2 ON cg2.id = pg2.chess_game_id
+                            WHERE pg2.player_id = %(pid)s AND {analysable_sql("cg2")}
+                            ORDER BY cg2.played_at DESC NULLS LAST, cg2.id DESC LIMIT %(window)s))
+                    ORDER BY b.player_id, b.canonical_fen, b.chess_game_id,
+                             b.centipawn_loss DESC NULLS LAST, b.ply, b.id
+                )
+                SELECT canonical_fen, count(*) AS count, sum(rep_score) AS score, max(played_at) AS last_played,
+                       (SELECT jsonb_object_agg(classification, n) FROM (
+                            SELECT classification, count(*) AS n FROM per_game x
+                            WHERE x.canonical_fen = p.canonical_fen GROUP BY 1) c) AS classifications
+                FROM per_game p GROUP BY canonical_fen HAVING count(*) >= %(min_occ)s
+                ORDER BY score DESC, last_played DESC NULLS LAST, canonical_fen
+                """,
+            ),
+            {"pid": PLAYER_ID, "cls": list(classifications), "window": last_n_games, "min_occ": min_occurrences},
+        )
+        return [dict(r) for r in cur.fetchall()]

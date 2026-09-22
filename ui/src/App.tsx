@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router";
 import { api, ApiError } from "./api";
 import Layout from "./components/Layout";
+import Blunders from "./pages/Blunders";
 import Games from "./pages/Games";
 import Home from "./pages/Home";
 import Login from "./pages/Login";
@@ -29,6 +30,7 @@ export default function App() {
       <Route path="/login" element={<Login onLoggedIn={() => setAuth("in")} />} />
       <Route element={<Layout onLoggedOut={() => setAuth("out")} />}>
         <Route path="/" element={<Home />} />
+        <Route path="/blunders" element={<Blunders />} />
         <Route path="/games" element={<Games />} />
         <Route path="/practice" element={<Practice />} />
         <Route path="/preferences" element={<Preferences />} />

@@ -192,3 +192,43 @@ class _NoClose:
 
     def __exit__(self, *_: object) -> None:
         return None
+
+
+# --- the Blunders ranking oracle -------------------------------------------------------------
+
+
+def test_the_ranking_oracle_reports_a_wrong_port_of_the_weights(
+    clean: psycopg.Connection[DictRow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reference weights are frozen in core/oracle.py, not read from core/constants.py:
+    the same database ranked by the old query and by the page must agree, and stop agreeing
+    the moment the page's weights are wrong."""
+    import diff_blunders  # pyright: ignore[reportMissingImports]
+
+    from core import blunders
+
+    assert q.OLD_BLUNDER_WEIGHTS == blunders.BLUNDER_SCORE_WEIGHTS
+    clean.execute("INSERT INTO players (id, chesscom_username) VALUES (%s, 'p')", (PLAYER_ID,))
+    fen = "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4"
+    for gid, cls in ((1, "blunder"), (2, "miss")):
+        clean.execute(
+            "INSERT INTO chess_games (id, platform, platform_game_id, played_at, variant, time_class, moves)"
+            " VALUES (%s, 'lichess', %s, now() - make_interval(days => %s), 'standard', 'rapid', '[]'::jsonb)",
+            (gid, f"g{gid}", gid),
+        )
+        clean.execute(
+            "INSERT INTO player_games (player_id, chess_game_id, player_color, source) VALUES (%s, %s, 'white', 'lichess')",
+            (PLAYER_ID, gid),
+        )
+        clean.execute(
+            "INSERT INTO blunders (player_id, chess_game_id, ply, fen, classification, centipawn_loss) VALUES (%s, %s, 6, %s, %s, 300)",
+            (PLAYER_ID, gid, fen, cls),
+        )
+    classes = ("miss", "blunder")
+    old_rows = q.old_blunder_ranking(clean, classes, 2, 0)
+    assert [(r["count"], r["score"]) for r in old_rows] == [(2, 12)]
+    assert diff_blunders.compare("same", old_rows, diff_blunders.new_cards(clean, classes, 2, 0)) == []
+
+    monkeypatch.setattr(blunders, "_WEIGHT_CASE", blunders._WEIGHT_CASE.replace("THEN 4", "THEN 400"))
+    diffs = diff_blunders.compare("mutated", old_rows, diff_blunders.new_cards(clean, classes, 2, 0))
+    assert diffs and "score: old 12 new 408" in diffs[0]

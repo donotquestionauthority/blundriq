@@ -3,9 +3,33 @@
 These are content, not knobs, so they live here rather than inline in core/settings.py;
 they are still editable on the Preferences page because `ai_prompts` is a settings field
 whose defaults come from this module.
+
+A prompt's `text` is a Jinja template over the explanation context (core/ai.py), so one
+prompt can branch on it ({% if is_blunder %}). Templates are written on the Preferences page,
+so they are compiled and rendered in a sandbox: no attribute or call escapes, no filters or
+globals of ours, and a variable the context does not define raises instead of rendering as
+nothing. Autoescape is off because the output is a prompt, not HTML, and escaping would
+corrupt FENs and SAN.
 """
 
 from __future__ import annotations
+
+from jinja2 import StrictUndefined
+from jinja2.sandbox import SandboxedEnvironment
+
+_ENV = SandboxedEnvironment(autoescape=False, undefined=StrictUndefined)
+
+
+def compile_template(text: str) -> None:
+    """Raise `jinja2.TemplateSyntaxError` if `text` is not a valid template. Undefined
+    variables cannot be caught here; they are a render-time error."""
+    _ENV.from_string(text)
+
+
+def render(text: str, context: dict[str, object]) -> str:
+    """Render a prompt template. Raises a `jinja2.TemplateError` on any problem."""
+    return _ENV.from_string(text.strip()).render(**context)
+
 
 DEFAULT_PROMPTS: dict[str, dict[str, object]] = {
     "a": {

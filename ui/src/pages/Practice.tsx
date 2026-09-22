@@ -1,11 +1,14 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useSearchParams } from "react-router";
+import { ApiError } from "../api";
+import { removePuzzle } from "../blunders";
+import { beginRemoval, confirmGone, getUnplayable, isGone, removalFailed, subscribeRemovals } from "../utils/puzzleRemoval";
 import { useApi } from "../hooks/useApi";
 import { disownUnsavedAttempt, getUnsavedAttempt, holdUnsavedAttempt, isUnsavedAttemptOwned, releaseUnsavedAttempt, subscribeUnsavedAttempt, type UnsavedAttempt } from "../utils/unsavedAttempt";
 import { PuzzleEngine } from "../components/PuzzleEngine";
 import { getPuzzleById, getPuzzles, isRotationPuzzle, LAST_N_OPTIONS, recordAttempt, skipPuzzle } from "../practice";
 import type { PlayablePuzzlePayload, PracticeType, Puzzle, PuzzleGameLink, PuzzleSrs, SrsFilter, SrsLevel } from "../practice";
-import { enqueue as enqueueAttempt, hasPendingAttempt, initQueueTriggers, isQueueModeAvailable, markCompleted as markAttemptCompleted, type PendingAttempt } from "../utils/attemptQueue";
+import { enqueue as enqueueAttempt, hasPendingAttempt, hasPendingAttemptForPuzzle, initQueueTriggers, isQueueModeAvailable, markCompleted as markAttemptCompleted, type PendingAttempt } from "../utils/attemptQueue";
 
 /**
  * Practice: the puzzle queue. `srs=due` is the play queue (a streaming batch consumer);
@@ -107,6 +110,12 @@ function PuzzleHeader({ puzzle, note }: { puzzle: Puzzle; note?: string | null }
 
 // ─── Attempt submission ─────────────────────────────────────────────────────
 
+/** Ids no solver may play right now: a removal in flight, or confirmed gone (utils/puzzleRemoval). */
+function useUnplayable(): ReadonlySet<number> {
+  return useSyncExternalStore(subscribeRemovals, getUnplayable, getUnplayable);
+}
+
+
 const ATTEMPT_RESOLVED_EVENT = "blundriq:attempt-resolved";
 
 /**
@@ -124,7 +133,9 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
   const [serverDowngraded, setServerDowngraded] = useState(false);
   const [attemptStatus, setAttemptStatus] = useState<"in_flight" | "pending_retry" | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [blockingError, setBlockingError] = useState<{ attemptId: string; solved: boolean; movesPlayed: string[] } | null>(null);
+  // The failed attempt keeps the puzzle it was made on: a retry must go there, whatever the
+  // hook is showing by the time it is clicked.
+  const [blockingError, setBlockingError] = useState<{ attemptId: string; solved: boolean; movesPlayed: string[]; puzzleId: number } | null>(null);
   const inFlightRef = useRef<Set<string>>(new Set());
   // The attempt the server is still owed in blocking mode: in flight, or failed and waiting
   // for Retry. Only one may exist; handleComplete refuses to open another while it stands.
@@ -195,7 +206,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
         // Still held (since before the request) unless a retry from elsewhere — the recovery
         // banner, after this solver was left — landed it meanwhile.
         if (getUnsavedAttempt()?.attempt_id === attemptId) {
-          if (activePuzzleIdRef.current === attemptPuzzleId) setBlockingError({ attemptId, solved, movesPlayed });
+          if (activePuzzleIdRef.current === attemptPuzzleId) setBlockingError({ attemptId, solved, movesPlayed, puzzleId: attemptPuzzleId });
         } else {
           outstandingRef.current = null;
           onRecorded();
@@ -267,10 +278,10 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
 
   const retry = useCallback(() => {
     if (!blockingError) return;
-    const { attemptId, solved, movesPlayed } = blockingError;
+    const { attemptId, solved, movesPlayed, puzzleId: attemptPuzzleId } = blockingError;
     inFlightRef.current.delete(attemptId);
-    void runBlockingMode(attemptId, solved, movesPlayed, puzzleId);
-  }, [blockingError, runBlockingMode, puzzleId]);
+    void runBlockingMode(attemptId, solved, movesPlayed, attemptPuzzleId);
+  }, [blockingError, runBlockingMode]);
 
   return { lastResult, serverDowngraded, attemptStatus, submitting, blockingError, handleComplete, retry, reset, navigationBlocked: submitting || blockingError !== null };
 }
@@ -348,9 +359,14 @@ function PlayMode({
   // Every hook precedes the `if (!puzzle)` early return: on a batch boundary `puzzle` is briefly
   // undefined, and a hook declared after that return would be skipped on that render.
   const batchKeyOf = (p: Puzzle): number | "null" => p.play_batch_id ?? batchId ?? "null";
-  const [items, setItems] = useState<Puzzle[]>(() => batch);
+  // The queue only ever grows; an entry keeps its position for the life of the page. The cursor
+  // is a POSITION in it, so a retirement earlier in the queue cannot move what is showing, nor
+  // hand the showing solver's hook another puzzle. A retired entry is not shown: stepping over
+  // it is how the cursor passes it, and if it is the one showing, the cursor steps off it.
+  const [queued, setQueued] = useState<Puzzle[]>(() => batch);
+  const unplayable = useUnplayable();
   const appendedBatchIdsRef = useRef<Set<number | "null">>(new Set(batch.map((p) => p.play_batch_id ?? batchId ?? "null")));
-  const [currentIndex, setCurrentIndex] = useState(0);
+  const [cursor, setCursor] = useState(0);
   const [awaitingNext, setAwaitingNext] = useState(false);
   const [skipping, setSkipping] = useState(false);
   // At most one prefetch per (newest batch, cursor position): re-armed on every advance, so a
@@ -363,12 +379,24 @@ function PlayMode({
     const fresh = batch.filter((p) => !appendedBatchIdsRef.current.has(batchKeyOf(p)));
     if (fresh.length === 0) return;
     for (const p of fresh) appendedBatchIdsRef.current.add(batchKeyOf(p));
-    setItems((prev) => [...prev, ...fresh]);
+    setQueued((prev) => [...prev, ...fresh]);
     setAwaitingNext(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [batch]);
 
-  const puzzle: Puzzle | undefined = items[currentIndex];
+  const live = (i: number) => i < queued.length && !isGone(queued[i].id);
+  const nextLive = (from: number) => {
+    let i = from;
+    while (i < queued.length && !live(i)) i++;
+    return i; // queued.length when nothing live remains
+  };
+  const prevLive = (from: number) => {
+    let i = from;
+    while (i >= 0 && !live(i)) i--;
+    return i; // -1 when nothing live precedes
+  };
+  const puzzle: Puzzle | undefined = live(cursor) ? queued[cursor] : undefined;
+  const liveAhead = queued.slice(cursor + 1).filter((p) => !isGone(p.id)).length;
   // A save that lands while the cursor waits at the end of the queue is what lets the server
   // mint again: the boundary refetch may have run before the acknowledgement committed, and
   // nothing else would ask again.
@@ -379,7 +407,23 @@ function PlayMode({
     if (awaitingNextRef.current) onNeedRefetch();
   }, [onAttemptRecorded, onNeedRefetch]);
   const attempt = useAttemptSubmit(puzzle?.id ?? -1, recorded);
+  const beingRemoved = puzzle !== undefined && unplayable.has(puzzle.id);
   const showNext = attempt.lastResult !== null;
+  // The showing entry was retired (from a deep link over it, or another copy): step off it to
+  // the next live entry, or to the end of the queue and ask for more. Nothing can be owed on
+  // it — a removal is refused while any attempt on the puzzle is unsaved — so the hook resets.
+  const attemptReset = attempt.reset;
+  useEffect(() => {
+    if (cursor >= queued.length || live(cursor)) return;
+    attemptReset();
+    const next = nextLive(cursor + 1);
+    setCursor(next);
+    if (next >= queued.length) {
+      setAwaitingNext(true);
+      onNeedRefetch();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cursor, queued, unplayable]);
   // While an attempt is unsaved (blocking mode), every way of leaving this puzzle is closed:
   // Previous, the type tabs and the filters would all discard the only copy of it.
   const navigationBlocked = attempt.navigationBlocked;
@@ -392,16 +436,15 @@ function PlayMode({
   // displayed un-acknowledged item, so fire at `remainingAhead + 1 <= threshold`; firing one
   // advance earlier is refused by the server every time.
   useEffect(() => {
-    if (items.length === 0) return;
-    const remainingAhead = items.length - 1 - currentIndex;
-    if (remainingAhead + 1 > prefetchThreshold) return;
+    if (queued.length === 0) return;
+    if (liveAhead + 1 > prefetchThreshold) return;
     if (allCaughtUp) return;
-    const key = `${batchId ?? "null"}|${currentIndex}`;
+    const key = `${batchId ?? "null"}|${cursor}`;
     if (prefetchedForRef.current === key) return;
     prefetchedForRef.current = key;
     onNeedRefetch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentIndex, items.length, batchId, prefetchThreshold, allCaughtUp]);
+  }, [cursor, liveAhead, batchId, prefetchThreshold, allCaughtUp]);
 
   if (!puzzle) {
     if (allCaughtUp) {
@@ -415,17 +458,16 @@ function PlayMode({
     return <p className="px-6 py-12 text-center text-sm text-zinc-500">Loading next puzzle…</p>;
   }
 
-  const isLastQueued = currentIndex >= items.length - 1;
+  const isLastQueued = liveAhead === 0;
 
   // At the boundary the cursor steps to ONE PAST the consumed item (clamped, so repeated Next
   // while awaiting cannot skip an unseen appended item); when the next batch appends,
-  // items[currentIndex] resolves to its first row and the consumed item can never reappear.
+  // queued[cursor] resolves to its first row and the consumed item can never reappear.
   const advance = () => {
     attempt.reset();
-    if (currentIndex < items.length - 1) {
-      setCurrentIndex((prev) => prev + 1);
-    } else {
-      setCurrentIndex(items.length);
+    const next = nextLive(cursor + 1);
+    setCursor(next);
+    if (next >= queued.length) {
       setAwaitingNext(true);
       onNeedRefetch();
     }
@@ -434,7 +476,7 @@ function PlayMode({
   // STATE_MISS means the item is not an actionable member of any pending batch, so re-showing it
   // is never right: advance past it and refetch. DEFERRED / ALREADY_CONSUMED are proven consumed.
   const handleSkip = async () => {
-    if (skipping) return;
+    if (skipping || beingRemoved) return;
     const itemBatchId = puzzle.play_batch_id ?? batchId;
     if (itemBatchId == null) {
       advance();
@@ -454,9 +496,10 @@ function PlayMode({
 
   const handlePrev = () => {
     if (attempt.navigationBlocked) return;
-    if (currentIndex > 0) {
+    const prev = prevLive(cursor - 1);
+    if (prev >= 0) {
       attempt.reset();
-      setCurrentIndex((prev) => prev - 1);
+      setCursor(prev);
     }
   };
 
@@ -466,7 +509,7 @@ function PlayMode({
     <div className="mx-auto max-w-xl">
       <PuzzleHeader puzzle={puzzle} note={puzzle.attempt_summary.solved > 0 && !attempt.lastResult ? "previously solved" : null} />
       <PuzzleEngine
-        key={`${puzzle.id}|${currentIndex}`}
+        key={`${puzzle.id}|${cursor}`}
         fen={puzzle.fen}
         solutionLine={puzzle.solution_line}
         color={puzzle.color}
@@ -475,15 +518,15 @@ function PlayMode({
         acceptanceMap={puzzle.acceptance_map}
         onPrev={handlePrev}
         onNext={exhausted ? null : showNext ? advance : () => void handleSkip()}
-        prevDisabled={currentIndex === 0 || attempt.navigationBlocked}
-        nextDisabled={exhausted || attempt.navigationBlocked || skipping}
+        prevDisabled={prevLive(cursor - 1) < 0 || attempt.navigationBlocked}
+        nextDisabled={exhausted || attempt.navigationBlocked || skipping || beingRemoved}
         nextLabel={showNext ? "Next Puzzle →" : skipping ? "Skipping…" : "Skip →"}
         nextHighlighted={attempt.lastResult === "solved"}
         showNextButton={showNext && !exhausted}
         isRepertoire={puzzle.is_repertoire}
         serverDowngraded={attempt.serverDowngraded}
         attemptStatus={attempt.attemptStatus}
-        submissionLocked={attempt.navigationBlocked}
+        submissionLocked={attempt.navigationBlocked || beingRemoved}
       />
       <BlockingBanner error={attempt.blockingError} submitting={attempt.submitting} onRetry={attempt.retry} />
       {((showNext && isLastQueued) || awaitingNext) && !allCaughtUp && <p className="mt-4 text-center text-xs text-zinc-500">Loading more puzzles…</p>}
@@ -498,10 +541,50 @@ function PlayMode({
 function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onNavigationLock }: { puzzle: Puzzle; onClose: () => void; onAttemptRecorded: () => void; onNavigationLock: (locked: boolean) => void }) {
   const attempt = useAttemptSubmit(puzzle.id, onAttemptRecorded);
   const locked = attempt.navigationBlocked;
+
+  // A hand-made puzzle can be retired from here. Not while an attempt on it exists anywhere
+  // unsaved — held in memory, in flight, or waiting in the durable queue from this or an
+  // earlier page load — because an attempt that lands after the puzzle is gone is refused.
+  // From the moment the request goes out until it is answered the puzzle is on the removal
+  // list (utils/puzzleRemoval), which locks every solver showing it, this one included, and
+  // this overlay's Close and the page's navigation wait with it.
+  const removable = !puzzle.is_repertoire && puzzle.source_types.includes("custom");
+  const held = useSyncExternalStore(subscribeUnsavedAttempt, getUnsavedAttempt, getUnsavedAttempt) !== null; // by any solver on the page
+  const unplayable = useUnplayable();
+  const removing = unplayable.has(puzzle.id) && !isGone(puzzle.id);
+  const gone = isGone(puzzle.id);
+  const [confirming, setConfirming] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  const queued = confirming && hasPendingAttemptForPuzzle(puzzle.id);
+  const removeBlocked = locked || held || queued || attempt.attemptStatus !== null || removing || gone;
+  const closeBlocked = locked || removing;
   useEffect(() => {
-    onNavigationLock(locked);
+    onNavigationLock(closeBlocked);
     return () => onNavigationLock(false);
-  }, [locked, onNavigationLock]);
+  }, [closeBlocked, onNavigationLock]);
+  // Any copy of a puzzle that is confirmed gone closes itself — this overlay whether or not it
+  // asked — unless an attempt is still unsaved, in which case it stays, locked, until it is.
+  useEffect(() => {
+    if (gone && !locked) onClose();
+  }, [gone, locked, onClose]);
+  async function remove() {
+    if (removeBlocked || hasPendingAttemptForPuzzle(puzzle.id)) return;
+    beginRemoval(puzzle.id);
+    setRemoveError(null);
+    try {
+      await removePuzzle(puzzle.id);
+    } catch (e) {
+      if (!(e instanceof ApiError && e.status === 404)) {
+        removalFailed(puzzle.id);
+        setRemoveError("Could not remove this puzzle. Try again.");
+        setConfirming(false);
+        return;
+      }
+    }
+    confirmGone(puzzle.id); // every list drops it and every solver showing it locks, then closes
+    onAttemptRecorded(); // refetch the list it was on
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4" role="dialog" aria-label={`Puzzle ${puzzle.id}`}>
       <div className="max-h-[90svh] w-full max-w-xl overflow-y-auto rounded border border-zinc-200 bg-white p-4 shadow-xl dark:border-zinc-800 dark:bg-zinc-950">
@@ -510,8 +593,8 @@ function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onNavigationLock }:
           <button
             type="button"
             onClick={onClose}
-            disabled={attempt.navigationBlocked}
-            title={attempt.navigationBlocked ? "Saving — please wait or retry" : "Close"}
+            disabled={closeBlocked}
+            title={locked ? "Saving — please wait or retry" : removing ? "Removing — please wait" : "Close"}
             aria-label="Close"
             className="text-zinc-500 hover:text-zinc-900 disabled:opacity-40 dark:hover:text-zinc-100"
           >
@@ -528,10 +611,35 @@ function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onNavigationLock }:
           isRepertoire={puzzle.is_repertoire}
           serverDowngraded={attempt.serverDowngraded}
           attemptStatus={attempt.attemptStatus}
-          submissionLocked={attempt.navigationBlocked}
+          submissionLocked={attempt.navigationBlocked || removing || gone}
         />
         <BlockingBanner error={attempt.blockingError} submitting={attempt.submitting} onRetry={attempt.retry} />
         <GameLinks puzzle={puzzle} />
+        {removable && (
+          <div className="mt-4 flex items-center justify-end gap-3 border-t border-zinc-200 pt-3 text-xs dark:border-zinc-800">
+            {removeError && (
+              <span role="alert" className="mr-auto text-red-600 dark:text-red-400">
+                {removeError}
+              </span>
+            )}
+            {confirming ? (
+              <>
+                <span className="text-zinc-500">Remove this puzzle? Its history is kept.</span>
+                {queued && <span className="text-zinc-500">An attempt on it is still being saved.</span>}
+                <button type="button" disabled={removeBlocked} onClick={remove} className="font-medium text-red-600 disabled:opacity-40 dark:text-red-400">
+                  {removing ? "Removing…" : "Yes, remove"}
+                </button>
+                <button type="button" disabled={removing} onClick={() => setConfirming(false)} className="text-zinc-500 disabled:opacity-40">
+                  Keep
+                </button>
+              </>
+            ) : (
+              <button type="button" disabled={removeBlocked} title={removeBlocked ? "Saving your attempt first" : undefined} onClick={() => setConfirming(true)} className="text-zinc-500 hover:text-zinc-900 disabled:opacity-40 dark:hover:text-zinc-100">
+                Remove puzzle
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -781,7 +889,12 @@ export default function Practice() {
     return initQueueTriggers(handler, onSuccess);
   }, [refetch]);
 
-  const puzzles = data?.puzzles ?? [];
+  // A puzzle confirmed gone this page load never shows in a list or queue again, even from a
+  // response that predates its removal.
+  const unplayable = useUnplayable();
+  const puzzles = useMemo(() => (data?.puzzles ?? []).filter((p) => !isGone(p.id)), [data, unplayable]); // eslint-disable-line react-hooks/exhaustive-deps
+  const closeDeepLink = useCallback(() => setDeepLinkId(null), []);
+  const closeOpenPuzzle = useCallback(() => setOpenPuzzle(null), []);
   const subtypeOptions = (() => {
     if (type === "motif") return (data?.served_themes ?? []).map((t) => ({ value: t, label: t }));
     if (type === "blunder") return [...new Set(puzzles.flatMap((p) => p.themes ?? []))].sort().map((t) => ({ value: t, label: t }));
@@ -861,8 +974,8 @@ export default function Practice() {
       )}
 
       {deepLinkId != null && deepLinkLoading && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 text-sm text-zinc-200">…</div>}
-      {!orphaned && deepLinkPuzzle && <PuzzleOverlay key={deepLinkPuzzle.id} puzzle={deepLinkPuzzle} onClose={() => setDeepLinkId(null)} onAttemptRecorded={refetch} onNavigationLock={setInPageLock} />}
-      {!orphaned && openPuzzle && !deepLinkPuzzle && <PuzzleOverlay key={openPuzzle.id} puzzle={openPuzzle} onClose={() => setOpenPuzzle(null)} onAttemptRecorded={refetch} onNavigationLock={setInPageLock} />}
+      {!orphaned && deepLinkPuzzle && <PuzzleOverlay key={deepLinkPuzzle.id} puzzle={deepLinkPuzzle} onClose={closeDeepLink} onAttemptRecorded={refetch} onNavigationLock={setInPageLock} />}
+      {!orphaned && openPuzzle && !deepLinkPuzzle && <PuzzleOverlay key={openPuzzle.id} puzzle={openPuzzle} onClose={closeOpenPuzzle} onAttemptRecorded={refetch} onNavigationLock={setInPageLock} />}
     </div>
   );
 }

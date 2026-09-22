@@ -18,6 +18,11 @@ VARIANT_STANDARD = "standard"
 VARIANT_CHESS960 = "chess960"
 ANALYSABLE_VARIANTS = (VARIANT_STANDARD,)
 
+# Move classifications, most severe first, and what one game's worst instance at a board
+# adds to that board's score on the Blunders page.
+BLUNDER_CLASSES = ("miss", "blunder", "mistake", "inaccuracy")
+BLUNDER_SCORE_WEIGHTS = {"miss": 8, "blunder": 4, "mistake": 2, "inaccuracy": 1}
+
 # Puzzle sources that exist in this system. 'endgame_drill' from the old
 # system does not, and its rows are dropped in migration.
 PUZZLE_SOURCES = ("blunder", "deviation", "own_mate", "lichess_cc0", "scout", "custom")
@@ -138,6 +143,14 @@ MOTIF_THEME_VOCAB = frozenset({"fork", "pin", "skewer", "hangingPiece", "discove
 # second int is a constant for the queue and the puzzle id for an attempt.
 LOCK_PUZZLE_QUEUE = 3001
 LOCK_SRS_ATTEMPT = 3002
+LOCK_AI_BUDGET = 3003
+
+# AI explanations (core/ai.py). Anthropic's floor for a thinking budget; the room kept after
+# the budget for the answer itself; and the models that think unless told not to, where
+# "thinking off" has to be sent explicitly or the reply comes back with no text.
+AI_THINKING_MIN_BUDGET_TOKENS = 1024
+AI_THINKING_HEADROOM_TOKENS = 256
+AI_ADAPTIVE_THINKING_MODELS = frozenset({"claude-sonnet-5"})
 
 # Spaced-repetition ladder. 'king' is mastery (core/puzzles/srs.py).
 SRS_LEVELS = ("pawn", "knight", "bishop", "rook", "queen", "king")

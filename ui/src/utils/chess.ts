@@ -1,4 +1,5 @@
 import { Chess } from "chess.js";
+import { ARROWS } from "./board";
 
 /**
  * Normalize a SAN token for equivalence comparison. Mirrors the Python normalize_san; the two
@@ -62,4 +63,74 @@ export function moveUci(result: { from: string; to: string; promotion?: string }
 /** Parse a UCI token into a chess.js move object. */
 export function uciToMove(uci: string): { from: string; to: string; promotion?: string } {
   return { from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.slice(4) || undefined };
+}
+
+/** `[from, to]` of a SAN move in a position, or null if it is not legal there. */
+export function sanToSquares(fen: string, san: string): [string, string] | null {
+  try {
+    const move = new Chess(fen).move(san);
+    return move ? [move.from, move.to] : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `[from, to]` of the move that produced the position after `ply` moves (the opponent's last
+ *  move, when the player is to move there). Null when the moves are not stored. */
+export function lastMoveSquares(moves: string[] | null | undefined, ply: number | null | undefined): [string, string] | null {
+  if (!moves || !ply || ply < 1 || ply > moves.length) return null;
+  try {
+    const game = new Chess();
+    for (let i = 0; i < ply - 1; i++) game.move(moves[i]);
+    const move = game.move(moves[ply - 1]);
+    return move ? [move.from, move.to] : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface BoardArrow {
+  startSquare: string;
+  endSquare: string;
+  color: string;
+}
+
+/** The three arrows of a mistake: how the position arose, what was played, what was best.
+ *  When played and best share a shaft the best move is drawn last and covers it. */
+export function buildArrows(p: { fen: string; moves?: string[] | null; ply?: number | null; movePlayed?: string | null; bestMove?: string | null }): BoardArrow[] {
+  const arrows: BoardArrow[] = [];
+  const add = (sq: [string, string] | null, color: string) => {
+    if (sq) arrows.push({ startSquare: sq[0], endSquare: sq[1], color });
+  };
+  add(lastMoveSquares(p.moves, p.ply), ARROWS.opponent);
+  if (p.movePlayed) add(sanToSquares(p.fen, p.movePlayed), ARROWS.played);
+  if (p.bestMove && p.bestMove !== p.movePlayed) add(sanToSquares(p.fen, p.bestMove), ARROWS.engine);
+  return arrows;
+}
+
+/** `1. e4 e5 2. Nf3` for the first `ply` moves (all of them when `ply` is omitted). */
+export function buildPgn(moves: string[] | null | undefined, ply?: number | null): string {
+  if (!moves?.length) return "";
+  const slice = typeof ply === "number" && ply >= 0 ? moves.slice(0, ply) : moves;
+  return slice.map((m, i) => (i % 2 === 0 ? `${i / 2 + 1}. ${m}` : m)).join(" ");
+}
+
+/** Lichess analysis board at the position after `ply` moves, from the player's side. */
+export function lichessAnalyzeUrl(moves: string[] | null | undefined, ply: number | null | undefined, color: string): string {
+  if (!moves || !ply) return "https://lichess.org/analysis";
+  const pgn = buildPgn(moves, ply).replace(/ /g, "_");
+  return `https://lichess.org/analysis/pgn/${pgn}${color === "black" ? "?color=black" : ""}`;
+}
+
+/** `12... Nc6 13. Bb5`, numbered from the starting position's own move number. */
+export function numberedLine(startingFen: string, moves: string[]): string[] {
+  const parts = startingFen.split(" ");
+  let white = (parts[1] || "w") === "w";
+  let number = parseInt(parts[5] || "1", 10) || 1;
+  return moves.map((san, i) => {
+    const token = white ? `${number}. ${san}` : i === 0 ? `${number}... ${san}` : san;
+    if (!white) number++;
+    white = !white;
+    return token;
+  });
 }

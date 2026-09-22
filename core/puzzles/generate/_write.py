@@ -34,6 +34,7 @@ class NewPuzzle:
     themes: list[str] = field(default_factory=lambda: [])
     acceptance_map: dict[str, object] | None = None
     title: str | None = None
+    description: str | None = None
 
 
 def deactivate(conn: Connection[Any], puzzle_ids: list[int]) -> int:
@@ -58,10 +59,10 @@ def create(conn: Connection[Any], puzzles: list[NewPuzzle]) -> list[tuple[int, s
                 """
                 INSERT INTO puzzles (
                     fen, solution_line, solution_fen_sequence, source_types, color,
-                    themes, title, acceptance_map, is_repertoire, player_id, active,
+                    themes, title, description, acceptance_map, is_repertoire, player_id, active,
                     created_at, updated_at)
                 VALUES (%(fen)s, %(line)s::jsonb, %(seq)s::jsonb, %(sources)s::text[], %(color)s,
-                        %(themes)s::text[], %(title)s, %(amap)s::jsonb, FALSE, %(player)s, TRUE,
+                        %(themes)s::text[], %(title)s, %(description)s, %(amap)s::jsonb, FALSE, %(player)s, TRUE,
                         now(), now())
                 ON CONFLICT (player_id, canonical_fen) WHERE is_repertoire = FALSE AND active = TRUE
                 DO NOTHING
@@ -75,6 +76,7 @@ def create(conn: Connection[Any], puzzles: list[NewPuzzle]) -> list[tuple[int, s
                     "color": puzzle.color,
                     "themes": list(puzzle.themes),
                     "title": puzzle.title,
+                    "description": puzzle.description,
                     "amap": json.dumps(puzzle.acceptance_map) if puzzle.acceptance_map is not None else None,
                     "player": PLAYER_ID,
                 },
