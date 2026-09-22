@@ -61,9 +61,11 @@ export interface BlundersResponse {
   positions: BlunderPosition[];
   active_count: number;
   dismissed_count: number;
+  /** Active boards never shown, on any page; 0 before the first look. */
+  new_count: number;
   /** Board keys the page acknowledges once this response is on screen: the boards it marked
    *  NEW — or, before the first look ever, every active board on any page, so history is
-   *  known rather than news. */
+   *  known rather than news. Posted even when empty: that records the look. */
   to_acknowledge: string[];
   page: number;
   page_size: number;
@@ -146,8 +148,8 @@ export function daysAgo(iso: string | null | undefined): string | null {
 export const getBlunders = (f: BlunderFilters, page: number) => api.get<BlundersResponse>(`/blunders?${buildQuery(f, page)}`);
 export const dismissBoard = (fen: string) => api.post<{ detail: string }>("/blunders/dismiss", { fen });
 export const restoreBoard = (fen: string) => api.post<{ detail: string }>("/blunders/restore", { fen });
-/** The page has shown these boards (a response's `to_acknowledge`). Only what was shown becomes
- *  known; Home only reads, so a board not yet shown keeps waiting there. */
+/** The page has shown a response (its `to_acknowledge`, possibly empty). Only what was shown
+ *  becomes known; Home only reads, so a board not yet shown keeps waiting there. */
 export const markSeen = (boards: string[]) => api.post<{ seen_at: string }>("/blunders/seen", { boards });
 
 // --- explanations ---

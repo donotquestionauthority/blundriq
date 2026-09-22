@@ -50,7 +50,7 @@ const position = (over: Partial<BlunderPosition> = {}): BlunderPosition => ({
 });
 
 const OTHER = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2";
-const page = (positions: BlunderPosition[], over: Partial<BlundersResponse> = {}): BlundersResponse => ({ positions, active_count: positions.length, dismissed_count: 1, to_acknowledge: positions.filter((p) => p.is_new).map((p) => p.fen), page: 0, page_size: 50, total_pages: 1, ...over });
+const page = (positions: BlunderPosition[], over: Partial<BlundersResponse> = {}): BlundersResponse => ({ positions, active_count: positions.length, dismissed_count: 1, new_count: positions.filter((p) => p.is_new).length, to_acknowledge: positions.filter((p) => p.is_new).map((p) => p.fen), page: 0, page_size: 50, total_pages: 1, ...over });
 
 type Reply = { status: number; body: unknown };
 function stubFetch(routes: Record<string, (method: string, body: Record<string, unknown> | null, query: URLSearchParams) => Reply | Promise<Reply>>) {
@@ -73,6 +73,9 @@ function stubFetch(routes: Record<string, (method: string, body: Record<string, 
 
 const SETTINGS = { blunders_default_filter_mode: "days", blunders_default_window_days: 20, blunders_default_last_n_games: 500, blunders_default_min_occurrences: 2, blunders_default_classifications: ["blunder", "miss", "mistake"] };
 const PROMPTS = { prompts: [{ key: "a", label: "Explain", model: "claude-x" }, { key: "c", label: "Other", model: "gpt-x" }] };
+
+/** The newest list request; acknowledgement POSTs interleave with them. */
+const lastList = (calls: ReturnType<typeof stubFetch>) => calls.filter((c) => c.path === "/blunders").at(-1);
 
 const renderPage = () =>
   render(
@@ -139,60 +142,101 @@ describe("Blunders page", () => {
     expect(calls.filter((c) => c.path === "/blunders")[0].query.toString()).toBe(buildQuery(defaultFilters(SETTINGS), 0));
 
     fireEvent.click(screen.getByText("Next →"));
-    await vi.waitFor(() => expect(calls.at(-1)?.query.get("page")).toBe("1"));
+    await vi.waitFor(() => expect(lastList(calls)?.query.get("page")).toBe("1"));
     fireEvent.change(screen.getByLabelText("Window"), { target: { value: "n200" } });
-    await vi.waitFor(() => expect(calls.at(-1)?.query.get("last_n_games")).toBe("200"));
-    expect(calls.at(-1)?.query.get("page")).toBe("0");
-    expect(calls.at(-1)?.query.has("since_days")).toBe(false);
+    await vi.waitFor(() => expect(lastList(calls)?.query.get("last_n_games")).toBe("200"));
+    expect(lastList(calls)?.query.get("page")).toBe("0");
+    expect(lastList(calls)?.query.has("since_days")).toBe(false);
     fireEvent.change(screen.getByLabelText("Time class"), { target: { value: "blitz" } });
-    await vi.waitFor(() => expect(calls.at(-1)?.query.get("time_class")).toBe("blitz"));
+    await vi.waitFor(() => expect(lastList(calls)?.query.get("time_class")).toBe("blitz"));
     fireEvent.click(screen.getByRole("button", { name: "inaccuracy" }));
-    await vi.waitFor(() => expect(calls.at(-1)?.query.getAll("classifications")).toContain("inaccuracy"));
+    await vi.waitFor(() => expect(lastList(calls)?.query.getAll("classifications")).toContain("inaccuracy"));
   });
 
-  it("marks the boards the server flags, acknowledges exactly what each response says, and keeps the chip for the stay", async () => {
+  const acks = (calls: ReturnType<typeof stubFetch>) => calls.filter((c) => c.path === "/blunders/seen" && c.method === "POST");
+
+  it("marks the boards the server flags and acknowledges exactly what each rendered response says", async () => {
     let flagged = true;
     const calls = stubFetch({
       "/settings": () => ({ status: 200, body: SETTINGS }),
-      "/blunders/seen": () => ({ status: 200, body: { seen_at: "2026-09-22T10:00:00+00:00" } }),
       "/blunders": () => ({ status: 200, body: page([position({ is_new: flagged }), position({ fen: OTHER, count: 2, is_new: false })]) }),
     });
     renderPage();
     expect(await screen.findByText("3×")).toBeInTheDocument();
     expect(screen.getAllByText("NEW")).toHaveLength(1);
-    const acks = () => calls.filter((c) => c.path === "/blunders/seen" && c.method === "POST");
-    await vi.waitFor(() => expect(acks()).toHaveLength(1));
-    expect(acks()[0].body).toEqual({ boards: [FORK] }); // the response's list, nothing else
+    expect(screen.getByText("2 positions · 1 new · 1 dismissed")).toBeInTheDocument();
+    await vi.waitFor(() => expect(acks(calls)).toHaveLength(1));
+    expect(acks(calls)[0].body).toEqual({ boards: [FORK] }); // the response's list, nothing else
     flagged = false; // acknowledged server-side: the next response no longer flags it
     fireEvent.change(screen.getByLabelText("Min seen"), { target: { value: "3" } });
-    await vi.waitFor(() => expect(calls.at(-1)?.query.get("min_occurrences")).toBe("3"));
-    await vi.waitFor(() => expect(screen.getAllByText("3×")).toHaveLength(1));
-    expect(screen.getAllByText("NEW")).toHaveLength(1); // still marked for this stay
-    expect(acks()).toHaveLength(1); // nothing new to acknowledge
+    await vi.waitFor(() => expect(acks(calls)).toHaveLength(2));
+    expect(acks(calls)[1].body).toEqual({ boards: [] }); // the look is recorded; nothing new to add
+    expect(screen.queryByText("NEW")).not.toBeInTheDocument();
   });
 
-  it("acknowledges an empty list's history on a first look, and marks nothing", async () => {
+  it("records an empty first look, so the next finding is news rather than history", async () => {
     const calls = stubFetch({
       "/settings": () => ({ status: 200, body: SETTINGS }),
-      "/blunders/seen": () => ({ status: 200, body: { seen_at: "2026-09-22T10:00:00+00:00" } }),
-      "/blunders": () => ({ status: 200, body: page([position()], { to_acknowledge: [FORK, OTHER] }) }),
+      "/blunders": () => ({ status: 200, body: page([]) }),
     });
     renderPage();
+    expect(await screen.findByText("No recurring positions for these filters.")).toBeInTheDocument();
+    await vi.waitFor(() => expect(acks(calls)).toHaveLength(1));
+    expect(acks(calls)[0].body).toEqual({ boards: [] });
+  });
+
+  it("never acknowledges a response that arrives after the page was left", async () => {
+    const resolvers: Array<(r: Reply) => void> = [];
+    const calls = stubFetch({
+      "/settings": () => ({ status: 200, body: SETTINGS }),
+      "/blunders": () => new Promise<Reply>((resolve) => resolvers.push(resolve)),
+    });
+    const { unmount } = renderPage();
+    await vi.waitFor(() => expect(resolvers).toHaveLength(1));
+    unmount();
+    resolvers[0]({ status: 200, body: page([position({ is_new: true })]) });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(acks(calls)).toHaveLength(0);
+  });
+
+  it("never acknowledges a response a newer request has superseded", async () => {
+    const resolvers: Array<(r: Reply) => void> = [];
+    const calls = stubFetch({
+      "/settings": () => ({ status: 200, body: SETTINGS }),
+      "/blunders": () => new Promise<Reply>((resolve) => resolvers.push(resolve)),
+    });
+    renderPage();
+    await vi.waitFor(() => expect(resolvers).toHaveLength(1));
+    await screen.findByLabelText("Min seen");
+    fireEvent.change(screen.getByLabelText("Min seen"), { target: { value: "3" } });
+    await vi.waitFor(() => expect(resolvers).toHaveLength(2));
+    resolvers[1]({ status: 200, body: page([]) }); // the newer request: an empty list
+    expect(await screen.findByText("No recurring positions for these filters.")).toBeInTheDocument();
+    resolvers[0]({ status: 200, body: page([position({ is_new: true })]) }); // the old one, late
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByText("NEW")).not.toBeInTheDocument();
+    expect(acks(calls)).toHaveLength(1);
+    expect(acks(calls)[0].body).toEqual({ boards: [] }); // only the list that was shown
+  });
+
+  it("shows no NEW chip in the Dismissed view, even for a board shown NEW a moment ago", async () => {
+    let dismissed = false;
+    const calls = stubFetch({
+      "/settings": () => ({ status: 200, body: SETTINGS }),
+      "/blunders/dismiss": () => {
+        dismissed = true;
+        return { status: 200, body: { detail: "dismissed" } };
+      },
+      "/blunders": (_m, _b, query) => ({ status: 200, body: query.get("show_dismissed") ? page([position({ is_new: false, dismissed: true })], { dismissed_count: 1 }) : page(dismissed ? [] : [position({ is_new: true })]) }),
+    });
+    renderPage();
+    expect(await screen.findByText("NEW")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Dismiss"));
+    expect(await screen.findByText("No recurring positions for these filters.")).toBeInTheDocument();
+    fireEvent.click(screen.getByText(/Dismissed \(/));
     expect(await screen.findByText("3×")).toBeInTheDocument();
     expect(screen.queryByText("NEW")).not.toBeInTheDocument();
-    await vi.waitFor(() => expect(calls.filter((c) => c.path === "/blunders/seen" && c.method === "POST")).toHaveLength(1));
-    expect(calls.filter((c) => c.path === "/blunders/seen")[0].body).toEqual({ boards: [FORK, OTHER] });
-  });
-
-  it("acknowledges nothing when there is nothing to acknowledge", async () => {
-    const calls = stubFetch({
-      "/settings": () => ({ status: 200, body: SETTINGS }),
-      "/blunders": () => ({ status: 200, body: page([position()]) }),
-    });
-    renderPage();
-    expect(await screen.findByText("3×")).toBeInTheDocument();
-    await new Promise((r) => setTimeout(r, 20));
-    expect(calls.filter((c) => c.path === "/blunders/seen")).toHaveLength(0);
+    expect(calls.some((c) => c.path === "/blunders/dismiss")).toBe(true);
   });
 
   it("never sends an empty classification set", async () => {
@@ -373,10 +417,10 @@ describe("Blunders page", () => {
     });
     renderPage();
     fireEvent.click(await screen.findByText("Next →"));
-    await vi.waitFor(() => expect(calls.at(-1)?.query.get("page")).toBe("1"));
+    await vi.waitFor(() => expect(lastList(calls)?.query.get("page")).toBe("1"));
     expect(await screen.findByText("2 / 2")).toBeInTheDocument(); // the second page has rendered
     fireEvent.click(screen.getByLabelText("Dismiss"));
-    await vi.waitFor(() => expect(calls.at(-1)?.query.get("page")).toBe("0"));
+    await vi.waitFor(() => expect(lastList(calls)?.query.get("page")).toBe("0"));
     expect(await screen.findByText("50 positions · 1 dismissed")).toBeInTheDocument();
     expect(screen.getAllByTestId("position-card")).toHaveLength(1);
   });

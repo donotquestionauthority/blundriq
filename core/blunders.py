@@ -21,7 +21,8 @@ dismissed. The page acknowledges exactly the boards it rendered (`mark_seen`), s
 arrived between the read and the acknowledgement, or that sits on a page never opened, stays
 new; the first look ever (`players.blunders_seen_at` still NULL) marks nothing and acknowledges
 everything then listed, so history is not news. Home reads the same predicate for its count
-and never acknowledges anything. New boards are listed first.
+and never acknowledges anything. The order is by score alone, so an acknowledgement between
+two pages moves nothing: page 2 is what it would have been.
 """
 
 from __future__ import annotations
@@ -178,10 +179,10 @@ def _page_rows(conn: Connection[Any], f: BlunderFilters, focus: str, page: int) 
                       FROM flagged) c
                 LEFT JOIN LATERAL (
                     SELECT * FROM flagged WHERE dismissed = %(dismissed)s
-                    ORDER BY is_new DESC, score DESC, last_played DESC NULLS LAST, canonical_fen
+                    ORDER BY score DESC, last_played DESC NULLS LAST, canonical_fen
                     LIMIT %(limit)s OFFSET %(offset)s
                 ) f ON TRUE
-                ORDER BY f.is_new DESC, f.score DESC, f.last_played DESC NULLS LAST, f.canonical_fen
+                ORDER BY f.score DESC, f.last_played DESC NULLS LAST, f.canonical_fen
                 """,
             ),
             params,
@@ -328,6 +329,7 @@ def positions(conn: Connection[Any], f: BlunderFilters, focus: str, page: int = 
         "positions": [_card(r, details.get(str(r["canonical_fen"]), [])) for r in rows],
         "active_count": active,
         "dismissed_count": dismissed,
+        "new_count": len(unseen) if f.mark_new else 0,
         "to_acknowledge": shown,
         "page": page,
         "page_size": PAGE_SIZE,

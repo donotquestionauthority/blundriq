@@ -69,16 +69,16 @@ def test_a_board_is_new_until_the_page_has_shown_it(db: psycopg.Connection[DictR
     assert sorted(listed["to_acknowledge"]) == sorted([_key(A), _key(B)]) and _new(db) == 2
     blunders.mark_seen(db, [A])  # the page showed A (and, say, B was on a page never opened)
     listed = _list(db)
-    assert [(p["fen"], p["is_new"]) for p in listed["positions"]] == [(B, True), (A, False)]  # new first
-    assert listed["to_acknowledge"] == [_key(B)] and _new(db) == 1
+    assert [(p["fen"], p["is_new"]) for p in listed["positions"]] == [(A, False), (B, True)]  # score order holds
+    assert listed["to_acknowledge"] == [_key(B)] and listed["new_count"] == 1 and _new(db) == 1
     blunders.mark_seen(db, [_key(B)])
     assert _new(db) == 0 and all(not p["is_new"] for p in _list(db)["positions"])
     assert blunders.seen_at(db) is not None
 
 
 def test_only_the_boards_the_page_delivered_are_acknowledged(db: psycopg.Connection[DictRow]) -> None:
-    """Codex 4b r1-1: a board that crossed the threshold after the list was read is not
-    consumed by acknowledging that list, however the two requests interleave."""
+    """A board that crossed the threshold after the list was read is not consumed by
+    acknowledging that list, however the two requests interleave."""
     for gid in (1, 2):
         _game(db, gid, days_ago=gid)
         _blunder(db, gid, A)
@@ -93,8 +93,8 @@ def test_only_the_boards_the_page_delivered_are_acknowledged(db: psycopg.Connect
 
 
 def test_the_first_look_marks_nothing_and_acknowledges_everything_listed(db: psycopg.Connection[DictRow]) -> None:
-    """Codex 4b r1-2: however the history arrived (upgrade, archive copy), the first look
-    declares it known; nothing can stay new for lack of a timestamp."""
+    """However the history arrived (upgrade, archive copy), the first look declares it
+    known; nothing can stay new for lack of a timestamp."""
     for gid, fen in ((1, A), (2, A), (3, B), (4, B)):
         _game(db, gid, days_ago=gid)
         _blunder(db, gid, fen)
@@ -107,6 +107,46 @@ def test_the_first_look_marks_nothing_and_acknowledges_everything_listed(db: psy
         _game(db, gid, days_ago=0)
         _blunder(db, gid, "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
     assert _new(db) == 1
+
+
+def test_pages_are_stable_under_acknowledgement(db: psycopg.Connection[DictRow]) -> None:
+    """Acknowledging page 1 must not move an unseen board ahead of page 2's offset: forward
+    paging with an acknowledgement after each page reaches every board exactly once."""
+    import chess
+
+    fens: list[str] = []
+    root = chess.Board()
+    for first in root.legal_moves:
+        b1 = root.copy()
+        b1.push(first)
+        for reply in b1.legal_moves:
+            b2 = b1.copy()
+            b2.push(reply)
+            fens.append(b2.fen())
+            if len(fens) == blunders.PAGE_SIZE + 3:
+                break
+        if len(fens) == blunders.PAGE_SIZE + 3:
+            break
+    gid = 0
+    for fen in fens:  # every board recurs in two games
+        for _ in range(2):
+            gid += 1
+            _game(db, gid, days_ago=1)
+            _blunder(db, gid, fen)
+    blunders.mark_seen(db, [])  # a first look at an empty list: from now on boards are marked
+    assert _new(db) == len(fens)
+    seen: list[str] = []
+    page = 0
+    while True:
+        r = blunders.positions(db, BlunderFilters(ALL, time_class="all", mark_new=True), "rapid_plus", page)
+        assert all(p["is_new"] for p in r["positions"])
+        seen += [p["fen"] for p in r["positions"]]
+        blunders.mark_seen(db, r["to_acknowledge"])
+        if page >= r["total_pages"] - 1:
+            break
+        page += 1
+    assert len(seen) == len(set(seen)) == len(fens)
+    assert _new(db) == 0
 
 
 def test_a_dismissed_board_is_neither_new_nor_acknowledged(db: psycopg.Connection[DictRow]) -> None:
