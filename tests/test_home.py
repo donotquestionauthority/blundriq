@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import psycopg
@@ -28,15 +27,6 @@ def db(clean: psycopg.Connection[DictRow]) -> psycopg.Connection[DictRow]:
     return clean
 
 
-def _analyzed(conn: psycopg.Connection[DictRow], gid: int, days_ago: float) -> None:
-    """When the game's analysis landed — what dates a board's newness (import time never does)."""
-    conn.execute(
-        "UPDATE chess_games SET analysis_status = 'completed', analyzed_at = now() - make_interval(secs => %s)"
-        " WHERE id = %s",
-        (days_ago * 86400, gid),
-    )
-
-
 def _attempt(conn: psycopg.Connection[DictRow], puzzle_id: int, *, solved: bool = True, days_ago: float = 0) -> None:
     conn.execute(
         "INSERT INTO puzzle_attempts (puzzle_id, player_id, solved, attempt_at)"
@@ -45,82 +35,104 @@ def _attempt(conn: psycopg.Connection[DictRow], puzzle_id: int, *, solved: bool 
     )
 
 
-def _seen(conn: psycopg.Connection[DictRow], at: str | None) -> None:
-    conn.execute("UPDATE players SET blunders_seen_at = %s::timestamptz WHERE id = %s", (at, PLAYER_ID))
+# --- new: a board the list has never shown ------------------------------------
 
 
-# --- the marker: moved by the page, read by Home -------------------------------
+def _list(conn: psycopg.Connection[DictRow], **kw: Any) -> dict[str, Any]:
+    f = BlunderFilters(**{"classifications": ALL, "time_class": "all", "mark_new": True, **kw})
+    return blunders.positions(conn, f, "rapid_plus")
 
 
-def test_the_marker_is_null_until_the_list_is_first_looked_at(db: psycopg.Connection[DictRow]) -> None:
-    assert blunders.seen_at(db) is None
-    at = blunders.mark_seen(db)
-    assert blunders.seen_at(db) == at
+def _key(fen: str) -> str:
+    """A board key, as the seen table and `to_acknowledge` carry it."""
+    return " ".join(fen.split()[:4]) + " 0 1"
 
 
-def test_home_never_moves_the_marker(db: psycopg.Connection[DictRow]) -> None:
-    _seen(db, "2026-09-01T12:00:00Z")
-    for _ in range(2):
-        assert home.page(db, Settings())["since"] == "2026-09-01T12:00:00+00:00"
-    assert blunders.seen_at(db) == datetime(2026, 9, 1, 12, tzinfo=UTC)
+def _new(conn: psycopg.Connection[DictRow], **kw: Any) -> int:
+    f = BlunderFilters(**{"classifications": ALL, "time_class": "all", "mark_new": True, **kw})
+    return blunders.new_count(conn, f, "rapid_plus")
 
 
 def test_the_marker_needs_the_players_row(clean: psycopg.Connection[DictRow]) -> None:
     with pytest.raises(RuntimeError):
         blunders.seen_at(clean)
     with pytest.raises(RuntimeError):
-        blunders.mark_seen(clean)
+        blunders.mark_seen(clean, [])
 
 
-# --- new blunders: one predicate for the chip and the count ---------------------
-
-
-def _list(conn: psycopg.Connection[DictRow], **kw: Any) -> list[dict[str, Any]]:
-    f = BlunderFilters(**{"classifications": ALL, "time_class": "all", **kw})
-    return blunders.positions(conn, f, "rapid_plus")["positions"]
-
-
-def test_a_board_is_new_when_it_crossed_the_threshold_after_the_boundary(db: psycopg.Connection[DictRow]) -> None:
-    since = datetime.now(UTC) - timedelta(days=3)
-    # A: two games analysed before the boundary, one after — already met min 2: not new.
-    # B: one before, one after — crossed after the boundary: new, and listed first.
-    for gid, fen, days in ((1, A, 10), (2, A, 8), (3, A, 1), (4, B, 8), (5, B, 1)):
-        _game(db, gid, days_ago=days)
+def test_a_board_is_new_until_the_page_has_shown_it(db: psycopg.Connection[DictRow]) -> None:
+    for gid, fen in ((1, A), (2, A), (3, A), (4, B), (5, B)):
+        _game(db, gid, days_ago=gid)
         _blunder(db, gid, fen)
-        _analyzed(db, gid, days)
-    listed = _list(db, new_since=since)
-    assert [(p["fen"], p["is_new"], p["count"]) for p in listed] == [(B, True, 2), (A, False, 3)]
-    assert [p["fen"] for p in _list(db)] == [A, B]  # no boundary: nothing is new, score order
-    assert all(p["is_new"] is False for p in _list(db))
-    assert {p["fen"]: p["is_new"] for p in _list(db, new_since=since, min_occurrences=3)} == {A: True}
-
-    f = BlunderFilters(classifications=ALL, time_class="all", new_since=since)
-    assert blunders.new_count(db, f, "rapid_plus") == 1
-    assert blunders.positions(db, f, "rapid_plus")["new_count"] == 1
-    blunders.dismiss(db, B)
-    assert blunders.new_count(db, f, "rapid_plus") == 0  # dismissed boards are not nudged about
-    dismissed = blunders.positions(db, replace(f, show_dismissed=True), "rapid_plus")
-    assert dismissed["new_count"] == 0 and [p["is_new"] for p in dismissed["positions"]] == [False]
-    assert blunders.new_count(db, BlunderFilters(classifications=ALL, time_class="all"), "rapid_plus") == 0
+    listed = _list(db)
+    assert [(p["fen"], p["is_new"]) for p in listed["positions"]] == [(A, True), (B, True)]
+    assert sorted(listed["to_acknowledge"]) == sorted([_key(A), _key(B)]) and _new(db) == 2
+    blunders.mark_seen(db, [A])  # the page showed A (and, say, B was on a page never opened)
+    listed = _list(db)
+    assert [(p["fen"], p["is_new"]) for p in listed["positions"]] == [(B, True), (A, False)]  # new first
+    assert listed["to_acknowledge"] == [_key(B)] and _new(db) == 1
+    blunders.mark_seen(db, [_key(B)])
+    assert _new(db) == 0 and all(not p["is_new"] for p in _list(db)["positions"])
+    assert blunders.seen_at(db) is not None
 
 
-def test_newness_is_dated_by_analysis_not_import(db: psycopg.Connection[DictRow]) -> None:
-    """A game imported before the boundary but analysed after it is news: its blunders did
-    not exist when Rob last looked."""
-    since = datetime.now(UTC) - timedelta(days=3)
-    for gid, days in ((1, 10), (2, 5)):
-        _game(db, gid, days_ago=days)  # both imported (created_at) before the boundary
+def test_only_the_boards_the_page_delivered_are_acknowledged(db: psycopg.Connection[DictRow]) -> None:
+    """Codex 4b r1-1: a board that crossed the threshold after the list was read is not
+    consumed by acknowledging that list, however the two requests interleave."""
+    for gid in (1, 2):
+        _game(db, gid, days_ago=gid)
         _blunder(db, gid, A)
-    _analyzed(db, 1, 9)
-    _analyzed(db, 2, 1)  # analysed after the boundary
-    assert [p["is_new"] for p in _list(db, new_since=since)] == [True]
-    db.execute("UPDATE chess_games SET analyzed_at = NULL WHERE id = 2")  # not analysed at all: not seen either
-    assert [p["is_new"] for p in _list(db, new_since=since)] == [True]
+    _game(db, 3, days_ago=3)
+    _blunder(db, 3, B)  # B seen once: not yet recurring
+    delivered = _list(db)["to_acknowledge"]
+    assert delivered == [A]
+    _game(db, 4, days_ago=0)
+    _blunder(db, 4, B)  # B crosses after the read, before the acknowledgement
+    blunders.mark_seen(db, delivered)
+    assert _new(db) == 1 and [p["fen"] for p in _list(db)["positions"] if p["is_new"]] == [B]
+
+
+def test_the_first_look_marks_nothing_and_acknowledges_everything_listed(db: psycopg.Connection[DictRow]) -> None:
+    """Codex 4b r1-2: however the history arrived (upgrade, archive copy), the first look
+    declares it known; nothing can stay new for lack of a timestamp."""
+    for gid, fen in ((1, A), (2, A), (3, B), (4, B)):
+        _game(db, gid, days_ago=gid)
+        _blunder(db, gid, fen)
+    before = _list(db, mark_new=False)  # what the route sends before the first look
+    assert all(not p["is_new"] for p in before["positions"]) and _new(db, mark_new=False) == 0
+    assert sorted(before["to_acknowledge"]) == sorted([_key(A), _key(B)])  # every active board, any page
+    blunders.mark_seen(db, before["to_acknowledge"])
+    assert _new(db) == 0
+    for gid in (5, 6):  # found after the first look: news
+        _game(db, gid, days_ago=0)
+        _blunder(db, gid, "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
+    assert _new(db) == 1
+
+
+def test_a_dismissed_board_is_neither_new_nor_acknowledged(db: psycopg.Connection[DictRow]) -> None:
+    for gid in (1, 2):
+        _game(db, gid, days_ago=gid)
+        _blunder(db, gid, A)
+    blunders.dismiss(db, A)
+    assert _new(db) == 0 and _list(db)["to_acknowledge"] == []
+    dismissed = _list(db, show_dismissed=True)
+    assert [p["is_new"] for p in dismissed["positions"]] == [False] and dismissed["to_acknowledge"] == []
+    assert _list(db, mark_new=False)["to_acknowledge"] == []  # nor on a first look
+    blunders.restore(db, A)
+    assert _new(db) == 1
+
+
+def test_acknowledging_twice_is_a_no_op(db: psycopg.Connection[DictRow]) -> None:
+    blunders.mark_seen(db, [A, A])
+    blunders.mark_seen(db, [A])
+    row = db.execute("SELECT count(*) AS n FROM seen_blunder_boards").fetchone()
+    assert row is not None and row["n"] == 1
 
 
 def test_default_filters_are_the_pages_opening_filters() -> None:
     f = blunders.default_filters(Settings())
-    assert f == BlunderFilters(("blunder", "miss", "mistake"), 2, 20, 0, "focus", False, None)
+    assert f == BlunderFilters(("blunder", "miss", "mistake"), 2, 20, 0, "focus", False, False)
+    assert blunders.default_filters(Settings(), mark_new=True).mark_new is True
     g = blunders.default_filters(Settings(blunders_default_filter_mode="games", blunders_default_last_n_games=100))
     assert g.since_days is None and g.last_n_games == 100
     # The same fallback as ui/src/blunders.ts: unknown classes dropped, an empty list means the three.
@@ -197,26 +209,20 @@ def test_days_are_bucketed_in_the_configured_timezone(db: psycopg.Connection[Dic
         assert home._per_day(db, home._GAME_DAYS, tz) == {day: 1}, tz
 
 
-def test_the_page_reports_new_blunders_until_the_list_is_looked_at(db: psycopg.Connection[DictRow]) -> None:
-    for gid, days in ((1, 10), (2, 1), (3, 1)):
-        _game(db, gid, days_ago=days)
+def test_the_page_reports_new_blunders_until_the_list_has_shown_them(db: psycopg.Connection[DictRow]) -> None:
+    for gid in (1, 2, 3):
+        _game(db, gid, days_ago=gid)
         _blunder(db, gid, A, cls="blunder")
-        _analyzed(db, gid, days)
     config = Settings(blunders_default_window_days=30)
-    assert home.page(db, config)["new_blunders"] == 0  # never looked: nothing to compare against
-    _seen(db, (datetime.now(UTC) - timedelta(days=3)).isoformat())
     page = home.page(db, config)
-    assert page["since"] is not None and page["new_blunders"] == 1  # A crossed 2 with games 2 and 3
+    assert page["since"] is None and page["new_blunders"] == 0  # never looked: nothing is news yet
+    blunders.mark_seen(db, [])  # the first look, of an empty list under some other filter
+    page = home.page(db, config)
+    assert page["since"] is not None and page["new_blunders"] == 1
     assert home.page(db, config)["new_blunders"] == 1  # still waiting: Home does not acknowledge
-    blunders.mark_seen(db)  # the page showed the list
+    blunders.mark_seen(db, [A])  # the page showed it
     assert home.page(db, config)["new_blunders"] == 0
-    _game(db, 4, days_ago=0)
-    _blunder(db, 4, B)
-    _game(db, 5, days_ago=0)
-    _blunder(db, 5, B)
-    for gid in (4, 5):
-        _analyzed(db, gid, -0.001)  # analysed after the look
-    assert home.page(db, config)["new_blunders"] == 1
+    assert datetime.fromisoformat(home.page(db, config)["since"]) == blunders.seen_at(db)
 
 
 def test_the_page_shows_the_last_full_run_and_the_hourly_steps_that_failed(db: psycopg.Connection[DictRow]) -> None:
@@ -256,7 +262,6 @@ def client(app_env: None, db: psycopg.Connection[DictRow]) -> TestClient:
     for gid, days in ((1, 10), (2, 1)):
         _game(db, gid, days_ago=days)
         _blunder(db, gid, A)
-        _analyzed(db, gid, days)
     db.commit()
     from api.main import create_app
 
@@ -271,25 +276,26 @@ def test_home_requires_login(app_env: None) -> None:
     assert TestClient(create_app()).get("/home").status_code == 401
 
 
-def test_the_page_opens_on_the_marker_and_moves_it_once_shown(
+def test_the_route_marks_new_only_after_a_first_look_and_acknowledges_what_it_sent(
     client: TestClient, db: psycopg.Connection[DictRow]
 ) -> None:
-    assert client.get("/blunders/seen").json() == {"seen_at": None}
-    first = client.get("/home").json()
-    assert first["since"] is None and first["new_blunders"] == 0
-    db.execute("UPDATE players SET blunders_seen_at = now() - interval '3 days' WHERE id = %s", (PLAYER_ID,))
-    db.commit()
-    seen = client.get("/blunders/seen").json()["seen_at"]
-    second = client.get("/home").json()
-    assert second["since"] == seen and second["new_blunders"] == 1
-    r = client.get("/blunders", params={"time_class": "all", "new_since": seen, "classifications": ["blunder"]})
-    assert r.status_code == 200 and [p["is_new"] for p in r.json()["positions"]] == [True]
-    assert r.json()["new_count"] == 1
-    r = client.get("/blunders", params={"time_class": "all", "classifications": ["blunder"]})
-    assert [p["is_new"] for p in r.json()["positions"]] == [False] and r.json()["new_count"] == 0
-    assert client.get("/blunders", params={"new_since": "yesterday"}).status_code == 422
-    assert client.get("/blunders", params={"new_since": "2026-09-20T14:00:00"}).status_code == 422  # naive
-    marked = client.post("/blunders/seen").json()["seen_at"]
-    assert marked > seen and client.get("/blunders/seen").json()["seen_at"] == marked
     assert client.get("/home").json()["new_blunders"] == 0
-    assert json.dumps(second)  # serialisable
+    r = client.get("/blunders", params={"time_class": "all", "classifications": ["blunder"]})
+    assert [p["is_new"] for p in r.json()["positions"]] == [False]  # before the first look
+    assert r.json()["to_acknowledge"] == [A]  # ... which acknowledges everything listed
+    assert client.post("/blunders/seen", json={"boards": r.json()["to_acknowledge"]}).status_code == 200
+    assert client.get("/home").json()["new_blunders"] == 0
+    _game(db, 3, days_ago=0)
+    _blunder(db, 3, B)
+    _game(db, 4, days_ago=0)
+    _blunder(db, 4, B)
+    db.commit()
+    home_ = client.get("/home").json()
+    assert home_["new_blunders"] == 1 and home_["since"] is not None
+    r = client.get("/blunders", params={"time_class": "all", "classifications": ["blunder"]})
+    assert [(p["fen"], p["is_new"]) for p in r.json()["positions"]] == [(B, True), (A, False)]
+    assert r.json()["to_acknowledge"] == [_key(B)]
+    assert client.post("/blunders/seen", json={"boards": ["x" * 101]}).status_code == 422
+    assert client.post("/blunders/seen", json={"boards": r.json()["to_acknowledge"]}).status_code == 200
+    assert client.get("/home").json()["new_blunders"] == 0
+    assert json.dumps(home_)  # serialisable

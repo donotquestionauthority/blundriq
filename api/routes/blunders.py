@@ -1,4 +1,4 @@
-"""GET /blunders, GET|POST /blunders/seen, POST /blunders/dismiss|restore|explain, GET /blunders/prompts."""
+"""GET /blunders, POST /blunders/seen|dismiss|restore|explain, GET /blunders/prompts — the Blunders page."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from dataclasses import replace
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import AwareDatetime, BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from api import auth
 from core import ai, blunders, db, settings
@@ -25,7 +25,6 @@ def _filters(
     last_n_games: int = Query(0, ge=0, le=20000),
     time_class: TimeClass = Query("focus"),
     show_dismissed: bool = Query(False),
-    new_since: AwareDatetime | None = Query(None, description="Mark boards that crossed the threshold after this"),
 ) -> blunders.BlunderFilters:
     unknown = [c for c in classifications if c not in BLUNDER_CLASSES]
     if unknown:
@@ -37,7 +36,6 @@ def _filters(
         last_n_games=last_n_games,
         time_class=time_class,
         show_dismissed=show_dismissed,
-        new_since=new_since,
     )
 
 
@@ -49,6 +47,8 @@ def list_positions(
         config = settings.load(conn)
         if not f.classifications:
             f = replace(f, classifications=tuple(config.blunders_default_classifications))
+        # Boards are marked NEW only once the list has been looked at at least once.
+        f = replace(f, mark_new=blunders.seen_at(conn) is not None)
         return blunders.positions(conn, f, config.time_class_focus, page)
 
 
@@ -64,19 +64,22 @@ class FenBody(BaseModel):
             raise ValueError(str(exc)) from exc
 
 
-@router.get("/seen")
-def seen() -> dict[str, str | None]:
-    """The boundary the page opens with; Home's count uses the same value."""
-    with db.transaction() as conn:
-        at = blunders.seen_at(conn)
-    return {"seen_at": at.isoformat() if at is not None else None}
+class SeenBody(BaseModel):
+    boards: list[str] = Field(max_length=20000)
+
+    @field_validator("boards")
+    @classmethod
+    def _board_keys(cls, value: list[str]) -> list[str]:
+        if any(len(b) > 100 for b in value):
+            raise ValueError("not a board key")
+        return value
 
 
 @router.post("/seen")
-def mark_seen() -> dict[str, str]:
-    """Called by the page once the list is on screen."""
+def mark_seen(body: SeenBody) -> dict[str, str]:
+    """Called by the page once the list is on screen, with the response's `to_acknowledge`."""
     with db.transaction() as conn:
-        return {"seen_at": blunders.mark_seen(conn).isoformat()}
+        return {"seen_at": blunders.mark_seen(conn, body.boards).isoformat()}
 
 
 @router.post("/dismiss")

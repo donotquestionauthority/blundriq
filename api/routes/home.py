@@ -1,4 +1,4 @@
-"""GET /home — the Home page, which also records the visit."""
+"""GET /home — the Home page. Reads only."""
 
 from __future__ import annotations
 

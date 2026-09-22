@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import { BLUNDER_CLASSES, DAY_OPTIONS, LAST_N_OPTIONS, MIN_OCCURRENCE_OPTIONS, TIME_CLASS_LABELS, defaultFilters, dismissBoard, getBlunders, getSeen, markSeen, restoreBoard, toCard } from "../blunders";
+import { BLUNDER_CLASSES, DAY_OPTIONS, LAST_N_OPTIONS, MIN_OCCURRENCE_OPTIONS, TIME_CLASS_LABELS, defaultFilters, dismissBoard, getBlunders, markSeen, restoreBoard, toCard } from "../blunders";
 import type { BlunderClass, BlunderFilters, TimeClass } from "../blunders";
 import { CreatePuzzleModal } from "../components/CreatePuzzleModal";
 import type { CreatePuzzleSource } from "../components/CreatePuzzleModal";
@@ -12,9 +12,10 @@ import { lichessAnalyzeUrl } from "../utils/chess";
  * Recurring positions where I go wrong, worst first. A position is a board; it recurs when it
  * turns up in several games. Filters open on the settings row's defaults and are not
  * remembered. Dismissing hides a board here and from Practice; the Dismissed view restores it.
- * Boards that crossed the threshold since the list was last looked at carry a NEW chip (the
- * server's predicate, the same one Home counts with); once the list is on screen the page moves
- * that marker, so the chips hold for this stay and Home's count is spent.
+ * A board this list has never shown carries a NEW chip (the server's predicate, the same one
+ * Home counts with). Once a response is on screen the page acknowledges exactly the boards that
+ * response told it to, so Home's count is spent only for what was actually shown; the chips
+ * hold for the rest of this stay.
  */
 
 const ACCENT: Record<BlunderClass, string> = { miss: "border-l-rose-700", blunder: "border-l-red-500", mistake: "border-l-orange-500", inaccuracy: "border-l-yellow-500" };
@@ -30,21 +31,17 @@ function List({ filters, setFilters }: { filters: BlunderFilters; setFilters: (f
   const [creating, setCreating] = useState<CreatePuzzleSource | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const key = JSON.stringify(filters);
+  // Boards shown as NEW during this stay keep the chip after they are acknowledged.
+  const newThisStay = useRef(new Set<string>());
   const { data, isLoading, error, refetch, isStale } = useApi(async () => {
     const r = await getBlunders(filters, page);
     // A dismissal can empty the last page: step back onto the new last page.
     if (page > 0 && page > r.total_pages - 1) setPage(r.total_pages - 1);
-    return r;
+    for (const p of r.positions) if (p.is_new) newThisStay.current.add(p.fen);
+    // This response is what goes on screen: acknowledge exactly what it says, nothing else.
+    if (r.to_acknowledge.length) markSeen(r.to_acknowledge).catch((e: unknown) => console.warn("could not acknowledge the list:", e));
+    return { ...r, positions: r.positions.map((p) => ({ ...p, is_new: p.is_new || newThisStay.current.has(p.fen) })) };
   }, [key, page]);
-
-  // The list has been looked at: move the marker, once per stay. The chips keep their boundary
-  // (it is in the filters), so nothing on screen changes; only the next Home does.
-  const seenRef = useRef(false);
-  useEffect(() => {
-    if (!data || seenRef.current) return;
-    seenRef.current = true;
-    markSeen().catch((e: unknown) => console.warn("could not mark the list as seen:", e));
-  }, [data]);
 
   useEffect(() => {
     if (!toast) return;
@@ -153,7 +150,7 @@ function List({ filters, setFilters }: { filters: BlunderFilters; setFilters: (f
         {data && (
           <div className={isStale ? "opacity-50" : ""}>
             <div className="mb-2 flex items-center justify-between text-sm text-zinc-500">
-              <span>{filters.show_dismissed ? `${data.dismissed_count} dismissed positions` : `${data.active_count} positions${filters.new_since ? ` · ${data.new_count} new` : ""} · ${data.dismissed_count} dismissed`}</span>
+              <span>{filters.show_dismissed ? `${data.dismissed_count} dismissed positions` : `${data.active_count} positions · ${data.dismissed_count} dismissed`}</span>
               {data.total_pages > 1 && (
                 <span className="flex items-center gap-2">
                   <button type="button" disabled={page === 0} onClick={() => setPage(page - 1)} className="disabled:opacity-30">
@@ -224,19 +221,16 @@ export default function Blunders() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    // Settings and the marker are read once, as the page opens.
-    Promise.all([api.get<Record<string, unknown>>("/settings"), getSeen()])
-      .then(([s, seen]) => setFilters(defaultFilters(s, seen.seen_at)))
+    api
+      .get<Record<string, unknown>>("/settings")
+      .then((s) => setFilters(defaultFilters(s)))
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
 
   return (
     <div>
       <h1 className="text-xl font-semibold tracking-tight">Blunders</h1>
-      <p className="mb-4 mt-1 text-sm text-zinc-500">
-        Recurring positions where I go wrong, worst first.
-        {filters?.new_since && <> Boards marked NEW crossed the threshold since you last looked, {new Date(filters.new_since).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}; they are listed first.</>}
-      </p>
+      <p className="mb-4 mt-1 text-sm text-zinc-500">Recurring positions where I go wrong, worst first. A board marked NEW has not been shown here before; they are listed first.</p>
       {error && (
         <p role="alert" className="text-sm text-red-600 dark:text-red-400">
           {error}
