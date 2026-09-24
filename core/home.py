@@ -4,7 +4,8 @@ Everything here is read from tables other pages own; Home writes nothing. "New s
 last visit" is the number of recurring boards the Blunders list has never shown
 (`seen_blunder_boards`, filled by that page, never by Home), so a new board keeps waiting on
 the tile until it has been looked at. The predicate is core/blunders.py's, the same one that
-marks the page's NEW chips; `players.blunders_seen_at` is only the "last looked" date.
+marks the page's NEW chips; `players.blunders_seen_at` is only the "last looked" date. New
+deviation patterns are the same model on core/deviations.py (`seen_deviations`).
 
 **A day** is a calendar day in the `timezone` setting, for counts and streaks alike. A puzzle is
 solved today when it has a correct attempt today; retries of the same puzzle count once. A
@@ -21,7 +22,7 @@ from typing import Any, LiteralString
 
 from psycopg import Connection
 
-from core import blunders, runs
+from core import blunders, deviations, runs
 from core.constants import PLAYER_ID
 from core.puzzles import serve
 from core.settings import Settings
@@ -71,6 +72,7 @@ def _today(conn: Connection[Any], tz: str) -> date:
 def page(conn: Connection[Any], config: Settings) -> dict[str, Any]:
     """Everything Home shows. Reads only."""
     since = blunders.seen_at(conn)
+    dev_since = deviations.seen_at(conn)
     tz = config.timezone
     today = _today(conn, tz)
     puzzle_days = _per_day(conn, _PUZZLE_DAYS, tz)
@@ -81,6 +83,10 @@ def page(conn: Connection[Any], config: Settings) -> dict[str, Any]:
         "timezone": tz,
         "new_blunders": blunders.new_count(
             conn, blunders.default_filters(config, mark_new=since is not None), config.time_class_focus
+        ),
+        "deviations_since": dev_since.isoformat() if dev_since is not None else None,
+        "new_deviations": deviations.new_count(
+            conn, deviations.default_filters(config, mark_new=dev_since is not None), config.time_class_focus
         ),
         "puzzles": {
             "due": serve.count_eligible(conn, config),

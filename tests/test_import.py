@@ -298,13 +298,13 @@ def test_only_the_store_and_the_migration_insert_chess_games() -> None:
     }
     assert writers == {"core/ingest/store.py"}
     # Bulk copy bypasses everything an ordinary write goes through, so the places that use
-    # it are listed rather than left to spread: the one-time migration, and the corpus
-    # reload, which is a few hundred thousand rows of reference data and would otherwise be
-    # a network round trip each.
+    # it are listed rather than left to spread: the one-time migration, the corpus reload
+    # (a few hundred thousand rows of reference data) and the repertoire import's notes
+    # (tens of thousands per file); each would otherwise be a network round trip per row.
     copiers = {
         p.relative_to(ROOT).as_posix() for p in _py_files() if "COPY" in p.read_text() and "FROM STDIN" in p.read_text()
     }
-    assert copiers == {"core/migrate.py", "core/puzzles/corpus.py"}
+    assert copiers == {"core/migrate.py", "core/puzzles/corpus.py", "core/repertoire/annotations.py"}
 
 
 def test_played_at_ordering_always_puts_nulls_last() -> None:

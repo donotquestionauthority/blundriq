@@ -19,6 +19,12 @@ disposable and is modified.
                                                  # diff the due set against the old rules
     python tools/oracle/diff_blunders.py         # the Blunders page's ranked list against the old
                                                  # ranking query (core/oracle.py, weights frozen there)
+    python tools/oracle/diff_deviations.py       # the Deviations page's patterns against the old
+                                                 # route's grouping (run before any rematch: 003's
+                                                 # known differences would otherwise show)
+    python tools/oracle/diff_annotations.py --old-src DIR
+                                                 # the line walk-through's notes, every line, against
+                                                 # the old projection lifted from the archived source
 
 `diff_puzzles.py --generation` deletes the generated puzzles before remaking them, and
 deleting a puzzle cascades its SRS row away, so it refuses to run unless the database name

@@ -30,10 +30,20 @@ Chess.com / Lichess APIs
   Blunders (api) reads blunders by board ──► dismissed_blunder_fens; explain ──► ai_explanation_cache, ai_calls;
            create puzzle ──► puzzles (tagged 'custom', which no generator displaces)
 
+  Deviations (api) reads game_repertoire_results by pattern (book, chapter, ply, expected move) ──► seen_deviations;
+           each card's board is read back through core/repertoire/read.py (the lines through it, the one move
+           they agree on)
+
+  Repertoire (api) reads books › chapters › lines; a toggle flips one flag and rematches the games it can touch
+           (core/repertoire/books.py); notes on positions and the line walk-through ──► repertoire_annotations
+           (core/repertoire/annotations.py). `pipeline import-repertoire FILE` loads a neutral repertoire file
+           (core/repertoire/importing.py; docs/decisions/007) and rematches the window.
+
   Home page reads: due count (Practice eligibility), games today/week, streaks, new blunders — recurring
            boards the Blunders list has never shown (seen_blunder_boards, which that page fills with what it
            rendered; the first look ever records the whole list as known) — one predicate in core/blunders.py,
-           shared with the page's NEW chips; pipeline_runs (the hourly chain only).
+           shared with the page's NEW chips; new deviation patterns the same way (seen_deviations,
+           core/deviations.py); pipeline_runs (the hourly chain only).
 ```
 
 Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one subcommand per step, each idempotent. Everything below is FastAPI routes in `api/routes/`, which are thin: they parse the request, call a function in `core/`, and return its result.
@@ -50,7 +60,12 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `core/chess/eligibility.py` | The Chess960 rule, as one SQL predicate and one Python check. |
 | `core/chess/board.py`, `openings.py`, `platform.py` | Boards and FEN sequences (Chess960-aware); canonical opening names; termination and time-class vocabularies. |
 | `core/ingest/` | Chess.com and Lichess fetch + parse (`chesscom.py`, `lichess.py`), the only `chess_games` writer (`store.py`), the import step (`run.py`). |
-| `core/repertoire/matching.py` | Game-vs-line matching and the match step. (Line import: to come.) |
+| `core/repertoire/matching.py` | Game-vs-line matching and the match step; rematching after the repertoire changed; the one lock everything that reads the repertoire to publish, or changes it, holds (docs/decisions/007). |
+| `core/repertoire/read.py` | The read side: which effectively-active lines pass through a board (`rep_lines`, by book colour, never defaulted), and the one reduction of many occurrences to a move (`project_ply`, `singular_move`: exact FEN first, canonical moves, fail-closed conflicts). |
+| `core/repertoire/annotations.py` | Notes on positions: the unattached note on a board, notes attached to a line, and the walk-through's projection of a book's notes onto a line. |
+| `core/repertoire/books.py` | The Repertoire page: books, sections, and switching a book, chapter or line on or off (rematches what it can touch). |
+| `core/repertoire/importing.py` | `pipeline import-repertoire`: the neutral file, identity by source ids, the cohort gate for new lines, replacement for a book the file marks complete. |
+| `core/deviations.py` | The Deviations page: patterns (book, chapter, ply, expected move) ranked by distinct games, their games, the repertoire's reading of each board, the seen set. |
 | `core/chess/san.py` | SAN normalisation, and move identity that does not depend on notation. |
 | `core/chess/mate_acceptance.py` | Forced mate in exactly N: building the acceptance map, and the verdict that reads it. |
 | `core/puzzles/lines.py` | Replaying a solution line: its FEN sequence, and whether it ends in mate. |
@@ -71,7 +86,7 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `core/blunders.py` | The Blunders page: boards ranked by distinct games and severity, their games, dismissal. |
 | `core/ai.py`, `core/prompts.py` | Explaining a blunder: context read from the database, sandboxed prompt templates, provider call over HTTP, cache, hourly and daily caps. |
 | `core/puzzles/custom.py` | Creating and retiring a hand-made puzzle. |
-| `core/home.py` | The Home page: due count, today's puzzles and games against their targets, streaks, blunders the list has never shown, pipeline status. Reads only. |
+| `core/home.py` | The Home page: due count, today's puzzles and games against their targets, streaks, blunders and deviation patterns their lists have never shown, pipeline status. Reads only. |
 | `api/auth.py` | One password, one signed cookie. |
 | `api/routes/*` | Thin routes. |
 | `pipeline/cli.py` | The `pipeline` command. |
@@ -81,7 +96,7 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 
 ## Tables at a glance
 
-Games: `chess_games` (shared, deduplicated by platform id, generated `position_keys` + GIN index), `player_games` (the player's side). Analysis: `blunders`, `player_motif_events`. Repertoire: `books` → `chapters` → `repertoire_lines` (generated `position_keys`/`material_keys`), `repertoire_annotations`, `game_repertoire_results` → `game_result_lines`. Puzzles: `puzzles` (at most one active non-repertoire puzzle per board, one per repertoire line), `lichess_puzzles` (corpus sample), `puzzle_attempts` (idempotent by `attempt_id`), `player_puzzle_state` (SRS), `player_puzzle_exposure`, `player_puzzle_skip`, `dismissed_blunder_fens`. Scout: `opponent_profiles` → `opponent_sources`, `opponent_views`. Review: `review_events`, `review_pool_state`, `review_detection_state`, `learn_commits`. System: `players` (one row), `settings` (one row), `pipeline_runs`, `schema_version`, `ai_explanation_cache`, `ai_calls` (what the AI caps count).
+Games: `chess_games` (shared, deduplicated by platform id, generated `position_keys` + GIN index), `player_games` (the player's side). Analysis: `blunders`, `player_motif_events`. Repertoire: `books` → `chapters` → `repertoire_lines` (generated `position_keys`/`material_keys`; identity in docs/decisions/007), `repertoire_annotations` (attached to a line, or to a bare position), `game_repertoire_results` → `game_result_lines`, `seen_deviations`. Puzzles: `puzzles` (at most one active non-repertoire puzzle per board, one per repertoire line), `lichess_puzzles` (corpus sample), `puzzle_attempts` (idempotent by `attempt_id`), `player_puzzle_state` (SRS), `player_puzzle_exposure`, `player_puzzle_skip`, `dismissed_blunder_fens`. Scout: `opponent_profiles` → `opponent_sources`, `opponent_views`. Review: `review_events`, `review_pool_state`, `review_detection_state`, `learn_commits`. System: `players` (one row), `settings` (one row), `pipeline_runs`, `schema_version`, `ai_explanation_cache`, `ai_calls` (what the AI caps count), `seen_blunder_boards`.
 
 The six `bq_*` SQL functions (`core/sql/schema.sql`, top) canonicalise FENs and hash positions; ten generated columns and several GIN and partial unique indexes depend on them. They are why matching is a single indexed query rather than a Python loop.
 

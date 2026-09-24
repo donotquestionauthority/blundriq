@@ -15,6 +15,24 @@ insert because a concurrent request in the same session would otherwise not see 
 row and both would score. The same response is built on a fresh insert, an idempotent
 replay of an `attempt_id` already recorded, and a lost insert race, so the wire shape
 cannot differ between them; a replay returns the original verdict with the current state.
+
+A repertoire puzzle is graded against the **segment the solver displayed**, which the attempt
+names (`presentation_ply`, the same value the solver was given). Only the solver knows what it
+showed: the queue re-serves pending work at the ply it was served with, Browse and a deep link
+show today's truncation, and a mounted solver keeps showing its segment (Replay, Try Again)
+after the hourly match or a rematch has moved the truncation and after an earlier attempt has
+acknowledged the exposure. The server still verifies every move; the segment only bounds how
+much of the verified line is required, and must lie within it. An attempt that names no
+segment (queued by a client from before the field existed, possibly before the exposure
+recorded one) is graded against the segment its answer spans — the ply of its last player
+move, if the serve could have truncated there — and only failing that against what the queue
+would show it: the served snapshot if the exposure has one, else today's presentation.
+
+A puzzle that was **served and never acknowledged** stays gradable even when it is no longer
+visible: switching a book off, an import or the hourly match can make it (or, through the
+conflict rules, a standard puzzle) unattemptable while an attempt on it sits in the browser's
+queue waiting to be sent. The exposure row is the proof it was served; finishing that work is
+allowed, starting new work on it is not.
 """
 
 from __future__ import annotations
@@ -31,8 +49,9 @@ from core.chess.san import normalize_san
 from core.chess.san import parse as parse_san
 from core.constants import PLAYER_ID
 from core.puzzles import srs, visibility
-from core.puzzles.lines import is_mate_line
+from core.puzzles.lines import fen_sequence, is_mate_line
 from core.puzzles.serve import CC0_SOURCE, OWN_MATE_SOURCE, lookahead_plies
+from core.puzzles.serve import acknowledged_sql as serve_acknowledged
 from core.settings import Settings
 
 
@@ -137,10 +156,70 @@ class NotAttemptable(LookupError):
     """The puzzle is missing or not visible to the player."""
 
 
-def _existing(conn: Connection[Any], attempt_id: str) -> dict[str, Any] | None:
+class SegmentMismatch(ValueError):
+    """The attempt names a segment the puzzle does not have: a ply outside its solution line
+    or not on the player's move, or any ply at all on a standard puzzle."""
+
+
+def _player_plies(puzzle: dict[str, Any], solution: list[str]) -> list[int]:
+    """The indexes of the line at which the player is to move."""
+    seq = fen_sequence(str(puzzle["fen"]), solution)
+    color = str(puzzle["color"])
+    return [i for i in range(min(len(solution), len(seq))) if seq[i].split(" ")[1] == color]
+
+
+def _is_segment(puzzle: dict[str, Any], solution: list[str], ply: int) -> bool:
+    """A segment the serve could have produced: the ply is on the line and the player is to
+    move there (`visibility.presentation_ply` truncates only at the player's plies)."""
+    return ply in _player_plies(puzzle, solution)
+
+
+def _segment_spanned(puzzle: dict[str, Any], solution: list[str], moves_played: str | None) -> int | None:
+    """The segment an answer that names none spans: the ply of its last player move, when
+    that is a segment the serve could have produced. The compatibility path for an answer
+    the client queued before attempts carried their segment (and before the exposure
+    recorded one): the answer's own length is the only record of what was shown, and every
+    move in it is still verified against the line. None for a standard puzzle or an answer
+    that ends nowhere the serve truncates, which then falls back to the queue's segment."""
+    if not bool(puzzle.get("is_repertoire")):
+        return None
+    submitted = submitted_moves(moves_played)
+    plies = _player_plies(puzzle, solution)
+    return plies[len(submitted) - 1] if 0 < len(submitted) <= len(plies) else None
+
+
+_SERVED_PENDING = cast(
+    LiteralString,
+    f"""
+    SELECT p.id, p.fen, p.solution_line, p.color, p.acceptance_map, p.source_types, p.is_repertoire,
+           p.repertoire_line_id, e.presentation_ply AS served_ply
+    FROM puzzles p
+    JOIN player_puzzle_exposure e ON e.player_id = p.player_id AND e.puzzle_id = p.id
+    WHERE p.id = %(id)s AND p.player_id = %(pid)s
+      AND NOT (p.source_types @> ARRAY['own_mate'] AND p.acceptance_map IS NULL)
+      AND NOT (p.source_types @> ARRAY['custom'] AND NOT p.active)
+      AND NOT {serve_acknowledged()}
+    ORDER BY e.served_at DESC
+    LIMIT 1
+    """,
+)
+
+
+def _served_pending(conn: Connection[Any], puzzle_id: int) -> dict[str, Any] | None:
+    """The puzzle row if it was served in a batch and nothing has acknowledged that yet, with
+    the ply it was truncated to when served. A hand-made puzzle that was removed is not
+    finished: its removal was the player's own act."""
+    with conn.cursor() as cur:
+        cur.execute(_SERVED_PENDING, {"id": puzzle_id, "pid": PLAYER_ID})
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def _existing(conn: Connection[Any], puzzle_id: int, attempt_id: str) -> dict[str, Any] | None:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT solved FROM puzzle_attempts WHERE player_id = %s AND attempt_id = %s", (PLAYER_ID, attempt_id)
+            "SELECT solved FROM puzzle_attempts WHERE player_id = %s AND puzzle_id = %s AND attempt_id = %s",
+            (PLAYER_ID, puzzle_id, attempt_id),
         )
         return cur.fetchone()
 
@@ -154,13 +233,15 @@ def record(
     moves_played: str | None,
     attempt_id: str | None,
     session_id: str | None,
+    presentation_ply: int | None = None,
 ) -> dict[str, Any]:
-    """Grade, record and score one attempt; the caller commits. Raises NotAttemptable."""
-    puzzle = visibility.attemptable(conn, puzzle_id)
-    if puzzle is None:
-        raise NotAttemptable(puzzle_id)
+    """Grade, record and score one attempt; the caller commits. `presentation_ply` is the
+    segment the solver displayed (None for a standard puzzle, or from a client that cannot
+    say). Raises NotAttemptable, or SegmentMismatch for a segment the puzzle does not have."""
     if attempt_id is not None:
-        existing = _existing(conn, attempt_id)
+        # A replay of an attempt already recorded is always answerable, whatever the puzzle's
+        # visibility has become since: the client only wants the verdict it never received.
+        existing = _existing(conn, puzzle_id, attempt_id)
         if existing is not None:
             return _response(
                 "attempt recorded (idempotent)",
@@ -168,13 +249,32 @@ def record(
                 srs.post_attempt_state(conn, puzzle_id, config),
                 None,
             )
+    # Visible, or served and not yet acknowledged: either way the attempt may be finished.
+    visible = visibility.attemptable(conn, puzzle_id)
+    pending = _served_pending(conn, puzzle_id)
+    puzzle = visible if visible is not None else pending
+    if puzzle is None:
+        raise NotAttemptable(puzzle_id)
+    solution = _line(puzzle["solution_line"])
+    if presentation_ply is not None:
+        if not bool(puzzle.get("is_repertoire")) or not _is_segment(puzzle, solution, presentation_ply):
+            raise SegmentMismatch(puzzle_id)
+        shown_ply: int | None = presentation_ply
+    elif (spanned := _segment_spanned(puzzle, solution, moves_played)) is not None:
+        shown_ply = spanned
+    elif pending is not None and pending.get("served_ply") is not None:
+        shown_ply = int(pending["served_ply"])
+    elif visible is not None:
+        shown_ply = visibility.presentation_ply(conn, puzzle_id, lookahead_plies=lookahead_plies(config))
+    else:
+        shown_ply = None  # served before the snapshot existed and invisible since: the whole line
 
     sources = list(puzzle.get("source_types") or [])
     solved = resolve_solved(
         fen=str(puzzle["fen"]),
-        solution_line=_line(puzzle["solution_line"]),
+        solution_line=solution,
         color=str(puzzle["color"]),
-        presentation_ply=visibility.presentation_ply(conn, puzzle_id, lookahead_plies=lookahead_plies(config)),
+        presentation_ply=shown_ply,
         claimed=claimed,
         moves_played=moves_played,
         acceptance_map=puzzle.get("acceptance_map"),
@@ -194,7 +294,7 @@ def record(
         inserted = cur.fetchone()
     if inserted is None:
         # Lost the race to a request carrying the same attempt_id; report what it recorded.
-        winner = _existing(conn, str(attempt_id))
+        winner = _existing(conn, puzzle_id, str(attempt_id))
         if winner is None:
             raise RuntimeError("attempt insert returned no row and no winner")
         return _response(

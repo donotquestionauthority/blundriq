@@ -180,23 +180,29 @@ _ACKNOWLEDGED = """(
 )"""
 
 
+def acknowledged_sql() -> str:
+    """The predicate over an exposure alias `e`, for readers outside this module."""
+    return _ACKNOWLEDGED
+
+
 @dataclass(frozen=True)
 class Pending:
     batch_id: int
     exposure_id: int
     puzzle_id: int
+    presentation_ply: int | None  # as served; None for a standard puzzle
 
 
 def pending_members(conn: Connection[Any], scope: str, visible_ids: set[int]) -> list[Pending]:
     """The scope's pending items across all its batches, oldest first."""
     with conn.cursor() as cur:
         cur.execute(
-            f"SELECT e.batch_id, e.id AS exposure_id, e.puzzle_id FROM player_puzzle_exposure e"
+            f"SELECT e.batch_id, e.id AS exposure_id, e.puzzle_id, e.presentation_ply FROM player_puzzle_exposure e"
             f" WHERE e.player_id = %s AND e.scope = %s AND NOT {_ACKNOWLEDGED} ORDER BY e.batch_id, e.id",
             (PLAYER_ID, scope),
         )
         return [
-            Pending(int(r["batch_id"]), int(r["exposure_id"]), int(r["puzzle_id"]))
+            Pending(int(r["batch_id"]), int(r["exposure_id"]), int(r["puzzle_id"]), r["presentation_ply"])
             for r in cur.fetchall()
             if r["puzzle_id"] in visible_ids
         ]
@@ -509,7 +515,7 @@ def mint_batch(
         return batch_id
 
     targets = largest_remainder({b: float(pct[b]) for b in suppliable}, batch_size)
-    served: list[tuple[int, str]] = []
+    served: list[tuple[int, str, int | None]] = []  # (puzzle, bucket, the ply it is truncated to)
     already = set(exclude_ids)
     lost_races: set[str] = set()
 
@@ -519,7 +525,7 @@ def mint_batch(
         def pull() -> bool:
             for r in rows:
                 if r["id"] not in already:
-                    served.append((int(r["id"]), b))
+                    served.append((int(r["id"]), b, r.get("presentation_ply")))
                     already.add(int(r["id"]))
                     return True
             return False
@@ -563,7 +569,7 @@ def mint_batch(
                 if not rows or not match(rows[0]):
                     lost_races.add(cand["fen"])
                     continue
-                served.append((new_id, b))
+                served.append((new_id, b, None))
                 already.add(new_id)
                 return True
             # The corpus is exhausted for this scope: fall back to what is owned, least
@@ -576,7 +582,7 @@ def mint_batch(
                 r = fallback[fallback_i[0]]
                 fallback_i[0] += 1
                 if r["id"] not in already:
-                    served.append((int(r["id"]), b))
+                    served.append((int(r["id"]), b, r.get("presentation_ply")))
                     already.add(int(r["id"]))
                     return True
             return False
@@ -604,11 +610,12 @@ def mint_batch(
             break
     random.shuffle(served)
     with conn.cursor() as cur:
-        for puzzle_id, bucket in served:
+        for puzzle_id, bucket, shown_ply in served:
             cur.execute(
-                "INSERT INTO player_puzzle_exposure (player_id, puzzle_id, bucket, batch_id, scope, served_at)"
-                " VALUES (%s, %s, %s, %s, %s, clock_timestamp())",
-                (PLAYER_ID, puzzle_id, bucket, batch_id, scope),
+                "INSERT INTO player_puzzle_exposure"
+                " (player_id, puzzle_id, bucket, batch_id, scope, served_at, presentation_ply)"
+                " VALUES (%s, %s, %s, %s, %s, clock_timestamp(), %s)",
+                (PLAYER_ID, puzzle_id, bucket, batch_id, scope, shown_ply),
             )
     return batch_id
 
@@ -685,6 +692,19 @@ def play_batch(
         seen.add(p.puzzle_id)
         row = dict(by_id[p.puzzle_id])
         row["play_batch_id"] = p.batch_id
+        # A pending item is shown as it was served, so the queue keeps showing one segment
+        # until the item is acknowledged, even if the evidence has moved the truncation since.
+        if p.presentation_ply is not None and row.get("presentation_ply") != p.presentation_ply:
+            row["presentation_ply"] = p.presentation_ply
+            seq = fen_sequence(str(row["fen"]), [str(m) for m in row["solution_line"]])
+            row["presentation_fen"] = seq[p.presentation_ply] if p.presentation_ply < len(seq) else None
+        elif p.presentation_ply is None and row.get("presentation_ply") is not None:
+            # Served before the snapshot existed (migration 004 left it NULL): the segment it
+            # shows now becomes the one it was served with, and stays so until acknowledged.
+            conn.execute(
+                "UPDATE player_puzzle_exposure SET presentation_ply = %s WHERE id = %s AND presentation_ply IS NULL",
+                (int(row["presentation_ply"]), p.exposure_id),
+            )
         latest = p.batch_id if latest is None else max(latest, p.batch_id)
         rows.append(row)
     return Served(rows, latest, scope, threshold)

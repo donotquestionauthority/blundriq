@@ -1,6 +1,7 @@
 /** What a position card shows. Pages map their own rows onto this; fields a page does not
  *  have are simply absent, and the card renders what it is given. */
 import type { BlunderClass } from "../../blunders";
+import type { RepLine } from "../../repertoire";
 
 export interface PositionCardGame {
   game_url: string | null;
@@ -24,7 +25,18 @@ export interface PositionCardData {
   chapter?: string | null;
   lineNames?: string[] | null;
   movePlayed?: string | null;
+  /** Deviations: the move most often played instead (drawn like a played move, and the
+   *  move the similar-positions search asks about). */
+  mostCommonPlayed?: string | null;
   bestMove?: string | null;
+  /** Deviations: the move the matched line expected (slot 2 of the arrow precedence). */
+  expectedMove?: string | null;
+  /** The one move the repertoire agrees on at this board, or null (slot 3). */
+  repExpectedMove?: string | null;
+  /** Repertoire lines through this board, for the RepLines panel. */
+  repLines?: RepLine[] | null;
+  /** Deviations: the games' results at this pattern. */
+  record?: { wins: number; losses: number; draws: number; win_pct: number } | null;
   bestLine?: string | null;
   cpLoss?: number | null;
   /** Moves of the example game and how many were played before this position. */
@@ -40,6 +52,18 @@ export interface PositionCardData {
 }
 
 export type BoardSize = "S" | "M" | "L";
+
+/**
+ * The move a card recommends, and what to call it. Three authorities, in order: the engine's
+ * best move, the page's own expected move (a deviation's matched line), and the repertoire's
+ * agreed move — the last only when nothing was actually played, so a pure-repertoire move never
+ * masquerades as an engine verdict. The label is derived beside the value so they cannot disagree.
+ */
+export function recommended(d: Pick<PositionCardData, "bestMove" | "expectedMove" | "movePlayed" | "repExpectedMove">): { move: string | null; label: "Best" | "Expected" } {
+  if (d.bestMove) return { move: d.bestMove, label: "Best" };
+  if (d.expectedMove) return { move: d.expectedMove, label: "Expected" };
+  return { move: d.movePlayed ? null : (d.repExpectedMove ?? null), label: "Expected" };
+}
 
 /** First line name plus how many more: a transposition hub can match dozens. */
 export function lineNamesSummary(names: string[] | null | undefined): string | null {

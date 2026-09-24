@@ -463,3 +463,79 @@ def old_blunder_ranking(
             {"pid": PLAYER_ID, "cls": list(classifications), "window": last_n_games, "min_occ": min_occurrences},
         )
         return [dict(r) for r in cur.fetchall()]
+
+
+def old_deviation_rows(
+    conn: Connection[Any], last_n_games: int, color: str | None, time_classes: tuple[str, ...] | None
+) -> list[dict[str, Any]]:
+    """The archived `db/deviations.py::get_deviation_rows` and `get_deviation_details` as one
+    query against the old database: one row per (game, tied line) with the fields the old
+    route grouped on. Two deliberate differences are applied so that everything else must
+    match: the game window is the player's most recent N *standard* games (the old one
+    counted every variant; docs/decisions/005), and the window's order gets the id
+    tie-break the new one has, so its boundary is deterministic."""
+    clauses = ["grr.player_id = %(pid)s", "grr.deviation_by = 'me'"]
+    params: dict[str, Any] = {"pid": PLAYER_ID}
+    if last_n_games > 0:
+        clauses.append(
+            "grr.chess_game_id IN (SELECT pg2.chess_game_id FROM player_games pg2"
+            " JOIN chess_games cg2 ON cg2.id = pg2.chess_game_id WHERE pg2.player_id = %(pid)s"
+            f" AND {analysable_sql('cg2')} ORDER BY cg2.played_at DESC NULLS LAST, cg2.id DESC LIMIT %(window)s)"
+        )
+        params["window"] = last_n_games
+    if color:
+        clauses.append("bk.color = %(color)s")
+        params["color"] = color
+    if time_classes is not None:
+        clauses.append("cg.time_class = ANY(%(tc)s)")
+        params["tc"] = list(time_classes)
+    with conn.cursor() as cur:
+        cur.execute(
+            cast(
+                LiteralString,
+                f"""
+                SELECT bk.title AS book, bk.color, ch.title AS chapter, grr.deviated_at_ply AS ply,
+                       grr.expected_move, grr.played_move, grr.book_id, grr.chapter_id, pg.result,
+                       cg.url AS game_url, cg.played_at, grr.deviation_fen, cg.id AS chess_game_id, cg.moves
+                FROM game_repertoire_results grr
+                JOIN chess_games cg ON cg.id = grr.chess_game_id
+                JOIN player_games pg ON pg.chess_game_id = grr.chess_game_id AND pg.player_id = grr.player_id
+                JOIN books bk ON bk.id = grr.book_id
+                JOIN chapters ch ON ch.id = grr.chapter_id
+                JOIN game_result_lines grl ON grl.game_repertoire_result_id = grr.id
+                JOIN repertoire_lines rl ON rl.id = grl.line_id
+                WHERE {" AND ".join(clauses)}
+                """,
+            ),
+            params,
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def old_repertoire_lines(conn: Connection[Any]) -> list[dict[str, Any]]:
+    """Every line of the player's in the old database, with its chapter and book, by id."""
+    return [
+        dict(r)
+        for r in conn.execute(
+            "SELECT rl.id, rl.moves, rl.fen_sequence, ch.id AS chapter_id, ch.book_id"
+            " FROM repertoire_lines rl JOIN chapters ch ON ch.id = rl.chapter_id JOIN books bk ON bk.id = ch.book_id"
+            " WHERE bk.player_id = %s ORDER BY rl.id",
+            (PLAYER_ID,),
+        ).fetchall()
+    ]
+
+
+def old_book_notes(conn: Connection[Any], book_id: int) -> list[dict[str, Any]]:
+    """Every attached note of one book in the old database, in the shape the old projection
+    took as candidates (the same columns core/repertoire/annotations.py reads)."""
+    return [
+        dict(r)
+        for r in conn.execute(
+            "SELECT ra.fen_norm, ra.text, ra.source, ra.author, ra.book_title, ra.line_id AS ann_line_id,"
+            " ra.updated_at, ra.id AS ann_id, rl2.moves, rl2.chapter_id AS ann_chapter_id,"
+            " ch2.title AS ann_chapter_title"
+            " FROM repertoire_annotations ra JOIN repertoire_lines rl2 ON rl2.id = ra.line_id"
+            " JOIN chapters ch2 ON ch2.id = rl2.chapter_id WHERE ra.player_id = %s AND ch2.book_id = %s",
+            (PLAYER_ID, book_id),
+        ).fetchall()
+    ]

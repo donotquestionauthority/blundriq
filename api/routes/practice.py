@@ -67,6 +67,9 @@ class AttemptBody(BaseModel):
     moves_played: str | None = Field(None, max_length=2000)
     attempt_id: UUID | None = None
     session_id: UUID | None = None
+    # The segment the solver displayed, exactly as the puzzle payload gave it; None for a
+    # standard puzzle. The verdict is against this segment (core/puzzles/attempts.py).
+    presentation_ply: int | None = Field(None, ge=0, le=1000)
 
 
 @router.post("/puzzles/{puzzle_id}/attempt")
@@ -82,9 +85,12 @@ def post_attempt(puzzle_id: int, body: AttemptBody) -> dict[str, Any]:
                 moves_played=body.moves_played,
                 attempt_id=str(body.attempt_id) if body.attempt_id else None,
                 session_id=str(body.session_id) if body.session_id else None,
+                presentation_ply=body.presentation_ply,
             )
         except attempts.NotAttemptable as exc:
             raise HTTPException(404, "puzzle not found") from exc
+        except attempts.SegmentMismatch as exc:
+            raise HTTPException(422, "presentation_ply is not a segment of this puzzle") from exc
 
 
 class SkipBody(BaseModel):

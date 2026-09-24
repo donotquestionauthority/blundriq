@@ -13,11 +13,14 @@ from typing import Any
 from psycopg import Connection
 
 from core.puzzles.generate import blunder, missed_mate, repertoire
+from core.repertoire import matching
 from core.settings import Settings
 
 
 def generate_all(conn: Connection[Any], config: Settings) -> dict[str, Any]:
-    """Run every generator. The caller owns the transaction."""
+    """Run every generator. The caller owns the transaction; the repertoire lock is held for
+    it, so no import or toggle changes the lines and results under the generators."""
+    matching.lock(conn)
     return {
         "repertoire": repertoire.generate(conn, config),
         "missed_mate": missed_mate.generate(conn, config),

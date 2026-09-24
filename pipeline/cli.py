@@ -9,6 +9,7 @@
     pipeline generate-puzzles
     pipeline srs-maintain                         un-retire mastered puzzles whose pattern recurred
     pipeline import-corpus --csv FILE             rebuild the Lichess CC0 corpus sample
+    pipeline import-repertoire FILE --mode update|scratch [--preserve-manual] [--dry-run]
     pipeline housekeep
     pipeline run [--analyze-limit N]              the hourly chain, logged, alert on failure
     pipeline blunder-funnel                       why the blunder generator qualifies what it does
@@ -34,7 +35,7 @@ from core.analysis import run as analysis
 from core.ingest import run as ingest
 from core.puzzles import corpus, srs
 from core.puzzles.generate import run as puzzles
-from core.repertoire import matching
+from core.repertoire import importing, matching
 
 
 def _db_init(_: argparse.Namespace) -> int:
@@ -126,6 +127,13 @@ def _step_generate_puzzles(conn: psycopg.Connection[Any], _: argparse.Namespace)
 
 def _step_import_corpus(conn: psycopg.Connection[Any], args: argparse.Namespace) -> dict[str, Any]:
     return corpus.import_corpus(conn, settings.load(conn), args.csv)
+
+
+def _step_import_repertoire(conn: psycopg.Connection[Any], args: argparse.Namespace) -> dict[str, Any]:
+    window = settings.load(conn).analysis_game_limit
+    return importing.import_file(
+        conn, Path(args.file), mode=args.mode, window=window, preserve_manual=args.preserve_manual, dry_run=args.dry_run
+    )
 
 
 def _step_srs_maintain(conn: psycopg.Connection[Any], _: argparse.Namespace) -> dict[str, Any]:
@@ -285,6 +293,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_corpus = sub.add_parser("import-corpus", help="rebuild the Lichess CC0 corpus sample from the published CSV")
     p_corpus.add_argument("--csv", required=True, help="the decompressed lichess_db_puzzle.csv")
     p_corpus.set_defaults(func=_cmd("import-corpus", _step_import_corpus))
+
+    p_rep = sub.add_parser("import-repertoire", help="load a repertoire file (books, chapters, lines, notes)")
+    p_rep.add_argument("file")
+    p_rep.add_argument("--mode", choices=["update", "scratch"], required=True)
+    p_rep.add_argument("--preserve-manual", action="store_true", help="never overwrite a note written by hand")
+    p_rep.add_argument("--dry-run", action="store_true", help="report what would change and write nothing")
+    p_rep.set_defaults(func=_cmd("import-repertoire", _step_import_repertoire))
 
     sub.add_parser("housekeep", help="retention outside the analysis window").set_defaults(
         func=_cmd("housekeep", _step_housekeep)

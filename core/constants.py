@@ -144,6 +144,7 @@ MOTIF_THEME_VOCAB = frozenset({"fork", "pin", "skewer", "hangingPiece", "discove
 LOCK_PUZZLE_QUEUE = 3001
 LOCK_SRS_ATTEMPT = 3002
 LOCK_AI_BUDGET = 3003
+LOCK_REPERTOIRE = 3004  # matching and every repertoire change, from reading lines to publishing results
 
 # AI explanations (core/ai.py). Anthropic's floor for a thinking budget; the room kept after
 # the budget for the answer itself; and the models that think unless told not to, where

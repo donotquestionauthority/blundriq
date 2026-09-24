@@ -75,27 +75,48 @@ function Play({ g }: { g: HomePage["games"] }) {
   );
 }
 
+function LookedAt({ at }: { at: string | null }) {
+  return <span className="text-xs text-zinc-500">{at ? `last looked ${new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}` : "never looked"}</span>;
+}
+
 function SinceLastVisit({ d }: { d: HomePage }) {
+  const nothingYet = d.since === null && d.deviations_since === null;
   return (
     <section className={tile} aria-labelledby="home-since">
       <h2 id="home-since" className="text-sm font-medium text-zinc-500">
         Since your last visit
       </h2>
-      {d.since === null ? (
-        <p className="mt-2 text-sm text-zinc-500">Nothing to compare against yet: open Blunders once, and from then on this shows what the pipeline found since you last looked.</p>
+      {nothingYet ? (
+        <p className="mt-2 text-sm text-zinc-500">Nothing to compare against yet: open Blunders and Deviations once, and from then on this shows what the pipeline found since you last looked.</p>
       ) : (
-        <>
-          <p className="mt-0.5 text-xs text-zinc-500">Last looked {new Date(d.since).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}</p>
-          <p className="mt-2 text-sm">
-            {d.new_blunders > 0 ? (
+        <div className="mt-2 space-y-2 text-sm">
+          <p>
+            {d.since === null ? (
+              <span className="text-zinc-500">Open Blunders once to start counting</span>
+            ) : d.new_blunders > 0 ? (
               <Link to="/blunders" className="underline decoration-zinc-400 underline-offset-2 hover:decoration-zinc-900 dark:hover:decoration-zinc-100">
                 {plural(d.new_blunders, "new recurring blunder")}
               </Link>
             ) : (
               <span className="text-zinc-500">No new recurring blunders</span>
             )}
+            <br />
+            <LookedAt at={d.since} />
           </p>
-        </>
+          <p>
+            {d.deviations_since === null ? (
+              <span className="text-zinc-500">Open Deviations once to start counting</span>
+            ) : d.new_deviations > 0 ? (
+              <Link to="/deviations" className="underline decoration-zinc-400 underline-offset-2 hover:decoration-zinc-900 dark:hover:decoration-zinc-100">
+                {plural(d.new_deviations, "new deviation pattern")}
+              </Link>
+            ) : (
+              <span className="text-zinc-500">No new deviation patterns</span>
+            )}
+            <br />
+            <LookedAt at={d.deviations_since} />
+          </p>
+        </div>
       )}
     </section>
   );

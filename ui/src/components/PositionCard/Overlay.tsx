@@ -6,7 +6,9 @@ import { buildArrows, buildPgn } from "../../utils/chess";
 import { AiExplanationPanel } from "./AiExplanationPanel";
 import { ClassBadge } from "./CardInner";
 import { GamesTable } from "./GamesTable";
-import { lineNamesSummary } from "./types";
+import { LineReaderPanel } from "./LineReaderPanel";
+import { RepLinesPanel } from "./RepLinesPanel";
+import { lineNamesSummary, recommended } from "./types";
 import type { PositionCardData } from "./types";
 
 function CopyBlock({ label, text }: { label: string; text: string }) {
@@ -102,6 +104,10 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
     onIndexChange?.(i);
   };
   const pgn = d.moves && d.ply ? buildPgn(d.moves, d.ply) : "";
+  const played = d.movePlayed ?? d.mostCommonPlayed ?? null;
+  const best = recommended(d);
+  // One derivation for the board here and for anything that shows the same board beside it.
+  const mainArrows = buildArrows({ fen: d.fen, moves: d.moves, ply: d.ply, movePlayed: played, bestMove: best.move });
   const nav = "flex h-8 w-8 items-center justify-center rounded border border-zinc-300 disabled:opacity-30 dark:border-zinc-700";
 
   return (
@@ -165,38 +171,48 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
               boardStyle: { borderRadius: "6px" },
               ...SQUARES,
               boardOrientation: d.color,
-              arrows: buildArrows({ fen: d.fen, moves: d.moves, ply: d.ply, movePlayed: d.movePlayed, bestMove: d.bestMove }),
+              arrows: mainArrows,
             }}
           />
         </div>
 
-        {(d.movePlayed || d.bestMove) && (
+        {(played || best.move) && (
           <div className="space-y-1 rounded border border-zinc-200 p-3 text-sm dark:border-zinc-800">
-            {d.movePlayed && (
+            {played && (
               <div className="flex items-center gap-3">
-                <span className="w-16 text-xs text-zinc-500">Played</span>
-                <span className="font-mono text-red-600 dark:text-red-400">{d.movePlayed}</span>
+                <span className="w-16 text-xs text-zinc-500">{d.movePlayed ? "Played" : "Usually"}</span>
+                <span className="font-mono text-red-600 dark:text-red-400">{played}</span>
                 {d.cpLoss ? <span className="ml-auto text-xs text-zinc-500">−{d.cpLoss}cp</span> : null}
               </div>
             )}
-            {d.bestMove && (
+            {best.move && (
               <div className="flex items-center gap-3">
-                <span className="w-16 text-xs text-zinc-500">Best</span>
-                <span className="font-mono text-emerald-600 dark:text-emerald-400">{d.bestMove}</span>
+                <span className="w-16 text-xs text-zinc-500">{best.label}</span>
+                <span className="font-mono text-emerald-600 dark:text-emerald-400">{best.move}</span>
               </div>
             )}
             {d.bestLine && <p className="break-words pt-1 font-mono text-xs text-zinc-500">{d.bestLine}</p>}
           </div>
         )}
 
+        {d.record && (
+          <p className="text-sm text-zinc-500">
+            <span className="text-emerald-600 dark:text-emerald-400">{d.record.wins}W</span> · <span className="text-red-600 dark:text-red-400">{d.record.losses}L</span> · {d.record.draws}D · {d.record.win_pct}% won
+          </p>
+        )}
+
         {d.chessGameId != null && d.ply != null && <AiExplanationPanel key={`${d.chessGameId}:${d.ply}`} chessGameId={d.chessGameId} ply={d.ply} />}
+
+        <LineReaderPanel fen={d.fen} repertoireLineId={null} />
 
         {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
 
         {pgn && <CopyBlock label="PGN to position" text={pgn} />}
         <CopyBlock label="FEN" text={d.fen} />
 
-        {d.games.length > 0 ? <GamesTable games={d.games} bestLabel="Best" /> : <p className="py-2 text-center text-xs text-zinc-500">No game history for this position.</p>}
+        {d.repLines?.length ? <RepLinesPanel key={d.fen} lines={d.repLines} /> : null}
+
+        {d.games.length > 0 ? <GamesTable games={d.games} bestLabel={best.label} /> : <p className="py-2 text-center text-xs text-zinc-500">No game history for this position.</p>}
 
         <p className="pb-4 text-center text-xs text-zinc-500">Swipe or use ‹ › to move through the list</p>
       </div>

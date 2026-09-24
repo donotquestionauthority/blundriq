@@ -127,15 +127,17 @@ const ATTEMPT_RESOLVED_EVENT = "blundriq:attempt-resolved";
  *
  * One session_id per play-through (the caller calls `reset()` when it moves to another
  * puzzle, or remounts), stable across wrong-answer retries; one attempt_id per submission.
+ * Every attempt carries `presentationPly`, the segment the solver it was made on displays,
+ * on every path (foreground, queued retry, blocking retry, the held-attempt banner).
  */
-function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
+function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentationPly: number | null) {
   const [lastResult, setLastResult] = useState<"solved" | "wrong" | null>(null);
   const [serverDowngraded, setServerDowngraded] = useState(false);
   const [attemptStatus, setAttemptStatus] = useState<"in_flight" | "pending_retry" | null>(null);
   const [submitting, setSubmitting] = useState(false);
   // The failed attempt keeps the puzzle it was made on: a retry must go there, whatever the
   // hook is showing by the time it is clicked.
-  const [blockingError, setBlockingError] = useState<{ attemptId: string; solved: boolean; movesPlayed: string[]; puzzleId: number; sessionId: string } | null>(null);
+  const [blockingError, setBlockingError] = useState<{ attemptId: string; solved: boolean; movesPlayed: string[]; puzzleId: number; sessionId: string; presentationPly: number | null } | null>(null);
   const inFlightRef = useRef<Set<string>>(new Set());
   // The attempt the server is still owed in blocking mode: in flight, or failed and waiting
   // for Retry. Only one may exist; handleComplete refuses to open another while it stands.
@@ -150,6 +152,10 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
   useEffect(() => {
     activePuzzleIdRef.current = puzzleId;
   }, [puzzleId]);
+  const presentationPlyRef = useRef(presentationPly);
+  useEffect(() => {
+    presentationPlyRef.current = presentationPly;
+  }, [presentationPly]);
   const pendingRetryUuidRef = useRef<string | null>(null);
   const sessionIdRef = useRef<string>(crypto.randomUUID());
 
@@ -175,27 +181,28 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
     sessionIdRef.current = crypto.randomUUID();
   }, []);
 
-  // The attempt names its puzzle and its session: a retry, or a slow response, never posts
-  // to whatever the hook is showing by then, nor under a session started since.
+  // The attempt names its puzzle, its session and the segment it was made on: a retry, or a
+  // slow response, never posts to whatever the hook is showing by then, nor under a session
+  // started since, nor against a segment the solver was not displaying.
   const post = useCallback(
-    (attemptPuzzleId: number, sessionId: string, attemptId: string, solved: boolean, movesPlayed: string[]) =>
-      recordAttempt(attemptPuzzleId, { solved, moves_played: movesPlayed.join(","), attempt_id: attemptId, session_id: sessionId }),
+    (attemptPuzzleId: number, sessionId: string, attemptId: string, solved: boolean, movesPlayed: string[], shownPly: number | null) =>
+      recordAttempt(attemptPuzzleId, { solved, moves_played: movesPlayed.join(","), attempt_id: attemptId, session_id: sessionId, presentation_ply: shownPly }),
     [],
   );
 
   const runBlockingMode = useCallback(
-    async (attemptId: string, solved: boolean, movesPlayed: string[], attemptPuzzleId: number, sessionId: string) => {
+    async (attemptId: string, solved: boolean, movesPlayed: string[], attemptPuzzleId: number, sessionId: string, shownPly: number | null) => {
       outstandingRef.current = attemptId;
       // Held from before the request goes out, not from its failure: the whole app treats the
       // attempt as unsaved until its id is acknowledged, so leaving and returning mid-request
       // cannot open a second one.
-      const payload = { puzzle_id: attemptPuzzleId, attempt_id: attemptId, session_id: sessionId, solved, moves_played: movesPlayed.join(",") };
+      const payload = { puzzle_id: attemptPuzzleId, attempt_id: attemptId, session_id: sessionId, solved, moves_played: movesPlayed.join(","), presentation_ply: shownPly };
       holdUnsavedAttempt(payload, ownerRef.current);
       setSubmitting(true);
       setBlockingError(null);
       setServerDowngraded(false);
       try {
-        const response = await post(attemptPuzzleId, sessionId, attemptId, solved, movesPlayed);
+        const response = await post(attemptPuzzleId, sessionId, attemptId, solved, movesPlayed, shownPly);
         releaseUnsavedAttempt(attemptId);
         outstandingRef.current = null;
         if (activePuzzleIdRef.current === attemptPuzzleId) {
@@ -208,7 +215,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
         // Still held (since before the request) unless a retry from elsewhere — the recovery
         // banner, after this solver was left — landed it meanwhile.
         if (getUnsavedAttempt()?.attempt_id === attemptId) {
-          if (activePuzzleIdRef.current === attemptPuzzleId) setBlockingError({ attemptId, solved, movesPlayed, puzzleId: attemptPuzzleId, sessionId });
+          if (activePuzzleIdRef.current === attemptPuzzleId) setBlockingError({ attemptId, solved, movesPlayed, puzzleId: attemptPuzzleId, sessionId, presentationPly: shownPly });
         } else {
           outstandingRef.current = null;
           onRecorded();
@@ -232,17 +239,18 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
       inFlightRef.current.add(attemptId);
       const attemptPuzzleId = puzzleId;
       const sessionId = sessionIdRef.current;
+      const shownPly = presentationPlyRef.current;
 
       if (!isQueueModeAvailable()) {
-        await runBlockingMode(attemptId, solved, movesPlayed, attemptPuzzleId, sessionId);
+        await runBlockingMode(attemptId, solved, movesPlayed, attemptPuzzleId, sessionId, shownPly);
         return;
       }
       try {
-        await enqueueAttempt({ attempt_id: attemptId, puzzle_id: attemptPuzzleId, solved, moves_played: movesPlayed.join(","), session_id: sessionId });
+        await enqueueAttempt({ attempt_id: attemptId, puzzle_id: attemptPuzzleId, solved, moves_played: movesPlayed.join(","), session_id: sessionId, presentation_ply: shownPly });
       } catch (err) {
         console.warn("Queue enqueue failed, falling back to blocking mode:", err);
         inFlightRef.current.delete(attemptId);
-        await runBlockingMode(attemptId, solved, movesPlayed, attemptPuzzleId, sessionId);
+        await runBlockingMode(attemptId, solved, movesPlayed, attemptPuzzleId, sessionId, shownPly);
         return;
       }
 
@@ -251,7 +259,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
       setServerDowngraded(false);
       setAttemptStatus("in_flight");
       try {
-        const response = await post(attemptPuzzleId, sessionId, attemptId, solved, movesPlayed);
+        const response = await post(attemptPuzzleId, sessionId, attemptId, solved, movesPlayed, shownPly);
         await markAttemptCompleted(attemptId);
         if (activePuzzleIdRef.current === attemptPuzzleId) {
           setAttemptStatus(null);
@@ -281,9 +289,9 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
 
   const retry = useCallback(() => {
     if (!blockingError) return;
-    const { attemptId, solved, movesPlayed, puzzleId: attemptPuzzleId, sessionId } = blockingError;
+    const { attemptId, solved, movesPlayed, puzzleId: attemptPuzzleId, sessionId, presentationPly: shownPly } = blockingError;
     inFlightRef.current.delete(attemptId);
-    void runBlockingMode(attemptId, solved, movesPlayed, attemptPuzzleId, sessionId);
+    void runBlockingMode(attemptId, solved, movesPlayed, attemptPuzzleId, sessionId, shownPly);
   }, [blockingError, runBlockingMode]);
 
   return { lastResult, serverDowngraded, attemptStatus, submitting, blockingError, handleComplete, retry, reset, navigationBlocked: submitting || blockingError !== null };
@@ -296,7 +304,7 @@ function HeldAttemptBanner({ attempt, onSaved }: { attempt: UnsavedAttempt; onSa
   const retry = async () => {
     setSubmitting(true);
     try {
-      await recordAttempt(attempt.puzzle_id, { solved: attempt.solved, moves_played: attempt.moves_played, attempt_id: attempt.attempt_id, session_id: attempt.session_id });
+      await recordAttempt(attempt.puzzle_id, { solved: attempt.solved, moves_played: attempt.moves_played, attempt_id: attempt.attempt_id, session_id: attempt.session_id, presentation_ply: attempt.presentation_ply });
       releaseUnsavedAttempt(attempt.attempt_id);
       onSaved();
     } catch (err) {
@@ -409,7 +417,7 @@ function PlayMode({
     onAttemptRecorded();
     if (awaitingNextRef.current) onNeedRefetch();
   }, [onAttemptRecorded, onNeedRefetch]);
-  const attempt = useAttemptSubmit(puzzle?.id ?? -1, recorded);
+  const attempt = useAttemptSubmit(puzzle?.id ?? -1, recorded, puzzle?.presentation_ply ?? null);
   const beingRemoved = puzzle !== undefined && unplayable.has(puzzle.id);
   const showNext = attempt.lastResult !== null;
   // The showing entry was retired (from a deep link over it, or another copy): step off it to
@@ -438,8 +446,11 @@ function PlayMode({
   // Look-ahead prefetch. The server mints when `pending <= threshold`, and pending INCLUDES the
   // displayed un-acknowledged item, so fire at `remainingAhead + 1 <= threshold`; firing one
   // advance earlier is refused by the server every time.
+  // A batch that has arrived but is not yet in the queue is not looked ahead over: the render
+  // before its rows are appended sees the new batch id with the old count and would ask again.
+  const batchQueued = batch.every((p) => queued.some((q) => q.id === p.id));
   useEffect(() => {
-    if (queued.length === 0) return;
+    if (queued.length === 0 || !batchQueued) return;
     if (liveAhead + 1 > prefetchThreshold) return;
     if (allCaughtUp) return;
     const key = `${batchId ?? "null"}|${cursor}`;
@@ -447,7 +458,7 @@ function PlayMode({
     prefetchedForRef.current = key;
     onNeedRefetch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cursor, liveAhead, batchId, prefetchThreshold, allCaughtUp]);
+  }, [cursor, liveAhead, batchId, batchQueued, prefetchThreshold, allCaughtUp]);
 
   if (!puzzle) {
     if (allCaughtUp) {
@@ -527,6 +538,7 @@ function PlayMode({
         nextHighlighted={attempt.lastResult === "solved"}
         showNextButton={showNext && !exhausted}
         isRepertoire={puzzle.is_repertoire}
+        repertoireLineId={puzzle.repertoire_line_id}
         serverDowngraded={attempt.serverDowngraded}
         attemptStatus={attempt.attemptStatus}
         submissionLocked={attempt.navigationBlocked || beingRemoved}
@@ -542,7 +554,7 @@ function PlayMode({
 // ─── Overlay: one puzzle in a modal (deep link, list rows) ──────────────────
 
 function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onNavigationLock }: { puzzle: Puzzle; onClose: () => void; onAttemptRecorded: () => void; onNavigationLock: (locked: boolean) => void }) {
-  const attempt = useAttemptSubmit(puzzle.id, onAttemptRecorded);
+  const attempt = useAttemptSubmit(puzzle.id, onAttemptRecorded, puzzle.presentation_ply);
   const locked = attempt.navigationBlocked;
 
   // A hand-made puzzle can be retired from here. Not while an attempt on it exists anywhere
@@ -612,6 +624,7 @@ function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onNavigationLock }:
           presentationPly={puzzle.presentation_ply}
           acceptanceMap={puzzle.acceptance_map}
           isRepertoire={puzzle.is_repertoire}
+          repertoireLineId={puzzle.repertoire_line_id}
           serverDowngraded={attempt.serverDowngraded}
           attemptStatus={attempt.attemptStatus}
           submissionLocked={attempt.navigationBlocked || removing || gone}
@@ -883,6 +896,7 @@ export default function Practice() {
         moves_played: record.moves_played,
         attempt_id: record.attempt_id,
         ...(record.session_id != null ? { session_id: record.session_id } : {}),
+        presentation_ply: record.presentation_ply ?? null,
       });
       refetch();
     };

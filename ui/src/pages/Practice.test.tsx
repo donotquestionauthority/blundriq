@@ -130,10 +130,14 @@ describe("Practice page", () => {
     expect(calls.find((c) => c.path === "/practice/skip")?.body).toEqual({ ptype: "all", subtype: null, batch_id: 1, puzzle_id: 11 });
     // remainingAhead = 0 at index 1: 0 + 1 <= 1 fires the prefetch.
     await vi.waitFor(() => expect(calls.filter((c) => c.path === "/practice/puzzles")).toHaveLength(2));
-    await flush();
     // The cursor stayed on #12; batch 1's re-served row was not appended twice.
-    expect(screen.getByText("#12")).toBeInTheDocument();
+    expect(await screen.findByText("#12")).toBeInTheDocument();
     expect(screen.queryByText("#11")).not.toBeInTheDocument();
+    // The new batch's arrival is not itself a reason to ask again: with #13 ahead the look-ahead
+    // is satisfied, so the count settles at two.
+    await flush();
+    await flush();
+    expect(calls.filter((c) => c.path === "/practice/puzzles")).toHaveLength(2);
     fireEvent.click(screen.getByText("Skip →"));
     expect(await screen.findByText("#13")).toBeInTheDocument();
     fireEvent.click(screen.getByText("← Previous"));
@@ -428,7 +432,7 @@ describe("Practice page", () => {
 
   it("never lets a second unsaved attempt displace the one it holds", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
-    const first = { puzzle_id: 11, attempt_id: "a-1", session_id: "s-1", solved: true, moves_played: "Ra8#" };
+    const first = { puzzle_id: 11, attempt_id: "a-1", session_id: "s-1", solved: true, moves_played: "Ra8#", presentation_ply: null };
     holdUnsavedAttempt(first);
     holdUnsavedAttempt({ ...first, attempt_id: "a-2", solved: false });
     expect(getUnsavedAttempt()).toEqual(first);
@@ -501,6 +505,85 @@ describe("Practice page", () => {
     expect(attempts()[1].body!.attempt_id).toBe(held.attempt_id);
     expect(getUnsavedAttempt()).toBeNull();
     expect(screen.getByText("Replay")).not.toBeDisabled();
+  });
+
+  // A repertoire puzzle truncated to its first three plies: the player's Ra7, the reply Kf8, then
+  // the player's Rb7. The whole line is five plies.
+  const truncated = (id: number, batch: number, ply: number) =>
+    puzzle(id, batch, { solution_line: ["Ra7", "Kf8", "Rb7", "Ke8", "Rc7"], source_types: ["repertoire"], is_repertoire: true, repertoire_line_id: 5, presentation_ply: ply });
+  const solveTruncated = async () => {
+    nextDrop = { from: "a1", to: "a7" };
+    fireEvent.click(screen.getByText("drop"));
+    await vi.waitFor(() => expect(screen.getByText("drop")).toBeInTheDocument(), { timeout: 2000 });
+    await new Promise((r) => setTimeout(r, 500)); // the opponent's reply auto-plays
+    nextDrop = { from: "a7", to: "b7" };
+    fireEvent.click(screen.getByText("drop"));
+  };
+
+  it("every attempt names the segment its solver displays: a Replay after the save is a new attempt on the same segment", async () => {
+    let fetches = 0;
+    const calls = stubFetch({
+      // The first response serves the puzzle at ply 2; any later one presents it at ply 4 (the
+      // hourly match found a later deviation). The mounted solver still shows the three plies
+      // it was given, and says so.
+      "/practice/puzzles": () => ({ status: 200, body: serve([truncated(11, 1, (fetches += 1) === 1 ? 2 : 4), puzzle(12, 1)], 1, 1) }),
+      "/practice/puzzles/11/attempt": () => ({ status: 200, body: { detail: "attempt recorded", solved: true, attempt_summary: { total: 1, solved: 1, streak: 1 }, srs: { level: "knight", correct_at_level: 0, advance_threshold: 1, transition: null } } }),
+    });
+    renderPage();
+    expect(await screen.findByText("#11")).toBeInTheDocument();
+    await solveTruncated();
+    expect(await screen.findByText("Next Puzzle →")).toBeInTheDocument();
+    const attempts = () => calls.filter((c) => c.path === "/practice/puzzles/11/attempt");
+    await vi.waitFor(() => expect(attempts()).toHaveLength(1));
+    expect(attempts()[0].body).toMatchObject({ solved: true, moves_played: "Ra7,Rb7", presentation_ply: 2 });
+    fireEvent.click(screen.getByText("Replay"));
+    await solveTruncated();
+    await vi.waitFor(() => expect(attempts()).toHaveLength(2));
+    expect(attempts()[1].body).toMatchObject({ solved: true, moves_played: "Ra7,Rb7", presentation_ply: 2 });
+    expect(attempts()[1].body!.attempt_id).not.toBe(attempts()[0].body!.attempt_id);
+    expect(attempts()[1].body!.session_id).toBe(attempts()[0].body!.session_id);
+  });
+
+  it("the segment travels with a retry from the durable queue and with a held blocking-mode attempt; a record from before the field sends null", async () => {
+    // Queue mode: a record left by an earlier page load drains with its segment; an older one without.
+    Object.defineProperty(navigator, "locks", { value: { request: (_n: string, cb: () => Promise<unknown>) => cb() }, configurable: true });
+    _resetProbesForTests();
+    const stale = { attempt_id: "q-1", puzzle_id: 11, solved: true, moves_played: "Ra7,Rb7", enqueued_at: Date.now(), last_attempted_at: null, attempt_count: 0, session_id: "s-q", presentation_ply: 2 };
+    const older = { ...stale, attempt_id: "q-0", puzzle_id: 12, moves_played: "Ra8#", presentation_ply: undefined };
+    window.localStorage.setItem(QUEUE_STORE, JSON.stringify([stale, older]));
+    const ok = { status: 200, body: { detail: "attempt recorded", solved: true, attempt_summary: { total: 1, solved: 1, streak: 1 }, srs: { level: "knight", correct_at_level: 0, advance_threshold: 1, transition: null } } };
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: serve([truncated(13, 1, 2)], 1, 1) }),
+      "/practice/puzzles/11/attempt": () => ok,
+      "/practice/puzzles/12/attempt": () => ok,
+    });
+    renderPage();
+    await vi.waitFor(() => expect(calls.filter((c) => c.path.endsWith("/attempt"))).toHaveLength(2));
+    expect(calls.find((c) => c.path === "/practice/puzzles/11/attempt")!.body).toMatchObject({ attempt_id: "q-1", session_id: "s-q", presentation_ply: 2 });
+    expect(calls.find((c) => c.path === "/practice/puzzles/12/attempt")!.body).toMatchObject({ attempt_id: "q-0", presentation_ply: null });
+  });
+
+  it("a blocking-mode Retry and the held-attempt banner resend the segment with the same attempt id", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: serve([truncated(11, 1, 2), puzzle(12, 1)], 1, 1) }),
+      "/practice/puzzles/11/attempt": failThenSucceed(),
+    });
+    const view = renderPage();
+    expect(await screen.findByText("#11")).toBeInTheDocument();
+    await solveTruncated();
+    expect(await screen.findByText(/Couldn't save your attempt/)).toBeInTheDocument();
+    const attempts = () => calls.filter((c) => c.path === "/practice/puzzles/11/attempt");
+    expect(attempts()).toHaveLength(1);
+    expect(attempts()[0].body).toMatchObject({ moves_played: "Ra7,Rb7", presentation_ply: 2 });
+    expect(getUnsavedAttempt()).toMatchObject({ attempt_id: attempts()[0].body!.attempt_id, presentation_ply: 2 });
+    // Leave and come back: the banner's Retry carries the held segment.
+    view.unmount();
+    renderPage();
+    expect(await screen.findByText(/has not been saved/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Retry"));
+    await vi.waitFor(() => expect(attempts()).toHaveLength(2));
+    expect(attempts()[1].body).toMatchObject({ attempt_id: attempts()[0].body!.attempt_id, session_id: attempts()[0].body!.session_id, presentation_ply: 2 });
   });
 
   it("after a failed save of a wrong attempt, Try Again and the board wait for the save", async () => {
