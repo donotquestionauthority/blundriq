@@ -180,6 +180,11 @@ _ACKNOWLEDGED = """(
 )"""
 
 
+def acknowledged_sql() -> str:
+    """The predicate over an exposure alias `e`, for readers outside this module."""
+    return _ACKNOWLEDGED
+
+
 @dataclass(frozen=True)
 class Pending:
     batch_id: int
@@ -509,7 +514,7 @@ def mint_batch(
         return batch_id
 
     targets = largest_remainder({b: float(pct[b]) for b in suppliable}, batch_size)
-    served: list[tuple[int, str]] = []
+    served: list[tuple[int, str, int | None]] = []  # (puzzle, bucket, the ply it is truncated to)
     already = set(exclude_ids)
     lost_races: set[str] = set()
 
@@ -519,7 +524,7 @@ def mint_batch(
         def pull() -> bool:
             for r in rows:
                 if r["id"] not in already:
-                    served.append((int(r["id"]), b))
+                    served.append((int(r["id"]), b, r.get("presentation_ply")))
                     already.add(int(r["id"]))
                     return True
             return False
@@ -563,7 +568,7 @@ def mint_batch(
                 if not rows or not match(rows[0]):
                     lost_races.add(cand["fen"])
                     continue
-                served.append((new_id, b))
+                served.append((new_id, b, None))
                 already.add(new_id)
                 return True
             # The corpus is exhausted for this scope: fall back to what is owned, least
@@ -576,7 +581,7 @@ def mint_batch(
                 r = fallback[fallback_i[0]]
                 fallback_i[0] += 1
                 if r["id"] not in already:
-                    served.append((int(r["id"]), b))
+                    served.append((int(r["id"]), b, r.get("presentation_ply")))
                     already.add(int(r["id"]))
                     return True
             return False
@@ -604,11 +609,12 @@ def mint_batch(
             break
     random.shuffle(served)
     with conn.cursor() as cur:
-        for puzzle_id, bucket in served:
+        for puzzle_id, bucket, shown_ply in served:
             cur.execute(
-                "INSERT INTO player_puzzle_exposure (player_id, puzzle_id, bucket, batch_id, scope, served_at)"
-                " VALUES (%s, %s, %s, %s, %s, clock_timestamp())",
-                (PLAYER_ID, puzzle_id, bucket, batch_id, scope),
+                "INSERT INTO player_puzzle_exposure"
+                " (player_id, puzzle_id, bucket, batch_id, scope, served_at, presentation_ply)"
+                " VALUES (%s, %s, %s, %s, %s, clock_timestamp(), %s)",
+                (PLAYER_ID, puzzle_id, bucket, batch_id, scope, shown_ply),
             )
     return batch_id
 

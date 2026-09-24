@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chess } from "chess.js";
 import type { Move, Square } from "chess.js";
 import { Chessboard } from "react-chessboard";
+import { LineReaderPanel } from "./PositionCard/LineReaderPanel";
 import { HIGHLIGHT, SQUARES } from "../utils/board";
 import { mapKey, moveUci, sanResolvesToMove, uciToMove } from "../utils/chess";
 import type { AcceptanceMap } from "../practice";
@@ -45,6 +46,8 @@ export interface PuzzleEngineProps {
   /** One attempt at a time: while the parent still owes the server one, no control that
    *  could produce another (Try Again, Replay, Play On, the board) is available. */
   submissionLocked?: boolean;
+  /** The repertoire line a deviation puzzle came from: offers its walk-through under the board. */
+  repertoireLineId?: number | null;
 }
 
 const btn = "rounded border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900 disabled:opacity-40 disabled:pointer-events-none";
@@ -68,6 +71,7 @@ export function PuzzleEngine({
   serverDowngraded = false,
   attemptStatus = null,
   submissionLocked = false,
+  repertoireLineId = null,
 }: PuzzleEngineProps) {
   const solutionLine = useMemo(
     () => (presentationPly != null && presentationPly > 0 ? solutionLineProp.slice(0, presentationPly + 1) : solutionLineProp),
@@ -454,6 +458,10 @@ export function PuzzleEngine({
             </button>
           </>
         )}
+      </div>
+      {/* The note on the position the board is showing, and the whole line for a repertoire puzzle. */}
+      <div className="mt-3">
+        <LineReaderPanel fen={game.fen()} repertoireLineId={repertoireLineId} />
       </div>
     </div>
   );

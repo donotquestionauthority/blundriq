@@ -8,6 +8,10 @@ export interface HomePage {
   timezone: string;
   /** Boards that crossed the Blunders threshold since then; they wait here until the list is looked at. */
   new_blunders: number;
+  /** When the Deviations list was last looked at; null before the first look. */
+  deviations_since: string | null;
+  /** Deviation patterns the Deviations list has never shown. */
+  new_deviations: number;
   puzzles: { due: number; solved_today: number; target: number; streak: number };
   games: { today: number; week: number; target: number; streak: number };
   pipeline: {

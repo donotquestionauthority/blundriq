@@ -130,10 +130,14 @@ describe("Practice page", () => {
     expect(calls.find((c) => c.path === "/practice/skip")?.body).toEqual({ ptype: "all", subtype: null, batch_id: 1, puzzle_id: 11 });
     // remainingAhead = 0 at index 1: 0 + 1 <= 1 fires the prefetch.
     await vi.waitFor(() => expect(calls.filter((c) => c.path === "/practice/puzzles")).toHaveLength(2));
-    await flush();
     // The cursor stayed on #12; batch 1's re-served row was not appended twice.
-    expect(screen.getByText("#12")).toBeInTheDocument();
+    expect(await screen.findByText("#12")).toBeInTheDocument();
     expect(screen.queryByText("#11")).not.toBeInTheDocument();
+    // The new batch's arrival is not itself a reason to ask again: with #13 ahead the look-ahead
+    // is satisfied, so the count settles at two.
+    await flush();
+    await flush();
+    expect(calls.filter((c) => c.path === "/practice/puzzles")).toHaveLength(2);
     fireEvent.click(screen.getByText("Skip →"));
     expect(await screen.findByText("#13")).toBeInTheDocument();
     fireEvent.click(screen.getByText("← Previous"));

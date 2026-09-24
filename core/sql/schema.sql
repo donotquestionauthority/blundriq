@@ -256,6 +256,17 @@ CREATE TABLE public.seen_blunder_boards (
     CONSTRAINT seen_blunder_boards_pkey PRIMARY KEY (player_id, canonical_fen)
 );
 
+-- Patterns (book, chapter, ply, expected move) the Deviations list has shown. A pattern absent here is NEW on the list and counted on Home; the page adds what it rendered (the first look adds everything then listed).
+CREATE TABLE public.seen_deviations (
+    player_id integer NOT NULL,
+    book_id integer NOT NULL,
+    chapter_id integer NOT NULL,
+    deviated_at_ply integer NOT NULL,
+    expected_move text NOT NULL,
+    seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT seen_deviations_pkey PRIMARY KEY (player_id, book_id, chapter_id, deviated_at_ply, expected_move)
+);
+
 -- Per (game, player): where the game left the repertoire and who deviated; the Deviations page reads this.
 CREATE TABLE public.game_repertoire_results (
     id bigint NOT NULL,
@@ -449,6 +460,7 @@ CREATE TABLE public.player_puzzle_exposure (
     batch_id bigint NOT NULL,
     scope text DEFAULT 'all'::text NOT NULL,
     served_at timestamp with time zone DEFAULT now() NOT NULL,
+    presentation_ply integer,
     CONSTRAINT player_puzzle_exposure_bucket_chk CHECK ((bucket = ANY (ARRAY['your_puzzles'::text, 'motifs_first_class'::text, 'motifs_remaining'::text, 'own_missed_mate'::text, 'cc0_mate_endgame'::text])))
 );
 
@@ -493,7 +505,7 @@ CREATE TABLE public.player_puzzle_state (
     CONSTRAINT player_puzzle_state_level_check CHECK ((level = ANY (ARRAY['pawn'::text, 'knight'::text, 'bishop'::text, 'rook'::text, 'queen'::text, 'king'::text])))
 );
 
--- Exactly one row (id = 1). Platform usernames and last-checked timestamps live here; blunders_seen_at is when the Blunders list was last looked at (Home shows it; seen_blunder_boards holds what was shown).
+-- Exactly one row (id = 1). Platform usernames and last-checked timestamps live here; blunders_seen_at / deviations_seen_at are when those lists were last looked at (Home shows them; seen_blunder_boards / seen_deviations hold what was shown).
 CREATE TABLE public.players (
     id integer NOT NULL,
     blunders_seen_at timestamp with time zone,
@@ -503,7 +515,8 @@ CREATE TABLE public.players (
     lichess_id text,
     created_at timestamp with time zone DEFAULT now(),
     chesscom_last_checked timestamp with time zone,
-    lichess_last_checked timestamp with time zone
+    lichess_last_checked timestamp with time zone,
+    deviations_seen_at timestamp with time zone
 );
 
 CREATE SEQUENCE public.players_id_seq
@@ -939,6 +952,12 @@ ALTER TABLE ONLY public.dismissed_blunder_fens
 
 ALTER TABLE ONLY public.seen_blunder_boards
     ADD CONSTRAINT seen_blunder_boards_player_id_fkey FOREIGN KEY (player_id) REFERENCES public.players(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.seen_deviations
+    ADD CONSTRAINT seen_deviations_player_id_fkey FOREIGN KEY (player_id) REFERENCES public.players(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.seen_deviations
+    ADD CONSTRAINT seen_deviations_book_id_fkey FOREIGN KEY (book_id) REFERENCES public.books(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.seen_deviations
+    ADD CONSTRAINT seen_deviations_chapter_id_fkey FOREIGN KEY (chapter_id) REFERENCES public.chapters(id) ON DELETE CASCADE;
 
 ALTER TABLE ONLY public.game_repertoire_results
     ADD CONSTRAINT game_repertoire_results_book_id_fkey FOREIGN KEY (book_id) REFERENCES public.books(id) ON DELETE CASCADE;

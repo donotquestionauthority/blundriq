@@ -438,8 +438,11 @@ function PlayMode({
   // Look-ahead prefetch. The server mints when `pending <= threshold`, and pending INCLUDES the
   // displayed un-acknowledged item, so fire at `remainingAhead + 1 <= threshold`; firing one
   // advance earlier is refused by the server every time.
+  // A batch that has arrived but is not yet in the queue is not looked ahead over: the render
+  // before its rows are appended sees the new batch id with the old count and would ask again.
+  const batchQueued = batch.every((p) => queued.some((q) => q.id === p.id));
   useEffect(() => {
-    if (queued.length === 0) return;
+    if (queued.length === 0 || !batchQueued) return;
     if (liveAhead + 1 > prefetchThreshold) return;
     if (allCaughtUp) return;
     const key = `${batchId ?? "null"}|${cursor}`;
@@ -447,7 +450,7 @@ function PlayMode({
     prefetchedForRef.current = key;
     onNeedRefetch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cursor, liveAhead, batchId, prefetchThreshold, allCaughtUp]);
+  }, [cursor, liveAhead, batchId, batchQueued, prefetchThreshold, allCaughtUp]);
 
   if (!puzzle) {
     if (allCaughtUp) {
@@ -527,6 +530,7 @@ function PlayMode({
         nextHighlighted={attempt.lastResult === "solved"}
         showNextButton={showNext && !exhausted}
         isRepertoire={puzzle.is_repertoire}
+        repertoireLineId={puzzle.repertoire_line_id}
         serverDowngraded={attempt.serverDowngraded}
         attemptStatus={attempt.attemptStatus}
         submissionLocked={attempt.navigationBlocked || beingRemoved}
@@ -612,6 +616,7 @@ function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onNavigationLock }:
           presentationPly={puzzle.presentation_ply}
           acceptanceMap={puzzle.acceptance_map}
           isRepertoire={puzzle.is_repertoire}
+          repertoireLineId={puzzle.repertoire_line_id}
           serverDowngraded={attempt.serverDowngraded}
           attemptStatus={attempt.attemptStatus}
           submissionLocked={attempt.navigationBlocked || removing || gone}

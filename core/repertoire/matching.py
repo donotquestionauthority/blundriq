@@ -23,7 +23,7 @@ from typing import Any, LiteralString, cast
 from psycopg import Connection
 
 from core.chess.eligibility import analysable_sql, window_cte
-from core.constants import PLAYER_ID
+from core.constants import LOCK_REPERTOIRE, PLAYER_ID
 
 
 @dataclass(frozen=True)
@@ -197,10 +197,8 @@ def write_results(conn: Connection[Any], results: list[MatchResult], no_match_id
                 )
 
 
-def match_player(conn: Connection[Any], window: int) -> dict[str, int]:
-    """The step: match every unmatched in-window game. Returns counts for the run log."""
+def _match_all(conn: Connection[Any], games: list[dict[str, Any]]) -> dict[str, int]:
     lines = active_lines(conn)
-    games = unmatched_games(conn, window)
     results: list[MatchResult] = []
     no_match: list[int] = []
     for g in games:
@@ -211,3 +209,86 @@ def match_player(conn: Connection[Any], window: int) -> dict[str, int]:
             results.append(r)
     write_results(conn, results, no_match)
     return {"candidates": len(games), "matched": len(results), "no_match": len(no_match), "lines": len(lines)}
+
+
+def lock(conn: Connection[Any]) -> None:
+    """Serialise everything that reads the repertoire to publish results, or changes it:
+    the hourly matcher, a rematch, a toggle, an import, the puzzle generators. Held to the
+    end of the current transaction, so a matcher that read the lines before a toggle cannot
+    publish results computed from them after it."""
+    conn.execute("SELECT pg_advisory_xact_lock(%s, %s)", (LOCK_REPERTOIRE, PLAYER_ID))
+
+
+def match_player(conn: Connection[Any], window: int) -> dict[str, int]:
+    """The step: match every unmatched in-window game. Returns counts for the run log."""
+    with conn.transaction():
+        lock(conn)
+        return _match_all(conn, unmatched_games(conn, window))
+
+
+def rematch_window(conn: Connection[Any], window: int) -> dict[str, int]:
+    """Forget every result and no-match flag and match the whole window again — after the
+    repertoire itself changed (an import, a toggle at book level). Runs inside the caller's
+    transaction, so the window is never seen empty."""
+    with conn.transaction():
+        lock(conn)
+        conn.execute("DELETE FROM game_repertoire_results WHERE player_id = %s", (PLAYER_ID,))
+        conn.execute("UPDATE player_games SET no_repertoire_match = FALSE WHERE player_id = %s", (PLAYER_ID,))
+        return match_player(conn, window)
+
+
+def games_touched_by(conn: Connection[Any], line_ids: list[int], *, activated: bool, window: int) -> list[int]:
+    """The in-window games whose result can change when these lines flip. Lines going
+    inactive can only take a result away, so only games whose result cites one of them are
+    affected. Lines coming active can only be matched by a game that contains their first
+    position after the start, which the GIN index finds."""
+    if not line_ids:
+        return []
+    if not activated:
+        rows = conn.execute(
+            "SELECT DISTINCT grr.chess_game_id FROM game_repertoire_results grr"
+            " JOIN game_result_lines grl ON grl.game_repertoire_result_id = grr.id"
+            " WHERE grr.player_id = %s AND grl.line_id = ANY(%s)",
+            (PLAYER_ID, line_ids),
+        ).fetchall()
+        return [int(r["chess_game_id"]) for r in rows]
+    query = cast(
+        LiteralString,
+        f"""
+        WITH {window_cte()},
+        keys AS (SELECT array_agg(DISTINCT rl.position_keys[2]) AS ks FROM repertoire_lines rl
+                 WHERE rl.id = ANY(%(lines)s) AND array_length(rl.position_keys, 1) >= 2)
+        SELECT cg.id FROM chess_games cg, keys
+        WHERE cg.id IN (SELECT chess_game_id FROM window_games) AND cg.position_keys && keys.ks
+        """,
+    )
+    rows = conn.execute(query, {"pid": PLAYER_ID, "window": window, "lines": line_ids}).fetchall()
+    return [int(r["id"]) for r in rows]
+
+
+def rematch_games(conn: Connection[Any], game_ids: list[int]) -> dict[str, int]:
+    """Match these games again from scratch against the current active lines."""
+    if not game_ids:
+        return {"candidates": 0, "matched": 0, "no_match": 0, "lines": 0}
+    with conn.transaction():
+        lock(conn)
+        conn.execute(
+            "DELETE FROM game_repertoire_results WHERE player_id = %s AND chess_game_id = ANY(%s)",
+            (PLAYER_ID, game_ids),
+        )
+        conn.execute(
+            "UPDATE player_games SET no_repertoire_match = FALSE WHERE player_id = %s AND chess_game_id = ANY(%s)",
+            (PLAYER_ID, game_ids),
+        )
+        query = cast(
+            LiteralString,
+            f"""
+            SELECT cg.id AS chess_game_id, pg.player_color, cg.moves, cg.fen_sequence
+            FROM player_games pg JOIN chess_games cg ON cg.id = pg.chess_game_id
+            WHERE pg.player_id = %(pid)s AND cg.id = ANY(%(ids)s)
+              AND cg.moves IS NOT NULL AND cg.fen_sequence IS NOT NULL AND {analysable_sql("cg")}
+            ORDER BY cg.played_at ASC NULLS LAST
+            """,
+        )
+        games = conn.execute(query, {"pid": PLAYER_ID, "ids": game_ids}).fetchall()
+        return _match_all(conn, games)

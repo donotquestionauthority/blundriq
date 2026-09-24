@@ -3,11 +3,13 @@ import { Navigate, Route, Routes, useLocation } from "react-router";
 import { api, ApiError } from "./api";
 import Layout from "./components/Layout";
 import Blunders from "./pages/Blunders";
+import Deviations from "./pages/Deviations";
 import Games from "./pages/Games";
 import Home from "./pages/Home";
 import Login from "./pages/Login";
 import Practice from "./pages/Practice";
 import Preferences from "./pages/Preferences";
+import Repertoire from "./pages/Repertoire";
 
 type AuthState = "checking" | "in" | "out";
 
@@ -31,6 +33,8 @@ export default function App() {
       <Route element={<Layout onLoggedOut={() => setAuth("out")} />}>
         <Route path="/" element={<Home />} />
         <Route path="/blunders" element={<Blunders />} />
+        <Route path="/deviations" element={<Deviations />} />
+        <Route path="/repertoire" element={<Repertoire />} />
         <Route path="/games" element={<Games />} />
         <Route path="/practice" element={<Practice />} />
         <Route path="/preferences" element={<Preferences />} />

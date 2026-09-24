@@ -1,0 +1,92 @@
+{
+ "books": [
+  {
+   "title": "Course: The Italian",
+   "color": "white",
+   "source_book_id": 170001,
+   "chapters": [
+    {
+     "title": "1) Giuoco Piano ",
+     "root_fen": null,
+     "source_chapter_id": 0,
+     "lines": [
+      {
+       "name": "Main",
+       "moves": [
+        "e4",
+        "e5",
+        "Nf3",
+        "Nc6",
+        "Bc4",
+        "Bc5",
+        "c3"
+       ],
+       "source_line_id": "9001",
+       "is_alternative": false,
+       "annotations": [
+        {
+         "fen_norm": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -",
+         "text": "The Italian: develop @@SANStart@@Bc4@@SANEnd@@ early.",
+         "author": "GM Example"
+        },
+        {
+         "fen_norm": "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq -",
+         "text": "Here @@SANStart@@Bc4@@SANEnd@@ eyes f7.",
+         "author": "GM Example"
+        }
+       ]
+      },
+      {
+       "name": "Two Knights",
+       "moves": [
+        "e4",
+        "e5",
+        "Nf3",
+        "Nc6",
+        "Bc4",
+        "Nf6",
+        "Ng5"
+       ],
+       "source_line_id": "9002",
+       "is_alternative": false,
+       "annotations": [
+        {
+         "fen_norm": "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq -",
+         "text": "Against Nf6, Ng5 is the sharp try.",
+         "author": "GM Example"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "title": "2) From the tabiya",
+     "root_fen": "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
+     "source_chapter_id": 1,
+     "lines": [
+      {
+       "name": "From the tabiya",
+       "moves": [
+        "Bc4",
+        "Bc5"
+       ],
+       "source_line_id": "9003",
+       "annotations": []
+      },
+      {
+       "name": "Tabiya, alternative",
+       "moves": [
+        "Bc4",
+        "Be7"
+       ],
+       "source_line_id": "9004",
+       "is_alternative": true,
+       "annotations": []
+      }
+     ]
+    }
+   ],
+   "complete": true
+  }
+ ]
+}

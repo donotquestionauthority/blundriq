@@ -3,7 +3,7 @@ import { Chessboard } from "react-chessboard";
 import { daysAgo } from "../../blunders";
 import { SQUARES } from "../../utils/board";
 import { buildArrows } from "../../utils/chess";
-import { lineNamesSummary } from "./types";
+import { lineNamesSummary, recommended } from "./types";
 import type { BoardSize, PositionCardData } from "./types";
 
 const BOARD_MAX: Record<BoardSize, string> = { S: "max-w-[160px]", M: "max-w-[200px]", L: "max-w-[240px]" };
@@ -24,6 +24,8 @@ export function CardInner({ d, headerRight, boardSize = "M", onBoardClick }: { d
   // react-chessboard resolves a tap by looking its squares up by element id, so every board
   // on a page needs its own id or taps on later boards land on the first one.
   const boardId = "pc" + useId().replace(/[^a-zA-Z0-9-]/g, "");
+  const played = d.movePlayed ?? d.mostCommonPlayed ?? null;
+  const best = recommended(d).move;
   return (
     <div className="flex gap-3 p-3">
       <div className={`aspect-square w-7/12 shrink-0 ${BOARD_MAX[boardSize]}`}>
@@ -37,7 +39,7 @@ export function CardInner({ d, headerRight, boardSize = "M", onBoardClick }: { d
             boardStyle: { borderRadius: "4px", cursor: onBoardClick ? "pointer" : undefined },
             ...SQUARES,
             boardOrientation: d.color,
-            arrows: buildArrows({ fen: d.fen, moves: d.moves, ply: d.ply, movePlayed: d.movePlayed, bestMove: d.bestMove }),
+            arrows: buildArrows({ fen: d.fen, moves: d.moves, ply: d.ply, movePlayed: played, bestMove: best }),
           }}
         />
       </div>
@@ -60,11 +62,11 @@ export function CardInner({ d, headerRight, boardSize = "M", onBoardClick }: { d
         ) : (
           d.context && <p className="line-clamp-2 text-xs text-zinc-500">{d.context}</p>
         )}
-        {(d.movePlayed || d.bestMove) && (
+        {(played || best) && (
           <div className="flex flex-wrap items-center gap-1.5 font-mono text-xs">
-            {d.movePlayed && <span className="text-red-600 dark:text-red-400">{d.movePlayed}</span>}
-            {d.movePlayed && d.bestMove && <span className="text-zinc-400">→</span>}
-            {d.bestMove && <span className="text-emerald-600 dark:text-emerald-400">{d.bestMove}</span>}
+            {played && <span className="text-red-600 dark:text-red-400">{played}</span>}
+            {played && best && <span className="text-zinc-400">→</span>}
+            {best && <span className="text-emerald-600 dark:text-emerald-400">{best}</span>}
           </div>
         )}
         {d.lastSeen && <p className="text-xs text-zinc-500">last {daysAgo(d.lastSeen)}</p>}

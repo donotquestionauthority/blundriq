@@ -918,3 +918,93 @@ def test_chess960_games_never_take_a_slot_in_the_new_readers(clean: psycopg.Conn
     rows = visibility.visible_rows(clean, last_n_games=0, lookahead_plies=2)
     links = attempts.correct_game_links(clean, rows)[pid]
     assert len(links) == 1
+
+
+# --- served work survives a repertoire change ---------------------------------------------------
+
+
+def _served(conn: psycopg.Connection[DictRow], pid: int, shown_ply: int | None = None) -> None:
+    conn.execute(
+        "INSERT INTO player_puzzle_exposure (player_id, puzzle_id, bucket, batch_id, scope, served_at, presentation_ply)"
+        " VALUES (%s, %s, 'your_puzzles', 1, 'all', now() - interval '1 minute', %s)",
+        (PLAYER_ID, pid, shown_ply),
+    )
+
+
+def test_a_served_repertoire_puzzle_is_graded_as_shown_after_its_book_is_switched_off(
+    clean: psycopg.Connection[DictRow],
+) -> None:
+    """An attempt can sit in the browser's queue while the Repertoire page switches the book
+    off. The toggle rematches the games, which takes the truncation with it; the server still
+    grades the attempt, against the segment that was shown when the puzzle was served."""
+    from core.repertoire import books
+
+    _player(clean)
+    moves = ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d4", "exd4", "cxd4"]
+    _line(clean, moves)
+    pid = _rep_puzzle(clean, moves)
+    for g in (1, 2, 3):
+        _deviation(clean, g, 2)
+    shown = visibility.presentation_ply(clean, pid, lookahead_plies=2)
+    assert shown is not None and shown < len(moves) - 1
+    _served(clean, pid, shown)
+    assert books.set_active(clean, "books", 1, False, 100) is not None
+    assert visibility.attemptable(clean, pid) is None
+    assert visibility.presentation_ply(clean, pid, lookahead_plies=2) is None  # the results are gone
+    segment = ",".join(m for i, m in enumerate(moves[: shown + 1]) if i % 2 == 0)
+    out = attempts.record(
+        clean, pid, _config(), claimed=True, moves_played=segment, attempt_id=str(uuid.uuid4()), session_id=None
+    )
+    assert out["solved"] is True and _count(clean, "puzzle_attempts") == 1
+    # Now acknowledged: nothing further may be started on it while it is invisible ...
+    with pytest.raises(attempts.NotAttemptable):
+        attempts.record(
+            clean, pid, _config(), claimed=True, moves_played=segment, attempt_id=str(uuid.uuid4()), session_id=None
+        )
+    # ... but a replay of the recorded attempt is still answered.
+    first_id = clean.execute("SELECT attempt_id FROM puzzle_attempts").fetchone()
+    assert first_id is not None
+    replay = attempts.record(
+        clean, pid, _config(), claimed=False, moves_played=None, attempt_id=str(first_id["attempt_id"]), session_id=None
+    )
+    assert replay["detail"] == "attempt recorded (idempotent)" and replay["solved"] is True
+
+
+def test_a_served_standard_puzzle_survives_a_repertoire_that_now_contradicts_it(
+    clean: psycopg.Connection[DictRow],
+) -> None:
+    _player(clean)
+    pid = _puzzle(clean, START, ["e4", "e5", "Bc4"], sources=["custom"], themes=[])
+    assert visibility.attemptable(clean, pid) is not None
+    _served(clean, pid)
+    _line(clean, ["e4", "e5", "Nf3"])  # activating this line makes the puzzle conflicted
+    assert visibility.attemptable(clean, pid) is None
+    out = attempts.record(
+        clean, pid, _config(), claimed=True, moves_played="e4,Bc4", attempt_id=str(uuid.uuid4()), session_id=None
+    )
+    assert out["solved"] is True
+
+
+def test_a_never_served_invisible_puzzle_and_a_removed_custom_puzzle_are_refused(
+    clean: psycopg.Connection[DictRow],
+) -> None:
+    _player(clean)
+    _line(clean, ["e4", "e5", "Nf3"])
+    pid = _puzzle(clean, START, ["e4", "e5", "Bc4"], sources=["custom"], themes=[])
+    with pytest.raises(attempts.NotAttemptable):
+        attempts.record(
+            clean, pid, _config(), claimed=True, moves_played="e4,Bc4", attempt_id=str(uuid.uuid4()), session_id=None
+        )
+    other = _puzzle(
+        clean,
+        "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+        ["e5", "Nf3", "Nc6"],
+        sources=["custom"],
+        themes=[],
+    )
+    _served(clean, other)
+    clean.execute("UPDATE puzzles SET active = FALSE WHERE id = %s", (other,))  # removed by the player
+    with pytest.raises(attempts.NotAttemptable):
+        attempts.record(
+            clean, other, _config(), claimed=True, moves_played="e5,Nc6", attempt_id=str(uuid.uuid4()), session_id=None
+        )

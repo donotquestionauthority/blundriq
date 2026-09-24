@@ -9,6 +9,8 @@ const NAV: Array<{ to: string; label: string }> = [
   { to: "/", label: "Home" },
   { to: "/practice", label: "Practice" },
   { to: "/blunders", label: "Blunders" },
+  { to: "/deviations", label: "Deviations" },
+  { to: "/repertoire", label: "Repertoire" },
   { to: "/games", label: "Games" },
   { to: "/preferences", label: "Preferences" },
 ];

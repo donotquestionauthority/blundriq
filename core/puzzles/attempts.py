@@ -15,6 +15,12 @@ insert because a concurrent request in the same session would otherwise not see 
 row and both would score. The same response is built on a fresh insert, an idempotent
 replay of an `attempt_id` already recorded, and a lost insert race, so the wire shape
 cannot differ between them; a replay returns the original verdict with the current state.
+
+A puzzle that was **served and never acknowledged** stays gradable even when it is no longer
+visible: switching a book off, or an import, can make a repertoire puzzle (or, through the
+conflict rules, a standard one) unattemptable while an attempt on it sits in the browser's
+queue waiting to be sent. The exposure row is the proof it was served; finishing that work
+is allowed, starting new work on it is not.
 """
 
 from __future__ import annotations
@@ -33,6 +39,7 @@ from core.constants import PLAYER_ID
 from core.puzzles import srs, visibility
 from core.puzzles.lines import is_mate_line
 from core.puzzles.serve import CC0_SOURCE, OWN_MATE_SOURCE, lookahead_plies
+from core.puzzles.serve import acknowledged_sql as serve_acknowledged
 from core.settings import Settings
 
 
@@ -137,10 +144,38 @@ class NotAttemptable(LookupError):
     """The puzzle is missing or not visible to the player."""
 
 
-def _existing(conn: Connection[Any], attempt_id: str) -> dict[str, Any] | None:
+_SERVED_PENDING = cast(
+    LiteralString,
+    f"""
+    SELECT p.id, p.fen, p.solution_line, p.color, p.acceptance_map, p.source_types, p.is_repertoire,
+           p.repertoire_line_id, e.presentation_ply AS served_ply
+    FROM puzzles p
+    JOIN player_puzzle_exposure e ON e.player_id = p.player_id AND e.puzzle_id = p.id
+    WHERE p.id = %(id)s AND p.player_id = %(pid)s
+      AND NOT (p.source_types @> ARRAY['own_mate'] AND p.acceptance_map IS NULL)
+      AND NOT (p.source_types @> ARRAY['custom'] AND NOT p.active)
+      AND NOT {serve_acknowledged()}
+    ORDER BY e.served_at DESC
+    LIMIT 1
+    """,
+)
+
+
+def _served_pending(conn: Connection[Any], puzzle_id: int) -> dict[str, Any] | None:
+    """The puzzle row if it was served in a batch and nothing has acknowledged that yet, with
+    the ply it was truncated to when served. A hand-made puzzle that was removed is not
+    finished: its removal was the player's own act."""
+    with conn.cursor() as cur:
+        cur.execute(_SERVED_PENDING, {"id": puzzle_id, "pid": PLAYER_ID})
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def _existing(conn: Connection[Any], puzzle_id: int, attempt_id: str) -> dict[str, Any] | None:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT solved FROM puzzle_attempts WHERE player_id = %s AND attempt_id = %s", (PLAYER_ID, attempt_id)
+            "SELECT solved FROM puzzle_attempts WHERE player_id = %s AND puzzle_id = %s AND attempt_id = %s",
+            (PLAYER_ID, puzzle_id, attempt_id),
         )
         return cur.fetchone()
 
@@ -156,11 +191,10 @@ def record(
     session_id: str | None,
 ) -> dict[str, Any]:
     """Grade, record and score one attempt; the caller commits. Raises NotAttemptable."""
-    puzzle = visibility.attemptable(conn, puzzle_id)
-    if puzzle is None:
-        raise NotAttemptable(puzzle_id)
     if attempt_id is not None:
-        existing = _existing(conn, attempt_id)
+        # A replay of an attempt already recorded is always answerable, whatever the puzzle's
+        # visibility has become since: the client only wants the verdict it never received.
+        existing = _existing(conn, puzzle_id, attempt_id)
         if existing is not None:
             return _response(
                 "attempt recorded (idempotent)",
@@ -168,13 +202,23 @@ def record(
                 srs.post_attempt_state(conn, puzzle_id, config),
                 None,
             )
+    puzzle = visibility.attemptable(conn, puzzle_id)
+    if puzzle is None:
+        puzzle = _served_pending(conn, puzzle_id)
+        if puzzle is None:
+            raise NotAttemptable(puzzle_id)
+        # Graded against the line as it was served: the results that set the truncation may
+        # have been matched again since (that is usually why the puzzle is no longer visible).
+        shown_ply = puzzle.get("served_ply")
+    else:
+        shown_ply = visibility.presentation_ply(conn, puzzle_id, lookahead_plies=lookahead_plies(config))
 
     sources = list(puzzle.get("source_types") or [])
     solved = resolve_solved(
         fen=str(puzzle["fen"]),
         solution_line=_line(puzzle["solution_line"]),
         color=str(puzzle["color"]),
-        presentation_ply=visibility.presentation_ply(conn, puzzle_id, lookahead_plies=lookahead_plies(config)),
+        presentation_ply=shown_ply,
         claimed=claimed,
         moves_played=moves_played,
         acceptance_map=puzzle.get("acceptance_map"),
@@ -194,7 +238,7 @@ def record(
         inserted = cur.fetchone()
     if inserted is None:
         # Lost the race to a request carrying the same attempt_id; report what it recorded.
-        winner = _existing(conn, str(attempt_id))
+        winner = _existing(conn, puzzle_id, str(attempt_id))
         if winner is None:
             raise RuntimeError("attempt insert returned no row and no winner")
         return _response(
