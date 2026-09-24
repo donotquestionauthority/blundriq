@@ -2,8 +2,8 @@
 
 The old `_project_line_annotations` (pure) is lifted out of the archived source by its AST —
 its module cannot be imported outside the old application — and fed the same candidate rows
-from the old database; the new `core.repertoire.annotations.line_with_notes` runs on the
-migrated scratch database. Compared ply by ply for every line of the player's: the note's
+from the old database (read by `core.oracle`, where the reference SQL lives); the new
+`core.repertoire.annotations.line_with_notes` runs on the migrated scratch database. Compared ply by ply for every line of the player's: the note's
 text, source, author, book title and `from_chapter`.
 
     python tools/oracle/diff_annotations.py --old-src /path/to/old-src   (the extracted archive)
@@ -19,7 +19,7 @@ from typing import Any
 
 from common import oracle, report, scratch
 
-from core.constants import PLAYER_ID
+from core import oracle as q
 from core.repertoire import annotations
 
 
@@ -46,27 +46,12 @@ def main() -> int:
     diffs: list[str] = []
     checked = 0
     with oracle() as old, scratch() as new:
-        lines = old.execute(
-            "SELECT rl.id, rl.moves, rl.fen_sequence, ch.id AS chapter_id, ch.book_id"
-            " FROM repertoire_lines rl JOIN chapters ch ON ch.id = rl.chapter_id JOIN books bk ON bk.id = ch.book_id"
-            " WHERE bk.player_id = %s ORDER BY rl.id",
-            (PLAYER_ID,),
-        ).fetchall()
+        lines = q.old_repertoire_lines(old)
         candidates_by_book: dict[int, list[dict[str, Any]]] = {}
         for line in lines:
             book_id = int(line["book_id"])
             if book_id not in candidates_by_book:
-                candidates_by_book[book_id] = [
-                    dict(r)
-                    for r in old.execute(
-                        "SELECT ra.fen_norm, ra.text, ra.source, ra.author, ra.book_title, ra.line_id AS ann_line_id,"
-                        " ra.updated_at, ra.id AS ann_id, rl2.moves, rl2.chapter_id AS ann_chapter_id,"
-                        " ch2.title AS ann_chapter_title"
-                        " FROM repertoire_annotations ra JOIN repertoire_lines rl2 ON rl2.id = ra.line_id"
-                        " JOIN chapters ch2 ON ch2.id = rl2.chapter_id WHERE ra.player_id = %s AND ch2.book_id = %s",
-                        (PLAYER_ID, book_id),
-                    ).fetchall()
-                ]
+                candidates_by_book[book_id] = q.old_book_notes(old, book_id)
             expected = old_project(
                 list(line["moves"]),
                 list(line["fen_sequence"]),

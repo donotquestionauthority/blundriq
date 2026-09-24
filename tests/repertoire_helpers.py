@@ -1,4 +1,4 @@
-"""Builders for repertoire rows and matched games, shared by the phase-5 tests."""
+"""Builders for repertoire rows and matched games, shared by the repertoire tests."""
 
 from __future__ import annotations
 

@@ -16,11 +16,13 @@ row and both would score. The same response is built on a fresh insert, an idemp
 replay of an `attempt_id` already recorded, and a lost insert race, so the wire shape
 cannot differ between them; a replay returns the original verdict with the current state.
 
-A puzzle that was **served and never acknowledged** stays gradable even when it is no longer
-visible: switching a book off, or an import, can make a repertoire puzzle (or, through the
-conflict rules, a standard one) unattemptable while an attempt on it sits in the browser's
-queue waiting to be sent. The exposure row is the proof it was served; finishing that work
-is allowed, starting new work on it is not.
+A puzzle that was **served and never acknowledged** is graded against what was served — the
+exposure row records the ply a repertoire puzzle was truncated to — and stays gradable even
+when it is no longer visible: switching a book off, an import or the hourly match can lengthen
+a repertoire puzzle's presentation or make it (or, through the conflict rules, a standard
+puzzle) unattemptable while an attempt on it sits in the browser's queue waiting to be sent.
+The exposure row is the proof it was served; finishing that work is allowed, starting new work
+on it is not.
 """
 
 from __future__ import annotations
@@ -202,15 +204,18 @@ def record(
                 srs.post_attempt_state(conn, puzzle_id, config),
                 None,
             )
-    puzzle = visibility.attemptable(conn, puzzle_id)
-    if puzzle is None:
-        puzzle = _served_pending(conn, puzzle_id)
+    # Work that was served and never acknowledged is graded against the segment it was served
+    # with, whatever the puzzle looks like now: a match or rematch since can lengthen a
+    # repertoire puzzle's presentation (or hide the puzzle), and the player answered what was
+    # shown. Anything else is graded as it is presented today.
+    pending = _served_pending(conn, puzzle_id)
+    if pending is not None:
+        puzzle = pending
+        shown_ply = pending.get("served_ply")
+    else:
+        puzzle = visibility.attemptable(conn, puzzle_id)
         if puzzle is None:
             raise NotAttemptable(puzzle_id)
-        # Graded against the line as it was served: the results that set the truncation may
-        # have been matched again since (that is usually why the puzzle is no longer visible).
-        shown_ply = puzzle.get("served_ply")
-    else:
         shown_ply = visibility.presentation_ply(conn, puzzle_id, lookahead_plies=lookahead_plies(config))
 
     sources = list(puzzle.get("source_types") or [])

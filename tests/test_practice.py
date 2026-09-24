@@ -1008,3 +1008,39 @@ def test_a_never_served_invisible_puzzle_and_a_removed_custom_puzzle_are_refused
         attempts.record(
             clean, other, _config(), claimed=True, moves_played="e5,Nc6", attempt_id=str(uuid.uuid4()), session_id=None
         )
+
+
+def test_pending_work_is_graded_as_served_even_while_the_puzzle_stays_visible(
+    clean: psycopg.Connection[DictRow],
+) -> None:
+    """A new deviation lengthens the presentation of a repertoire puzzle that is still visible;
+    the attempt on the segment that was shown is still a solve, and the queue keeps showing
+    the served segment until it is acknowledged."""
+    from core.puzzles import serve
+
+    _player(clean)
+    moves = ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d4", "exd4", "cxd4"]
+    _line(clean, moves)
+    pid = _rep_puzzle(clean, moves)
+    for g in (1, 2, 3):
+        _deviation(clean, g, 2)
+    shown = visibility.presentation_ply(clean, pid, lookahead_plies=2)
+    assert shown is not None
+    _served(clean, pid, shown)
+    _deviation(clean, 4, 6)  # the hourly match found a later deviation
+    longer = visibility.presentation_ply(clean, pid, lookahead_plies=2)
+    assert longer is not None and longer > shown and visibility.attemptable(clean, pid) is not None
+    row = next(
+        r for r in serve.play_batch(clean, _config(), last_n_games=0, ptype="all", subtype=None).rows if r["id"] == pid
+    )
+    assert row["presentation_ply"] == shown and row["presentation_fen"] == _fens(moves)[shown]
+    segment = ",".join(m for i, m in enumerate(moves[: shown + 1]) if i % 2 == 0)
+    out = attempts.record(
+        clean, pid, _config(), claimed=True, moves_played=segment, attempt_id=str(uuid.uuid4()), session_id=None
+    )
+    assert out["solved"] is True
+    # Acknowledged now: the next attempt is graded as the puzzle is presented today.
+    out = attempts.record(
+        clean, pid, _config(), claimed=True, moves_played=segment, attempt_id=str(uuid.uuid4()), session_id=None
+    )
+    assert out["solved"] is False

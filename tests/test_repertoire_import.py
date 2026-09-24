@@ -457,3 +457,52 @@ def test_a_chapter_toggle_rematches_the_games_that_cite_its_lines(db: psycopg.Co
     assert out is not None and out["candidates"] == 1
     out = books.set_active(db, "chapters", 1, False, 100)
     assert out is not None and out["candidates"] == 1
+
+
+def test_a_note_the_file_moved_off_its_line_never_costs_the_existing_note(
+    db: psycopg.Connection[DictRow], tmp_path: Path
+) -> None:
+    """The exporter can mark a book complete and still carry a note this side cannot place;
+    that is a loss on the way, so nothing of the book is retired and the old note stays."""
+    _run(db, _write(tmp_path, _doc()))
+    doc = _doc()
+    note = doc["books"][0]["chapters"][0]["lines"][0]["annotations"][0]
+    note["fen_norm"] = h.spine(None, ["d4"])[1]  # a real position, not on the Italian line
+    del doc["books"][0]["chapters"][0]["lines"][1]  # and a line vanished in the same file
+    out = _run(db, _write(tmp_path, doc))
+    assert out["annotations"]["skipped_off_spine"] == 1 and out["annotations"]["stale_deleted"] == 0
+    assert out["books"]["notes_lost"] == 1 and out["lines"]["vanished_deactivated"] == 0
+    assert db.execute("SELECT count(*) AS n FROM repertoire_annotations").fetchone()["n"] == 3  # type: ignore[index]
+    assert db.execute("SELECT count(*) AS n FROM repertoire_lines WHERE active").fetchone()["n"] == 4  # type: ignore[index]
+    # Put right, the same file replaces as intended.
+    out = _run(
+        db,
+        _write(
+            tmp_path,
+            {
+                **doc,
+                "books": [
+                    {
+                        **doc["books"][0],
+                        "chapters": [
+                            {
+                                **doc["books"][0]["chapters"][0],
+                                "lines": [
+                                    {
+                                        **doc["books"][0]["chapters"][0]["lines"][0],
+                                        "annotations": _doc()["books"][0]["chapters"][0]["lines"][0]["annotations"],
+                                    }
+                                ],
+                            },
+                            doc["books"][0]["chapters"][1],
+                        ],
+                    }
+                ],
+            },
+        ),
+    )
+    assert (
+        out["books"]["notes_lost"] == 0
+        and out["lines"]["vanished_deactivated"] == 1
+        and out["annotations"]["stale_deleted"] == 1
+    )

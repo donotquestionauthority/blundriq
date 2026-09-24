@@ -1,4 +1,4 @@
-"""The routes of phase 5: /deviations, /repertoire and its notes."""
+"""The Deviations and Repertoire routes, and the notes they carry."""
 
 from __future__ import annotations
 

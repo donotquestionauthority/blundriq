@@ -190,18 +190,19 @@ class Pending:
     batch_id: int
     exposure_id: int
     puzzle_id: int
+    presentation_ply: int | None  # as served; None for a standard puzzle
 
 
 def pending_members(conn: Connection[Any], scope: str, visible_ids: set[int]) -> list[Pending]:
     """The scope's pending items across all its batches, oldest first."""
     with conn.cursor() as cur:
         cur.execute(
-            f"SELECT e.batch_id, e.id AS exposure_id, e.puzzle_id FROM player_puzzle_exposure e"
+            f"SELECT e.batch_id, e.id AS exposure_id, e.puzzle_id, e.presentation_ply FROM player_puzzle_exposure e"
             f" WHERE e.player_id = %s AND e.scope = %s AND NOT {_ACKNOWLEDGED} ORDER BY e.batch_id, e.id",
             (PLAYER_ID, scope),
         )
         return [
-            Pending(int(r["batch_id"]), int(r["exposure_id"]), int(r["puzzle_id"]))
+            Pending(int(r["batch_id"]), int(r["exposure_id"]), int(r["puzzle_id"]), r["presentation_ply"])
             for r in cur.fetchall()
             if r["puzzle_id"] in visible_ids
         ]
@@ -691,6 +692,12 @@ def play_batch(
         seen.add(p.puzzle_id)
         row = dict(by_id[p.puzzle_id])
         row["play_batch_id"] = p.batch_id
+        # A pending item is shown as it was served, so what the solver sees is what the
+        # attempt will be graded against, even if the evidence has moved the truncation since.
+        if p.presentation_ply is not None and row.get("presentation_ply") != p.presentation_ply:
+            row["presentation_ply"] = p.presentation_ply
+            seq = fen_sequence(str(row["fen"]), [str(m) for m in row["solution_line"]])
+            row["presentation_fen"] = seq[p.presentation_ply] if p.presentation_ply < len(seq) else None
         latest = p.batch_id if latest is None else max(latest, p.batch_id)
         rows.append(row)
     return Served(rows, latest, scope, threshold)

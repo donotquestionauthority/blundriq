@@ -5,10 +5,12 @@ produced outside this repository. Nothing here knows or names where it came from
 `source_*` ids are opaque.
 
 Identity (docs/decisions/007): a book is `(player, source_book_id)`; a chapter is `(book,
-title, root_fen)`; a line is `(chapter, moves)` — the move tokens exactly as the file spells
-them, compared raw, because that is what the existing rows were keyed by; a note is `(line,
-fen_norm)`. A row that exists is left as it is: its title, colour, name, `active` flag are not
-touched, only a missing `source_*` id is filled in. Lines are never updated and never deleted:
+source_chapter_id)`, falling back to `(book, title, root_fen)` for a row that has no source
+id yet; a line is `(chapter, moves)` — the move tokens exactly as the file spells them,
+compared raw, because that is what the existing rows were keyed by; a note is `(line,
+fen_norm)`. A row that exists keeps its colour, name and `active` flag; a missing `source_*`
+id is filled in and a chapter found by its source id takes the file's title. Lines are never
+updated and never deleted:
 a line whose moves changed is a new line and the old one is switched off, so its puzzle keeps
 its spaced-repetition state instead of being rebuilt or cascaded away.
 
@@ -17,8 +19,9 @@ missing source id and applies a chapter's new title). `scratch` also
 creates what is missing and, for a book the file declares `complete` — the exporter's word
 that nothing was dropped on the way — switches off lines and chapters the file no longer
 contains and deletes their course notes the file no longer carries; manual notes are kept,
-and a line that is in the file but switched off stays off. A book not declared complete is
-only added to: an extraction that lost a note must not read as the author removing it.
+and a line that is in the file but switched off stays off. A book not declared complete, or
+one whose notes this side could not all place (off the line, malformed, blank), is only added
+to: a note lost on the way, at either end, must not read as the author removing it.
 
 A chapter is found by its source id first, so a renamed chapter keeps its lines, its puzzles
 and their progress (the new title is applied); a chapter with no source id yet is adopted by
@@ -129,7 +132,10 @@ def spine(root_fen: str | None, moves: list[str]) -> list[str]:
 
 
 def signatures(moves: list[str], fens: list[str], color: str) -> list[tuple[str, str]]:
-    """(position, move) at every ply where the book's side is to move."""
+    """(position, move) at every ply where the book's side is to move. The position is the
+    full FEN, counters included, as the gate has always keyed it: two lines reaching one board
+    with different move counts are not held to one move here (the read side's `project_ply`
+    is what reports such a disagreement when a game meets it)."""
     side = "w" if color == "white" else "b"
     return [(fens[i], m) for i, m in enumerate(moves) if fens[i].split(" ")[1] == side]
 
@@ -219,7 +225,15 @@ def existing_index(conn: Connection[Any], exclude: set[int] | None = None) -> tu
 
 def _counts() -> dict[str, dict[str, int]]:
     return {
-        "books": {"in_file": 0, "created": 0, "existing": 0, "unknown": 0, "title_differs": 0, "not_complete": 0},
+        "books": {
+            "in_file": 0,
+            "created": 0,
+            "existing": 0,
+            "unknown": 0,
+            "title_differs": 0,
+            "not_complete": 0,
+            "notes_lost": 0,
+        },
         "chapters": {"in_file": 0, "created": 0, "existing": 0, "unknown": 0, "renamed": 0, "deactivated": 0},
         "lines": {
             "in_file": 0,
@@ -430,9 +444,8 @@ def _write(
         zip([ix for book in resolved for _, ix in book.to_insert], decide(existing, dirty, batch), strict=True)
     )
 
-    # Pass 2: insert, collect the notes, retire.
+    # Pass 2: insert, write the notes, retire.
     structural = counts["books"]["created"] > 0 or counts["chapters"]["created"] > 0
-    notes: list[dict[str, Any]] = []
     for book in resolved:
         for chapter_id, ix in book.to_insert:
             p = prepared[ix]
@@ -458,6 +471,7 @@ def _write(
             structural = True
             book.line_ids.append(int(lrow["id"]))
             book.to_note.append((int(lrow["id"]), ix))
+        notes: list[dict[str, Any]] = []
         for line_id, ix in book.to_note:
             line = prepared[ix].line
             for n in line.annotations:
@@ -475,14 +489,20 @@ def _write(
                     book.notes.append((line_id, annotations.normalize_fen(n.fen_norm)))
                 except ValueError:
                     continue
+        # The book's notes are written — and judged — before anything of the book is retired:
+        # a note the file carries but this side cannot place (off its line, malformed, blank)
+        # is a loss on the way, and a book that lost anything is not replaced, only added to.
+        written = annotations.upsert_many(conn, notes, source="course", preserve_manual=preserve_manual)
+        for k, v in written.items():
+            counts["annotations"][k] += v
+        lost = written["skipped_off_spine"] + written["blank"] + written["skipped_no_line"]
         if scratch:
-            if book.spec.complete:
-                structural |= _retire_absent(conn, book, counts)
-            else:
+            if not book.spec.complete:
                 counts["books"]["not_complete"] += 1
-    # Every note of the file in one write.
-    for k, v in annotations.upsert_many(conn, notes, source="course", preserve_manual=preserve_manual).items():
-        counts["annotations"][k] += v
+            elif lost:
+                counts["books"]["notes_lost"] += 1
+            else:
+                structural |= _retire_absent(conn, book, counts)
     return structural
 
 

@@ -34,6 +34,7 @@ from typing import Any, Literal, LiteralString, cast
 import chess
 from psycopg import Connection
 
+from core.chess.eligibility import analysable_sql
 from core.constants import PLAYER_ID
 
 Row = dict[str, Any]
@@ -88,7 +89,8 @@ ORDER BY qk.fen, bk.title, ch.title, rl.line_name, rl.id, k.ord
 """
 
 # Per (board, book): games containing the board, by what their result row for that book says.
-# A game with no result row groups under book NULL and so counts for nothing.
+# A game with no result row groups under book NULL and so counts for nothing. Chess960 games
+# are history, never evidence, whatever rows they carry (core.chess.eligibility).
 _STATS_SQL = """
 WITH qk AS MATERIALIZED (
     SELECT q.fen AS fen, bq_position_key(q.fen) AS key, bq_canonical_fen(q.fen) AS canon
@@ -117,7 +119,7 @@ JOIN chess_games cg ON cg.position_keys @> ARRAY[qk.key]
 JOIN player_games pg ON pg.chess_game_id = cg.id
 CROSS JOIN LATERAL unnest(cg.position_keys) WITH ORDINALITY AS k(key, ord)
 LEFT JOIN game_repertoire_results grr ON grr.chess_game_id = pg.chess_game_id AND grr.player_id = pg.player_id
-WHERE pg.player_id = %(pid)s
+WHERE pg.player_id = %(pid)s AND {analysable}
   AND k.key = qk.key
   AND bq_canonical_fen(cg.fen_sequence->>((k.ord - 1)::int)) = qk.canon
   AND (grr.book_id = ANY(%(book_ids)s) OR grr.book_id IS NULL)
@@ -176,7 +178,9 @@ def rep_lines(
     if with_stats and line_rows:
         book_ids = sorted({int(r["book_id"]) for r in line_rows})
         with conn.cursor() as cur:
-            cur.execute(cast(LiteralString, _STATS_SQL), params | {"book_ids": book_ids})
+            cur.execute(
+                cast(LiteralString, _STATS_SQL.format(analysable=analysable_sql("cg"))), params | {"book_ids": book_ids}
+            )
             for r in cur.fetchall():
                 if r["book_id"] is None:
                     continue

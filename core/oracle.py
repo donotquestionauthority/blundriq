@@ -510,3 +510,32 @@ def old_deviation_rows(
             params,
         )
         return [dict(r) for r in cur.fetchall()]
+
+
+def old_repertoire_lines(conn: Connection[Any]) -> list[dict[str, Any]]:
+    """Every line of the player's in the old database, with its chapter and book, by id."""
+    return [
+        dict(r)
+        for r in conn.execute(
+            "SELECT rl.id, rl.moves, rl.fen_sequence, ch.id AS chapter_id, ch.book_id"
+            " FROM repertoire_lines rl JOIN chapters ch ON ch.id = rl.chapter_id JOIN books bk ON bk.id = ch.book_id"
+            " WHERE bk.player_id = %s ORDER BY rl.id",
+            (PLAYER_ID,),
+        ).fetchall()
+    ]
+
+
+def old_book_notes(conn: Connection[Any], book_id: int) -> list[dict[str, Any]]:
+    """Every attached note of one book in the old database, in the shape the old projection
+    took as candidates (the same columns core/repertoire/annotations.py reads)."""
+    return [
+        dict(r)
+        for r in conn.execute(
+            "SELECT ra.fen_norm, ra.text, ra.source, ra.author, ra.book_title, ra.line_id AS ann_line_id,"
+            " ra.updated_at, ra.id AS ann_id, rl2.moves, rl2.chapter_id AS ann_chapter_id,"
+            " ch2.title AS ann_chapter_title"
+            " FROM repertoire_annotations ra JOIN repertoire_lines rl2 ON rl2.id = ra.line_id"
+            " JOIN chapters ch2 ON ch2.id = rl2.chapter_id WHERE ra.player_id = %s AND ch2.book_id = %s",
+            (PLAYER_ID, book_id),
+        ).fetchall()
+    ]

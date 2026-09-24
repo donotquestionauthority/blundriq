@@ -89,3 +89,15 @@ def test_stats_count_distinct_games_per_board_and_book(db: psycopg.Connection[Di
     assert row["last_followed"] is not None and row["last_deviated"] is not None
     bare = read.rep_lines(db, [fens[4]], book_color="white", with_stats=False)[fens[4]][0]
     assert (bare["followed"], bare["last_followed"]) == (0, None)
+
+
+def test_stats_never_count_a_chess960_game(db: psycopg.Connection[DictRow]) -> None:
+    fens = h.spine(None, ITALIAN)
+    h.game(db, 7, ["e4", "e5", "Nf3", "Nc6", "d4"], variant="chess960")  # history, whatever rows it carries
+    h.result(db, 7, book_id=1, chapter_id=1, ply=4, by="me", expected="Bc4", played="d4", fen=fens[4], line_ids=[1])
+    row = read.rep_lines(db, [fens[4]], book_color="white")[fens[4]][0]
+    assert (row["followed"], row["deviated_by_me"], row["me_dev_played"]) == (0, 0, None)
+    h.game(db, 8, ["e4", "e5", "Nf3", "Nc6", "d4"])
+    h.result(db, 8, book_id=1, chapter_id=1, ply=4, by="me", expected="Bc4", played="d4", fen=fens[4], line_ids=[1])
+    row = read.rep_lines(db, [fens[4]], book_color="white")[fens[4]][0]
+    assert (row["deviated_by_me"], row["me_dev_played"]) == (1, "d4")
