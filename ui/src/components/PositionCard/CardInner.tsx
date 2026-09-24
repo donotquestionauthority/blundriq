@@ -47,6 +47,7 @@ export function CardInner({ d, headerRight, boardSize = "M", onBoardClick }: { d
             <span className="text-lg font-bold">{d.times}×</span>
             {d.score !== undefined && <span className="font-mono text-xs text-zinc-500">score {d.score}</span>}
             {d.topClassification && <ClassBadge cls={d.topClassification} />}
+            {d.isNew && <span className="inline-block rounded bg-sky-100 px-1.5 py-0.5 text-xs font-semibold text-sky-800 dark:bg-sky-900/40 dark:text-sky-300">NEW</span>}
           </div>
           {headerRight}
         </div>

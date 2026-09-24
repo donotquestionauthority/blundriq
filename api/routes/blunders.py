@@ -1,4 +1,4 @@
-"""GET /blunders, POST /blunders/dismiss|restore|explain, GET /blunders/prompts — the Blunders page."""
+"""GET /blunders, POST /blunders/seen|dismiss|restore|explain, GET /blunders/prompts — the Blunders page."""
 
 from __future__ import annotations
 
@@ -47,6 +47,8 @@ def list_positions(
         config = settings.load(conn)
         if not f.classifications:
             f = replace(f, classifications=tuple(config.blunders_default_classifications))
+        # Boards are marked NEW only once the list has been looked at at least once.
+        f = replace(f, mark_new=blunders.seen_at(conn) is not None)
         return blunders.positions(conn, f, config.time_class_focus, page)
 
 
@@ -60,6 +62,24 @@ class FenBody(BaseModel):
             return custom.full_fen(value)  # a short FEN has no board key and would dismiss nothing
         except custom.InvalidPuzzle as exc:
             raise ValueError(str(exc)) from exc
+
+
+class SeenBody(BaseModel):
+    boards: list[str] = Field(max_length=20000)
+
+    @field_validator("boards")
+    @classmethod
+    def _board_keys(cls, value: list[str]) -> list[str]:
+        if any(len(b) > 100 for b in value):
+            raise ValueError("not a board key")
+        return value
+
+
+@router.post("/seen")
+def mark_seen(body: SeenBody) -> dict[str, str]:
+    """Called by the page once the list is on screen, with the response's `to_acknowledge`."""
+    with db.transaction() as conn:
+        return {"seen_at": blunders.mark_seen(conn, body.boards).isoformat()}
 
 
 @router.post("/dismiss")

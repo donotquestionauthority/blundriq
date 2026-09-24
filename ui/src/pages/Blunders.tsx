@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { BLUNDER_CLASSES, DAY_OPTIONS, LAST_N_OPTIONS, MIN_OCCURRENCE_OPTIONS, TIME_CLASS_LABELS, defaultFilters, dismissBoard, getBlunders, restoreBoard, toCard } from "../blunders";
+import { BLUNDER_CLASSES, DAY_OPTIONS, LAST_N_OPTIONS, MIN_OCCURRENCE_OPTIONS, TIME_CLASS_LABELS, defaultFilters, dismissBoard, getBlunders, markSeen, restoreBoard, toCard } from "../blunders";
 import type { BlunderClass, BlunderFilters, TimeClass } from "../blunders";
 import { CreatePuzzleModal } from "../components/CreatePuzzleModal";
 import type { CreatePuzzleSource } from "../components/CreatePuzzleModal";
@@ -12,6 +12,11 @@ import { lichessAnalyzeUrl } from "../utils/chess";
  * Recurring positions where I go wrong, worst first. A position is a board; it recurs when it
  * turns up in several games. Filters open on the settings row's defaults and are not
  * remembered. Dismissing hides a board here and from Practice; the Dismissed view restores it.
+ * A board this list has never shown carries a NEW chip (the server's predicate, the same one
+ * Home counts with). Once a response is on screen the page acknowledges exactly the boards that
+ * response told it to — and every rendered response, an empty list included, records the look —
+ * so Home's count is spent only for what was actually shown. A response that lost to a newer
+ * request, or arrived after the page was left, is never acknowledged.
  */
 
 const ACCENT: Record<BlunderClass, string> = { miss: "border-l-rose-700", blunder: "border-l-red-500", mistake: "border-l-orange-500", inaccuracy: "border-l-yellow-500" };
@@ -33,6 +38,14 @@ function List({ filters, setFilters }: { filters: BlunderFilters; setFilters: (f
     if (page > 0 && page > r.total_pages - 1) setPage(r.total_pages - 1);
     return r;
   }, [key, page]);
+
+  // Acknowledge a response only once it is on screen: after commit, and only if useApi accepted
+  // it (a response that lost to a newer request never becomes `data`; one that arrives after
+  // unmount never reaches an effect). `data` changes exactly once per accepted response.
+  useEffect(() => {
+    if (!data || isStale) return;
+    markSeen(data.to_acknowledge).catch((e: unknown) => console.warn("could not acknowledge the list:", e));
+  }, [data, isStale]);
 
   useEffect(() => {
     if (!toast) return;
@@ -141,7 +154,7 @@ function List({ filters, setFilters }: { filters: BlunderFilters; setFilters: (f
         {data && (
           <div className={isStale ? "opacity-50" : ""}>
             <div className="mb-2 flex items-center justify-between text-sm text-zinc-500">
-              <span>{filters.show_dismissed ? `${data.dismissed_count} dismissed positions` : `${data.active_count} positions · ${data.dismissed_count} dismissed`}</span>
+              <span>{filters.show_dismissed ? `${data.dismissed_count} dismissed positions` : `${data.active_count} positions${data.new_count > 0 ? ` · ${data.new_count} new` : ""} · ${data.dismissed_count} dismissed`}</span>
               {data.total_pages > 1 && (
                 <span className="flex items-center gap-2">
                   <button type="button" disabled={page === 0} onClick={() => setPage(page - 1)} className="disabled:opacity-30">
@@ -221,7 +234,7 @@ export default function Blunders() {
   return (
     <div>
       <h1 className="text-xl font-semibold tracking-tight">Blunders</h1>
-      <p className="mb-4 mt-1 text-sm text-zinc-500">Recurring positions where I go wrong, worst first.</p>
+      <p className="mb-4 mt-1 text-sm text-zinc-500">Recurring positions where I go wrong, worst first. A board marked NEW has not been shown here before.</p>
       {error && (
         <p role="alert" className="text-sm text-red-600 dark:text-red-400">
           {error}

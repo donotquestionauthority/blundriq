@@ -30,7 +30,10 @@ Chess.com / Lichess APIs
   Blunders (api) reads blunders by board ──► dismissed_blunder_fens; explain ──► ai_explanation_cache, ai_calls;
            create puzzle ──► puzzles (tagged 'custom', which no generator displaces)
 
-  Home page reads: due count (Practice eligibility), games today/week, streaks, since-last-visit, pipeline_runs.
+  Home page reads: due count (Practice eligibility), games today/week, streaks, new blunders — recurring
+           boards the Blunders list has never shown (seen_blunder_boards, which that page fills with what it
+           rendered; the first look ever records the whole list as known) — one predicate in core/blunders.py,
+           shared with the page's NEW chips; pipeline_runs (the hourly chain only).
 ```
 
 Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one subcommand per step, each idempotent. Everything below is FastAPI routes in `api/routes/`, which are thin: they parse the request, call a function in `core/`, and return its result.
@@ -68,6 +71,7 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `core/blunders.py` | The Blunders page: boards ranked by distinct games and severity, their games, dismissal. |
 | `core/ai.py`, `core/prompts.py` | Explaining a blunder: context read from the database, sandboxed prompt templates, provider call over HTTP, cache, hourly and daily caps. |
 | `core/puzzles/custom.py` | Creating and retiring a hand-made puzzle. |
+| `core/home.py` | The Home page: due count, today's puzzles and games against their targets, streaks, blunders the list has never shown, pipeline status. Reads only. |
 | `api/auth.py` | One password, one signed cookie. |
 | `api/routes/*` | Thin routes. |
 | `pipeline/cli.py` | The `pipeline` command. |

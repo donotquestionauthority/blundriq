@@ -179,18 +179,24 @@ def _cmd(name: str, step: Step) -> Callable[[argparse.Namespace], int]:
     return lambda args: _run_step(name, step, args)
 
 
+def hourly_steps() -> dict[str, Step]:
+    """The step behind each name in core.runs.HOURLY_STEPS, in that order."""
+    steps: dict[str, Step] = {
+        "import": _step_import,
+        "match": _step_match,
+        "analyze": _step_analyze,
+        "generate-puzzles": _step_generate_puzzles,
+        "srs-maintain": _step_srs_maintain,
+        "housekeep": _step_housekeep,
+    }
+    return {name: steps[name] for name in runs.HOURLY_STEPS}
+
+
 def _run_all(args: argparse.Namespace) -> int:
     """The hourly order. A failed step stops the chain (its alert already went out)."""
     args.alert = True
     args.limit = args.analyze_limit
-    for name, step in (
-        ("import", _step_import),
-        ("match", _step_match),
-        ("analyze", _step_analyze),
-        ("generate-puzzles", _step_generate_puzzles),
-        ("srs-maintain", _step_srs_maintain),
-        ("housekeep", _step_housekeep),
-    ):
+    for name, step in hourly_steps().items():
         if _run_step(name, step, args) != 0:
             return 1
     return 0

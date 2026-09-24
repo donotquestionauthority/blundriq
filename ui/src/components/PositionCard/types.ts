@@ -34,6 +34,8 @@ export interface PositionCardData {
   chessGameId?: number | null;
   lastSeen?: string | null;
   dismissed?: boolean;
+  /** New since the visit boundary the page was opened with (Home → Blunders). */
+  isNew?: boolean;
   games: PositionCardGame[];
 }
 

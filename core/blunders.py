@@ -15,17 +15,27 @@ standard games (`eligibility.window_cte`: Chess960 never takes a slot). Time cla
 The `fen` a card carries is a real occurrence's FEN, never the board key: the key ends in a
 fixed `0 1` and is not the position anyone played. Dismissal is by board, so dismiss and
 restore accept any FEN and reduce it in SQL.
+
+**New** (`mark_new`): a board the list has never shown — not in `seen_blunder_boards` and not
+dismissed. The page acknowledges exactly the boards it rendered (`mark_seen`), so a board that
+arrived between the read and the acknowledgement, or that sits on a page never opened, stays
+new; the first look ever (`players.blunders_seen_at` still NULL) marks nothing and acknowledges
+everything then listed, so history is not news. Home reads the same predicate for its count
+and never acknowledges anything. The order is by score alone, so an acknowledgement between
+two pages moves nothing: page 2 is what it would have been.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, LiteralString, cast
 
 from psycopg import Connection
 
 from core.chess.eligibility import analysable_sql, evidence_sql, window_cte
 from core.constants import BLUNDER_CLASSES, BLUNDER_SCORE_WEIGHTS, PLAYER_ID
+from core.settings import Settings
 
 Row = dict[str, Any]
 
@@ -41,6 +51,24 @@ class BlunderFilters:
     last_n_games: int = 0  # > 0 wins over since_days
     time_class: str = "focus"  # one of TIME_CLASSES
     show_dismissed: bool = False
+    mark_new: bool = False  # flag boards never shown; False before the first look
+
+
+def default_filters(config: Settings, mark_new: bool = False) -> BlunderFilters:
+    """The filters the page opens on (ui/src/blunders.ts `defaultFilters` builds the same
+    from the settings row, including the fallback for an empty or unknown class list). Home
+    counts new boards against exactly these."""
+    by_games = config.blunders_default_filter_mode == "games"
+    classes = tuple(c for c in config.blunders_default_classifications if c in BLUNDER_CLASSES)
+    return BlunderFilters(
+        classifications=classes or ("miss", "blunder", "mistake"),
+        min_occurrences=config.blunders_default_min_occurrences,
+        since_days=None if by_games else config.blunders_default_window_days,
+        last_n_games=config.blunders_default_last_n_games if by_games else 0,
+        time_class="focus",
+        show_dismissed=False,
+        mark_new=mark_new,
+    )
 
 
 def _time_class_sql(time_class: str, focus: str) -> str:
@@ -110,19 +138,28 @@ def _ranked_sql(prefix: str, where: str) -> str:
         FROM (SELECT canonical_fen, classification, count(*) AS n FROM per_game GROUP BY 1, 2) c
         GROUP BY canonical_fen
     ),
-    flagged AS (
+    marked AS (
         SELECT agg.*, cls.classifications,
                EXISTS (SELECT 1 FROM dismissed_blunder_fens d
-                       WHERE d.player_id = %(pid)s AND d.canonical_fen = agg.canonical_fen) AS dismissed
+                       WHERE d.player_id = %(pid)s AND d.canonical_fen = agg.canonical_fen) AS dismissed,
+               EXISTS (SELECT 1 FROM seen_blunder_boards s
+                       WHERE s.player_id = %(pid)s AND s.canonical_fen = agg.canonical_fen) AS seen
         FROM agg JOIN cls USING (canonical_fen)
+    ),
+    flagged AS (
+        SELECT marked.*, (%(mark_new)s AND NOT seen AND NOT dismissed) AS is_new FROM marked
     )
     """
 
 
-def _page_rows(conn: Connection[Any], f: BlunderFilters, focus: str, page: int) -> tuple[list[Row], int, int]:
+Page = tuple[list[Row], int, int, list[str]]  # rows, active count, dismissed count, unseen board keys
+
+
+def _page_rows(conn: Connection[Any], f: BlunderFilters, focus: str, page: int) -> Page:
     prefix, where, params = _scope(f, focus)
     params |= {
         "min_occ": f.min_occurrences,
+        "mark_new": f.mark_new,
         "dismissed": f.show_dismissed,
         "limit": PAGE_SIZE,
         "offset": page * PAGE_SIZE,
@@ -134,9 +171,12 @@ def _page_rows(conn: Connection[Any], f: BlunderFilters, focus: str, page: int) 
                 LiteralString,
                 body
                 + """
-                SELECT f.*, c.active_count, c.dismissed_count
+                SELECT f.*, c.active_count, c.dismissed_count, c.unseen
                 FROM (SELECT count(*) FILTER (WHERE NOT dismissed) AS active_count,
-                             count(*) FILTER (WHERE dismissed) AS dismissed_count FROM flagged) c
+                             count(*) FILTER (WHERE dismissed) AS dismissed_count,
+                             coalesce(array_agg(canonical_fen) FILTER (WHERE NOT seen AND NOT dismissed), '{}')
+                                 AS unseen
+                      FROM flagged) c
                 LEFT JOIN LATERAL (
                     SELECT * FROM flagged WHERE dismissed = %(dismissed)s
                     ORDER BY score DESC, last_played DESC NULLS LAST, canonical_fen
@@ -149,8 +189,13 @@ def _page_rows(conn: Connection[Any], f: BlunderFilters, focus: str, page: int) 
         )
         rows = [dict(r) for r in cur.fetchall()]
     # The counts ride on every row and survive a page past the end as one all-NULL row.
-    active, dismissed = int(rows[0]["active_count"]), int(rows[0]["dismissed_count"])
-    return [r for r in rows if r["canonical_fen"] is not None], active, dismissed
+    counts = rows[0]
+    return (
+        [r for r in rows if r["canonical_fen"] is not None],
+        int(counts["active_count"]),
+        int(counts["dismissed_count"]),
+        [str(x) for x in counts["unseen"]],
+    )
 
 
 def _details(conn: Connection[Any], f: BlunderFilters, focus: str, boards: list[str]) -> dict[str, list[Row]]:
@@ -239,6 +284,7 @@ def _card(row: dict[str, Any], group: list[dict[str, Any]]) -> dict[str, Any]:
         "classifications": row["classifications"],
         "color": row["color"],
         "dismissed": bool(row["dismissed"]),
+        "is_new": bool(row["is_new"]),
         "last_seen": iso(row["last_played"]),
         "context": ", ".join(labels[:3]) if labels else "Unknown opening",
         "book": rep["book_title"] if rep else None,
@@ -273,17 +319,62 @@ def _card(row: dict[str, Any], group: list[dict[str, Any]]) -> dict[str, Any]:
 def positions(conn: Connection[Any], f: BlunderFilters, focus: str, page: int = 0) -> dict[str, Any]:
     """One page of the ranked list, with the counts of both views. `focus` is the
     `time_class_focus` setting, which the 'focus' time class resolves to."""
-    rows, active, dismissed = _page_rows(conn, f, focus, page)
+    rows, active, dismissed, unseen = _page_rows(conn, f, focus, page)
     details = _details(conn, f, focus, [str(r["canonical_fen"]) for r in rows])
     total = dismissed if f.show_dismissed else active
+    # What the page acknowledges once rendered: the boards it marked NEW — or, on the first
+    # look, every active board on any page, so that history is known rather than news.
+    shown = [str(r["canonical_fen"]) for r in rows if r["is_new"]] if f.mark_new else unseen
     return {
         "positions": [_card(r, details.get(str(r["canonical_fen"]), [])) for r in rows],
         "active_count": active,
         "dismissed_count": dismissed,
+        "new_count": len(unseen) if f.mark_new else 0,
+        "to_acknowledge": shown,
         "page": page,
         "page_size": PAGE_SIZE,
         "total_pages": max(1, -(-total // PAGE_SIZE)),
     }
+
+
+def new_count(conn: Connection[Any], f: BlunderFilters, focus: str) -> int:
+    """How many active boards the list has never shown — the Home page's number, from the
+    same ranking the page shows. Zero before the first look."""
+    if not f.mark_new:
+        return 0
+    prefix, where, params = _scope(f, focus)
+    params |= {"min_occ": f.min_occurrences, "mark_new": True}
+    body = _ranked_sql(prefix, where) + "SELECT count(*) AS n FROM flagged WHERE is_new"
+    with conn.cursor() as cur:
+        cur.execute(cast(LiteralString, body), params)
+        row = cur.fetchone()
+    assert row is not None
+    return int(row["n"])
+
+
+def seen_at(conn: Connection[Any]) -> datetime | None:
+    """When the list was last looked at; None before the first look."""
+    row = conn.execute("SELECT blunders_seen_at FROM players WHERE id = %s", (PLAYER_ID,)).fetchone()
+    if row is None:
+        raise RuntimeError("no players row; run `pipeline player set` first")
+    return row["blunders_seen_at"]
+
+
+def mark_seen(conn: Connection[Any], boards: list[str]) -> datetime:
+    """The page has shown these boards (board keys, as `to_acknowledge` gave them). Only
+    those become known; anything found since the page read its list stays new."""
+    row = conn.execute(
+        "UPDATE players SET blunders_seen_at = now() WHERE id = %s RETURNING blunders_seen_at", (PLAYER_ID,)
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("no players row; run `pipeline player set` first")
+    if boards:
+        conn.execute(
+            "INSERT INTO seen_blunder_boards (player_id, canonical_fen)"
+            " SELECT %s, unnest(%s::text[]) ON CONFLICT DO NOTHING",
+            (PLAYER_ID, boards),
+        )
+    return row["blunders_seen_at"]
 
 
 def dismiss(conn: Connection[Any], fen: str) -> None:

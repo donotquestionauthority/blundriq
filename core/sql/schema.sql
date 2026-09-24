@@ -248,6 +248,14 @@ CREATE SEQUENCE public.dismissed_blunder_fens_id_seq
 
 ALTER SEQUENCE public.dismissed_blunder_fens_id_seq OWNED BY public.dismissed_blunder_fens.id;
 
+-- Boards the Blunders list has shown. A board absent here is NEW on the list and counted on Home; the page adds the boards it rendered (the first look adds everything then listed).
+CREATE TABLE public.seen_blunder_boards (
+    player_id integer NOT NULL,
+    canonical_fen text NOT NULL,
+    seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT seen_blunder_boards_pkey PRIMARY KEY (player_id, canonical_fen)
+);
+
 -- Per (game, player): where the game left the repertoire and who deviated; the Deviations page reads this.
 CREATE TABLE public.game_repertoire_results (
     id bigint NOT NULL,
@@ -485,10 +493,10 @@ CREATE TABLE public.player_puzzle_state (
     CONSTRAINT player_puzzle_state_level_check CHECK ((level = ANY (ARRAY['pawn'::text, 'knight'::text, 'bishop'::text, 'rook'::text, 'queen'::text, 'king'::text])))
 );
 
--- Exactly one row (id = 1). Platform usernames and last-checked timestamps live here; home_seen_at drives the Home page's since-last-visit counts.
+-- Exactly one row (id = 1). Platform usernames and last-checked timestamps live here; blunders_seen_at is when the Blunders list was last looked at (Home shows it; seen_blunder_boards holds what was shown).
 CREATE TABLE public.players (
     id integer NOT NULL,
-    home_seen_at timestamp with time zone,
+    blunders_seen_at timestamp with time zone,
     chesscom_username text,
     chesscom_id text,
     lichess_username text,
@@ -928,6 +936,9 @@ ALTER TABLE ONLY public.chapters
 
 ALTER TABLE ONLY public.dismissed_blunder_fens
     ADD CONSTRAINT dismissed_blunder_fens_player_id_fkey FOREIGN KEY (player_id) REFERENCES public.players(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.seen_blunder_boards
+    ADD CONSTRAINT seen_blunder_boards_player_id_fkey FOREIGN KEY (player_id) REFERENCES public.players(id) ON DELETE CASCADE;
 
 ALTER TABLE ONLY public.game_repertoire_results
     ADD CONSTRAINT game_repertoire_results_book_id_fkey FOREIGN KEY (book_id) REFERENCES public.books(id) ON DELETE CASCADE;

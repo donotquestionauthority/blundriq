@@ -135,7 +135,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
   const [submitting, setSubmitting] = useState(false);
   // The failed attempt keeps the puzzle it was made on: a retry must go there, whatever the
   // hook is showing by the time it is clicked.
-  const [blockingError, setBlockingError] = useState<{ attemptId: string; solved: boolean; movesPlayed: string[]; puzzleId: number } | null>(null);
+  const [blockingError, setBlockingError] = useState<{ attemptId: string; solved: boolean; movesPlayed: string[]; puzzleId: number; sessionId: string } | null>(null);
   const inFlightRef = useRef<Set<string>>(new Set());
   // The attempt the server is still owed in blocking mode: in flight, or failed and waiting
   // for Retry. Only one may exist; handleComplete refuses to open another while it stands.
@@ -175,25 +175,27 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
     sessionIdRef.current = crypto.randomUUID();
   }, []);
 
+  // The attempt names its puzzle and its session: a retry, or a slow response, never posts
+  // to whatever the hook is showing by then, nor under a session started since.
   const post = useCallback(
-    (attemptId: string, solved: boolean, movesPlayed: string[]) =>
-      recordAttempt(puzzleId, { solved, moves_played: movesPlayed.join(","), attempt_id: attemptId, session_id: sessionIdRef.current }),
-    [puzzleId],
+    (attemptPuzzleId: number, sessionId: string, attemptId: string, solved: boolean, movesPlayed: string[]) =>
+      recordAttempt(attemptPuzzleId, { solved, moves_played: movesPlayed.join(","), attempt_id: attemptId, session_id: sessionId }),
+    [],
   );
 
   const runBlockingMode = useCallback(
-    async (attemptId: string, solved: boolean, movesPlayed: string[], attemptPuzzleId: number) => {
+    async (attemptId: string, solved: boolean, movesPlayed: string[], attemptPuzzleId: number, sessionId: string) => {
       outstandingRef.current = attemptId;
       // Held from before the request goes out, not from its failure: the whole app treats the
       // attempt as unsaved until its id is acknowledged, so leaving and returning mid-request
       // cannot open a second one.
-      const payload = { puzzle_id: attemptPuzzleId, attempt_id: attemptId, session_id: sessionIdRef.current, solved, moves_played: movesPlayed.join(",") };
+      const payload = { puzzle_id: attemptPuzzleId, attempt_id: attemptId, session_id: sessionId, solved, moves_played: movesPlayed.join(",") };
       holdUnsavedAttempt(payload, ownerRef.current);
       setSubmitting(true);
       setBlockingError(null);
       setServerDowngraded(false);
       try {
-        const response = await post(attemptId, solved, movesPlayed);
+        const response = await post(attemptPuzzleId, sessionId, attemptId, solved, movesPlayed);
         releaseUnsavedAttempt(attemptId);
         outstandingRef.current = null;
         if (activePuzzleIdRef.current === attemptPuzzleId) {
@@ -206,7 +208,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
         // Still held (since before the request) unless a retry from elsewhere — the recovery
         // banner, after this solver was left — landed it meanwhile.
         if (getUnsavedAttempt()?.attempt_id === attemptId) {
-          if (activePuzzleIdRef.current === attemptPuzzleId) setBlockingError({ attemptId, solved, movesPlayed, puzzleId: attemptPuzzleId });
+          if (activePuzzleIdRef.current === attemptPuzzleId) setBlockingError({ attemptId, solved, movesPlayed, puzzleId: attemptPuzzleId, sessionId });
         } else {
           outstandingRef.current = null;
           onRecorded();
@@ -229,17 +231,18 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
       if (inFlightRef.current.has(attemptId)) return;
       inFlightRef.current.add(attemptId);
       const attemptPuzzleId = puzzleId;
+      const sessionId = sessionIdRef.current;
 
       if (!isQueueModeAvailable()) {
-        await runBlockingMode(attemptId, solved, movesPlayed, attemptPuzzleId);
+        await runBlockingMode(attemptId, solved, movesPlayed, attemptPuzzleId, sessionId);
         return;
       }
       try {
-        await enqueueAttempt({ attempt_id: attemptId, puzzle_id: attemptPuzzleId, solved, moves_played: movesPlayed.join(","), session_id: sessionIdRef.current });
+        await enqueueAttempt({ attempt_id: attemptId, puzzle_id: attemptPuzzleId, solved, moves_played: movesPlayed.join(","), session_id: sessionId });
       } catch (err) {
         console.warn("Queue enqueue failed, falling back to blocking mode:", err);
         inFlightRef.current.delete(attemptId);
-        await runBlockingMode(attemptId, solved, movesPlayed, attemptPuzzleId);
+        await runBlockingMode(attemptId, solved, movesPlayed, attemptPuzzleId, sessionId);
         return;
       }
 
@@ -248,7 +251,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
       setServerDowngraded(false);
       setAttemptStatus("in_flight");
       try {
-        const response = await post(attemptId, solved, movesPlayed);
+        const response = await post(attemptPuzzleId, sessionId, attemptId, solved, movesPlayed);
         await markAttemptCompleted(attemptId);
         if (activePuzzleIdRef.current === attemptPuzzleId) {
           setAttemptStatus(null);
@@ -278,9 +281,9 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void) {
 
   const retry = useCallback(() => {
     if (!blockingError) return;
-    const { attemptId, solved, movesPlayed, puzzleId: attemptPuzzleId } = blockingError;
+    const { attemptId, solved, movesPlayed, puzzleId: attemptPuzzleId, sessionId } = blockingError;
     inFlightRef.current.delete(attemptId);
-    void runBlockingMode(attemptId, solved, movesPlayed, attemptPuzzleId);
+    void runBlockingMode(attemptId, solved, movesPlayed, attemptPuzzleId, sessionId);
   }, [blockingError, runBlockingMode]);
 
   return { lastResult, serverDowngraded, attemptStatus, submitting, blockingError, handleComplete, retry, reset, navigationBlocked: submitting || blockingError !== null };
