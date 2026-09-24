@@ -23,8 +23,10 @@ show today's truncation, and a mounted solver keeps showing its segment (Replay,
 after the hourly match or a rematch has moved the truncation and after an earlier attempt has
 acknowledged the exposure. The server still verifies every move; the segment only bounds how
 much of the verified line is required, and must lie within it. An attempt that names no
-segment (a client from before the field existed) is graded against what the queue would show
-it: the served snapshot if the exposure has one, else today's presentation.
+segment (queued by a client from before the field existed, possibly before the exposure
+recorded one) is graded against the segment its answer spans — the ply of its last player
+move, if the serve could have truncated there — and only failing that against what the queue
+would show it: the served snapshot if the exposure has one, else today's presentation.
 
 A puzzle that was **served and never acknowledged** stays gradable even when it is no longer
 visible: switching a book off, an import or the hourly match can make it (or, through the
@@ -159,13 +161,31 @@ class SegmentMismatch(ValueError):
     or not on the player's move, or any ply at all on a standard puzzle."""
 
 
+def _player_plies(puzzle: dict[str, Any], solution: list[str]) -> list[int]:
+    """The indexes of the line at which the player is to move."""
+    seq = fen_sequence(str(puzzle["fen"]), solution)
+    color = str(puzzle["color"])
+    return [i for i in range(min(len(solution), len(seq))) if seq[i].split(" ")[1] == color]
+
+
 def _is_segment(puzzle: dict[str, Any], solution: list[str], ply: int) -> bool:
     """A segment the serve could have produced: the ply is on the line and the player is to
     move there (`visibility.presentation_ply` truncates only at the player's plies)."""
-    if not 0 <= ply < len(solution):
-        return False
-    seq = fen_sequence(str(puzzle["fen"]), solution)
-    return ply < len(seq) and seq[ply].split(" ")[1] == str(puzzle["color"])
+    return ply in _player_plies(puzzle, solution)
+
+
+def _segment_spanned(puzzle: dict[str, Any], solution: list[str], moves_played: str | None) -> int | None:
+    """The segment an answer that names none spans: the ply of its last player move, when
+    that is a segment the serve could have produced. The compatibility path for an answer
+    the client queued before attempts carried their segment (and before the exposure
+    recorded one): the answer's own length is the only record of what was shown, and every
+    move in it is still verified against the line. None for a standard puzzle or an answer
+    that ends nowhere the serve truncates, which then falls back to the queue's segment."""
+    if not bool(puzzle.get("is_repertoire")):
+        return None
+    submitted = submitted_moves(moves_played)
+    plies = _player_plies(puzzle, solution)
+    return plies[len(submitted) - 1] if 0 < len(submitted) <= len(plies) else None
 
 
 _SERVED_PENDING = cast(
@@ -240,6 +260,8 @@ def record(
         if not bool(puzzle.get("is_repertoire")) or not _is_segment(puzzle, solution, presentation_ply):
             raise SegmentMismatch(puzzle_id)
         shown_ply: int | None = presentation_ply
+    elif (spanned := _segment_spanned(puzzle, solution, moves_played)) is not None:
+        shown_ply = spanned
     elif pending is not None and pending.get("served_ply") is not None:
         shown_ply = int(pending["served_ply"])
     elif visible is not None:

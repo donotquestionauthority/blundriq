@@ -1088,14 +1088,47 @@ def test_an_attempt_is_graded_against_the_segment_its_solver_displayed(clean: ps
     assert _count(clean, "puzzle_attempts") == 6
 
 
-def test_an_attempt_that_names_no_segment_is_graded_as_the_queue_would_show_it(
+def test_an_answer_that_names_no_segment_is_graded_against_the_segment_it_spans(
     clean: psycopg.Connection[DictRow],
 ) -> None:
-    """A client from before the attempt carried its segment: the served snapshot while the
-    exposure is pending, today's presentation once it is acknowledged."""
-    pid, shown, _longer = _served_then_lengthened(clean)
-    assert _attempt(clean, pid, _segment(LONG_LINE, shown), None)["solved"] is True
-    assert _attempt(clean, pid, _segment(LONG_LINE, shown), None)["solved"] is False
+    """An answer queued by a client from before attempts carried their segment, whose
+    exposure recorded none either: its own length says what was shown. It is a solve
+    whatever happened to the puzzle since — the evidence moved the truncation, the queue
+    re-served and recorded a longer segment, the book was switched off — and a wrong answer,
+    or one that ends nowhere the serve truncates, is still wrong."""
+    from core.repertoire import books
+
+    pid, shown, longer = _served_then_lengthened(clean)
+    clean.execute("UPDATE player_puzzle_exposure SET presentation_ply = NULL")  # served before migration 004
+    answer = _segment(LONG_LINE, shown)
+    # The evidence moved: today's segment is longer, the exposure knows nothing.
+    assert _attempt(clean, pid, answer, None)["solved"] is True
+    # A re-serve recorded today's (longer) segment on the exposure; the queued answer still solves.
+    clean.execute("DELETE FROM puzzle_attempts")  # each case starts with the answer still queued
+    _served(clean, pid, None)
+    row = next(
+        r for r in serve.play_batch(clean, _config(), last_n_games=0, ptype="all", subtype=None).rows if r["id"] == pid
+    )
+    assert row["presentation_ply"] == longer
+    assert _attempt(clean, pid, answer, None)["solved"] is True
+    # The book was switched off: the puzzle is invisible, the results are gone, the answer solves.
+    clean.execute("DELETE FROM puzzle_attempts")
+    _served(clean, pid, None)
+    assert books.set_active(clean, "books", 1, False, 100) is not None
+    assert visibility.attemptable(clean, pid) is None
+    assert _attempt(clean, pid, answer, None)["solved"] is True
+    # Negatives: wrong moves; a right answer to no segment at all (its last move is not one the
+    # serve could truncate at — too many moves for the line); a standard puzzle is untouched.
+    clean.execute("DELETE FROM puzzle_attempts")
+    _served(clean, pid, None)
+    wrong = answer.rsplit(",", 1)[0] + ",Nc3"
+    assert _attempt(clean, pid, wrong, None)["solved"] is False
+    clean.execute("DELETE FROM puzzle_attempts")
+    _served(clean, pid, None)
+    assert _attempt(clean, pid, _segment(LONG_LINE, len(LONG_LINE) - 1) + ",Nc3", None)["solved"] is False
+    standard = _puzzle(clean)
+    assert _attempt(clean, standard, "Nxe5", None)["solved"] is False
+    assert _attempt(clean, standard, "Nxe5,d4", None)["solved"] is True
 
 
 def test_an_exposure_from_before_the_snapshot_is_served_and_graded_as_one_segment(
@@ -1151,15 +1184,34 @@ def test_an_exposure_from_before_the_snapshot_is_served_and_graded_as_one_segmen
         )
         assert row["presentation_ply"] == today  # ... the queue still shows what it served
         assert _attempt(c, pid, _segment(LONG_LINE, today), today)["solved"] is True
-    # The same, for an attempt that names no segment (a client from before the field): it is
-    # graded against the segment the queue recorded on the serve.
+    # An answer the old client queued before the upgrade names no segment and its exposure
+    # recorded none: it is graded against the segment it spans, whether the truncation moved
+    # before it arrived, the queue re-served and recorded the longer segment first, or the
+    # book was switched off meanwhile.
+    from core.repertoire import books
+
+    queued = _segment(LONG_LINE, today)
     with psycopg.Connection[DictRow].connect(url, row_factory=dict_row) as c:
-        c.execute("DELETE FROM puzzle_attempts")
-        c.execute("UPDATE player_puzzle_exposure SET presentation_ply = NULL")
+
+        def still_queued() -> None:  # each case starts with the answer unsent and the snapshot unset
+            c.rollback()
+            c.execute("DELETE FROM puzzle_attempts")
+            c.execute("UPDATE player_puzzle_exposure SET presentation_ply = NULL")
+
+        still_queued()
         moved = visibility.presentation_ply(c, pid, lookahead_plies=2)
         assert moved is not None and moved != today
+        assert _attempt(c, pid, queued, None)["solved"] is True
+        still_queued()
         row = next(
             r for r in serve.play_batch(c, _config(), last_n_games=0, ptype="all", subtype=None).rows if r["id"] == pid
         )
         assert row["presentation_ply"] == moved
-        assert _attempt(c, pid, _segment(LONG_LINE, moved), None)["solved"] is True
+        assert _attempt(c, pid, queued, None)["solved"] is True
+        still_queued()
+        assert books.set_active(c, "books", 1, False, 100) is not None
+        assert visibility.attemptable(c, pid) is None
+        assert _attempt(c, pid, queued.rsplit(",", 1)[0] + ",Nc3", None)["solved"] is False
+        c.execute("DELETE FROM puzzle_attempts")
+        assert _attempt(c, pid, queued, None)["solved"] is True
+        c.rollback()
