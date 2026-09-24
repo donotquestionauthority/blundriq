@@ -692,12 +692,19 @@ def play_batch(
         seen.add(p.puzzle_id)
         row = dict(by_id[p.puzzle_id])
         row["play_batch_id"] = p.batch_id
-        # A pending item is shown as it was served, so what the solver sees is what the
-        # attempt will be graded against, even if the evidence has moved the truncation since.
+        # A pending item is shown as it was served, so the queue keeps showing one segment
+        # until the item is acknowledged, even if the evidence has moved the truncation since.
         if p.presentation_ply is not None and row.get("presentation_ply") != p.presentation_ply:
             row["presentation_ply"] = p.presentation_ply
             seq = fen_sequence(str(row["fen"]), [str(m) for m in row["solution_line"]])
             row["presentation_fen"] = seq[p.presentation_ply] if p.presentation_ply < len(seq) else None
+        elif p.presentation_ply is None and row.get("presentation_ply") is not None:
+            # Served before the snapshot existed (migration 004 left it NULL): the segment it
+            # shows now becomes the one it was served with, and stays so until acknowledged.
+            conn.execute(
+                "UPDATE player_puzzle_exposure SET presentation_ply = %s WHERE id = %s AND presentation_ply IS NULL",
+                (int(row["presentation_ply"]), p.exposure_id),
+            )
         latest = p.batch_id if latest is None else max(latest, p.batch_id)
         rows.append(row)
     return Served(rows, latest, scope, threshold)

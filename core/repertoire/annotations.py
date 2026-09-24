@@ -50,6 +50,25 @@ def normalize_fen(fen: str) -> str:
     return " ".join(parts[:4])
 
 
+def placeable(spine: list[str], fen_norm: str, text: str) -> bool:
+    """Would `upsert_many` write this note onto a line with this spine? The same three tests
+    it applies — non-blank text, a FEN of at least four fields, a position on the spine — so
+    an importer can judge a file's notes before it has written anything."""
+    if not clean_text(text):
+        return False
+    try:
+        key = normalize_fen(fen_norm)
+    except ValueError:
+        return False
+    for f in spine:
+        try:
+            if normalize_fen(f) == key:
+                return True
+        except ValueError:
+            continue  # a malformed stored position places nothing
+    return False
+
+
 def clean_text(text: str) -> str:
     """Strip position references, PGN command tokens and HTML, collapse whitespace. The
     `@@SANStart@@…@@SANEnd@@` move references stay: the walk-through makes them clickable."""

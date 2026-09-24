@@ -164,12 +164,24 @@ export async function getPuzzles(params: { srs?: SrsFilter; ptype?: PracticeType
   return { ...data, puzzles: data.puzzles.map(withThemes) };
 }
 
+export interface AttemptBody {
+  solved: boolean;
+  moves_played?: string;
+  attempt_id: string;
+  session_id?: string;
+  /** The segment the solver displayed, exactly as the puzzle payload gave it (null for a
+   *  standard puzzle). The server grades against it: the queue, Browse, a deep link and a
+   *  solver that stays mounted across a change in the truncation can all show different
+   *  segments of one repertoire puzzle, and only the solver knows which one it showed. */
+  presentation_ply: number | null;
+}
+
 /**
  * `attempt_id` is a fresh UUID per submission (the server's idempotency key: a replay returns
  * the original verdict without re-applying SRS); `session_id` is stable across the retries of
  * one play-through, and only the first attempt of a session scores.
  */
-export function recordAttempt(puzzleId: number, body: { solved: boolean; moves_played?: string; attempt_id: string; session_id?: string }): Promise<AttemptResponse> {
+export function recordAttempt(puzzleId: number, body: AttemptBody): Promise<AttemptResponse> {
   return api.post<AttemptResponse>(`/practice/puzzles/${puzzleId}/attempt`, body);
 }
 

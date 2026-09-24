@@ -16,13 +16,21 @@ row and both would score. The same response is built on a fresh insert, an idemp
 replay of an `attempt_id` already recorded, and a lost insert race, so the wire shape
 cannot differ between them; a replay returns the original verdict with the current state.
 
-A puzzle that was **served and never acknowledged** is graded against what was served — the
-exposure row records the ply a repertoire puzzle was truncated to — and stays gradable even
-when it is no longer visible: switching a book off, an import or the hourly match can lengthen
-a repertoire puzzle's presentation or make it (or, through the conflict rules, a standard
-puzzle) unattemptable while an attempt on it sits in the browser's queue waiting to be sent.
-The exposure row is the proof it was served; finishing that work is allowed, starting new work
-on it is not.
+A repertoire puzzle is graded against the **segment the solver displayed**, which the attempt
+names (`presentation_ply`, the same value the solver was given). Only the solver knows what it
+showed: the queue re-serves pending work at the ply it was served with, Browse and a deep link
+show today's truncation, and a mounted solver keeps showing its segment (Replay, Try Again)
+after the hourly match or a rematch has moved the truncation and after an earlier attempt has
+acknowledged the exposure. The server still verifies every move; the segment only bounds how
+much of the verified line is required, and must lie within it. An attempt that names no
+segment (a client from before the field existed) is graded against what the queue would show
+it: the served snapshot if the exposure has one, else today's presentation.
+
+A puzzle that was **served and never acknowledged** stays gradable even when it is no longer
+visible: switching a book off, an import or the hourly match can make it (or, through the
+conflict rules, a standard puzzle) unattemptable while an attempt on it sits in the browser's
+queue waiting to be sent. The exposure row is the proof it was served; finishing that work is
+allowed, starting new work on it is not.
 """
 
 from __future__ import annotations
@@ -39,7 +47,7 @@ from core.chess.san import normalize_san
 from core.chess.san import parse as parse_san
 from core.constants import PLAYER_ID
 from core.puzzles import srs, visibility
-from core.puzzles.lines import is_mate_line
+from core.puzzles.lines import fen_sequence, is_mate_line
 from core.puzzles.serve import CC0_SOURCE, OWN_MATE_SOURCE, lookahead_plies
 from core.puzzles.serve import acknowledged_sql as serve_acknowledged
 from core.settings import Settings
@@ -146,6 +154,20 @@ class NotAttemptable(LookupError):
     """The puzzle is missing or not visible to the player."""
 
 
+class SegmentMismatch(ValueError):
+    """The attempt names a segment the puzzle does not have: a ply outside its solution line
+    or not on the player's move, or any ply at all on a standard puzzle."""
+
+
+def _is_segment(puzzle: dict[str, Any], solution: list[str], ply: int) -> bool:
+    """A segment the serve could have produced: the ply is on the line and the player is to
+    move there (`visibility.presentation_ply` truncates only at the player's plies)."""
+    if not 0 <= ply < len(solution):
+        return False
+    seq = fen_sequence(str(puzzle["fen"]), solution)
+    return ply < len(seq) and seq[ply].split(" ")[1] == str(puzzle["color"])
+
+
 _SERVED_PENDING = cast(
     LiteralString,
     f"""
@@ -191,8 +213,11 @@ def record(
     moves_played: str | None,
     attempt_id: str | None,
     session_id: str | None,
+    presentation_ply: int | None = None,
 ) -> dict[str, Any]:
-    """Grade, record and score one attempt; the caller commits. Raises NotAttemptable."""
+    """Grade, record and score one attempt; the caller commits. `presentation_ply` is the
+    segment the solver displayed (None for a standard puzzle, or from a client that cannot
+    say). Raises NotAttemptable, or SegmentMismatch for a segment the puzzle does not have."""
     if attempt_id is not None:
         # A replay of an attempt already recorded is always answerable, whatever the puzzle's
         # visibility has become since: the client only wants the verdict it never received.
@@ -204,24 +229,28 @@ def record(
                 srs.post_attempt_state(conn, puzzle_id, config),
                 None,
             )
-    # Work that was served and never acknowledged is graded against the segment it was served
-    # with, whatever the puzzle looks like now: a match or rematch since can lengthen a
-    # repertoire puzzle's presentation (or hide the puzzle), and the player answered what was
-    # shown. Anything else is graded as it is presented today.
+    # Visible, or served and not yet acknowledged: either way the attempt may be finished.
+    visible = visibility.attemptable(conn, puzzle_id)
     pending = _served_pending(conn, puzzle_id)
-    if pending is not None:
-        puzzle = pending
-        shown_ply = pending.get("served_ply")
-    else:
-        puzzle = visibility.attemptable(conn, puzzle_id)
-        if puzzle is None:
-            raise NotAttemptable(puzzle_id)
+    puzzle = visible if visible is not None else pending
+    if puzzle is None:
+        raise NotAttemptable(puzzle_id)
+    solution = _line(puzzle["solution_line"])
+    if presentation_ply is not None:
+        if not bool(puzzle.get("is_repertoire")) or not _is_segment(puzzle, solution, presentation_ply):
+            raise SegmentMismatch(puzzle_id)
+        shown_ply: int | None = presentation_ply
+    elif pending is not None and pending.get("served_ply") is not None:
+        shown_ply = int(pending["served_ply"])
+    elif visible is not None:
         shown_ply = visibility.presentation_ply(conn, puzzle_id, lookahead_plies=lookahead_plies(config))
+    else:
+        shown_ply = None  # served before the snapshot existed and invisible since: the whole line
 
     sources = list(puzzle.get("source_types") or [])
     solved = resolve_solved(
         fen=str(puzzle["fen"]),
-        solution_line=_line(puzzle["solution_line"]),
+        solution_line=solution,
         color=str(puzzle["color"]),
         presentation_ply=shown_ply,
         claimed=claimed,

@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import chess
 import psycopg
 import pytest
 from psycopg.rows import DictRow
@@ -261,6 +262,45 @@ def test_a_replacement_line_is_not_blocked_by_the_line_it_replaces(
         "d4",
         "d4",
     ]
+
+
+def test_a_replacement_that_lost_a_note_keeps_its_old_lines_as_anchors(
+    db: psycopg.Connection[DictRow], tmp_path: Path
+) -> None:
+    """The course changed e4 to d4 — but one of the file's notes cannot be placed, so the book
+    is only added to. Its e4 lines stay active, and must still anchor the starting position:
+    the d4 lines come in switched off, and the read side sees one prescription there, not a
+    conflict. Judged before the gate is built, not after the new lines are already active."""
+    from core.repertoire import read
+
+    _run(db, _write(tmp_path, _doc()))
+    doc = _doc()
+    for line, reply in zip(doc["books"][0]["chapters"][0]["lines"], ("d5", "Nf6"), strict=True):
+        line["moves"] = ["d4", reply, "c4"]
+        line["annotations"] = []
+    doc["books"][0]["chapters"][0]["lines"][0]["annotations"] = [
+        {"fen_norm": h.spine(None, ["e4"])[1], "text": "off this line", "author": None}
+    ]
+    del doc["books"][0]["chapters"][1]
+    out = _run(db, _write(tmp_path, doc))
+    assert out["books"]["notes_lost"] == 1 and out["lines"]["vanished_deactivated"] == 0
+    assert out["lines"]["inserted"] == 2 and out["lines"]["imported_inactive"] == 2
+    assert out["annotations"]["skipped_off_spine"] == 1 and out["annotations"]["stale_deleted"] == 0
+    firsts = [
+        r["moves"][0] for r in db.execute("SELECT moves FROM repertoire_lines WHERE active ORDER BY id").fetchall()
+    ]
+    assert firsts == ["e4", "e4", "Bc4", "Bc4"]  # the four lines it had, chapter 2's from its own root
+    start = chess.STARTING_FEN
+    entry = read.project_ply(start, read.rep_lines(db, [start], book_color="white", with_stats=False)[start])
+    assert entry["status"] == read.STATUS_MATCH and entry["book_move"] == "e4"
+    # With the note put right, the same file replaces: the old lines go, the new ones come in active.
+    doc["books"][0]["chapters"][0]["lines"][0]["annotations"] = []
+    out = _run(db, _write(tmp_path, doc))
+    assert out["books"]["notes_lost"] == 0 and out["lines"]["vanished_deactivated"] == 4
+    assert out["lines"]["inserted"] == 0 and out["lines"]["present_but_inactive"] == 2
+    # A line the file has but this side switched off stays off (`scratch` never reactivates):
+    # the d4 lines came in inactive and stay so, for the Repertoire page's toggles to switch on.
+    assert db.execute("SELECT count(*) AS n FROM repertoire_lines WHERE active").fetchone()["n"] == 0  # type: ignore[index]
 
 
 def test_a_book_not_declared_complete_is_only_added_to(db: psycopg.Connection[DictRow], tmp_path: Path) -> None:

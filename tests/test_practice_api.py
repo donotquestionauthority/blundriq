@@ -88,7 +88,11 @@ def test_an_attempt_is_graded_scored_and_replayed(client: tuple[TestClient, int]
         "moves_played": "Nxe5,d4",
         "attempt_id": str(uuid.uuid4()),
         "session_id": str(uuid.uuid4()),
+        "presentation_ply": None,
     }
+    # A segment on a standard puzzle, or outside the line, is a bad request, not a verdict.
+    assert c.post(f"/practice/puzzles/{pid}/attempt", json={**attempt, "presentation_ply": 1}).status_code == 422
+    assert c.post(f"/practice/puzzles/{pid}/attempt", json={**attempt, "presentation_ply": -1}).status_code == 422
     first = c.post(f"/practice/puzzles/{pid}/attempt", json=attempt).json()
     assert first["solved"] is True and first["srs"]["level"] == "knight"
     assert first["srs"]["transition"]["outcome"] == "promoted"

@@ -20,6 +20,7 @@ export interface UnsavedAttempt {
   session_id: string;
   solved: boolean;
   moves_played: string;
+  presentation_ply: number | null;
 }
 
 let current: UnsavedAttempt | null = null;

@@ -21,7 +21,10 @@ that nothing was dropped on the way — switches off lines and chapters the file
 contains and deletes their course notes the file no longer carries; manual notes are kept,
 and a line that is in the file but switched off stays off. A book not declared complete, or
 one whose notes this side could not all place (off the line, malformed, blank), is only added
-to: a note lost on the way, at either end, must not read as the author removing it.
+to: a note lost on the way, at either end, must not read as the author removing it. That is
+decided per book from the file before anything is written, because the conflict gate below
+depends on it: only the lines a replacement will switch off are left out of the repertoire the
+new lines must agree with, and a book that is only added to keeps every line as an anchor.
 
 A chapter is found by its source id first, so a renamed chapter keeps its lines, its puzzles
 and their progress (the new title is applied); a chapter with no source id yet is adopted by
@@ -294,6 +297,22 @@ class _Book:
     notes: list[tuple[int, str]]
     to_insert: list[tuple[int, int]]  # (chapter_id, prepared index)
     to_note: list[tuple[int, int]]  # (line_id, prepared index) for lines that already exist
+    spines: dict[int, list[str]]  # existing line id → its fen_sequence as stored
+    replace: bool = False  # a scratch run may retire what the file no longer has
+
+
+def _judge_notes(book: _Book, prepared: list[Prepared]) -> int:
+    """How many of the book's notes this side cannot place, judged from the file and the
+    existing lines' spines before anything is written: the same tests the write applies."""
+    lost = 0
+    for line_id, ix in book.to_note:
+        spine_fens = book.spines.get(line_id, prepared[ix].fens)
+        lost += sum(not annotations.placeable(spine_fens, n.fen_norm, n.text) for n in prepared[ix].line.annotations)
+    for _chapter_id, ix in book.to_insert:
+        lost += sum(
+            not annotations.placeable(prepared[ix].fens, n.fen_norm, n.text) for n in prepared[ix].line.annotations
+        )
+    return lost
 
 
 def _resolve_chapter(
@@ -383,7 +402,7 @@ def _write(
             counts["books"]["existing"] += 1
             if str(row["title"]).strip() != spec.title.strip():
                 counts["books"]["title_differs"] += 1
-        book = _Book(b, spec, int(row["id"]), [], [], [], [], [])
+        book = _Book(b, spec, int(row["id"]), [], [], [], [], [], {})
         resolved.append(book)
         for c, chapter in enumerate(spec.chapters):
             counts["chapters"]["in_file"] += 1
@@ -396,13 +415,13 @@ def _write(
                 continue
             book.chapter_ids.append(chapter_id)
             # Every line of the chapter in one read, keyed by its moves.
-            known = {
-                tuple(annotations.strings(r["moves"])): (int(r["id"]), bool(r["active"]), r["source_line_id"])
-                for r in conn.execute(
-                    "SELECT id, moves, active, source_line_id FROM repertoire_lines WHERE chapter_id = %s",
-                    (chapter_id,),
-                ).fetchall()
-            }
+            known: dict[tuple[str, ...], tuple[int, bool, Any]] = {}
+            for r in conn.execute(
+                "SELECT id, moves, fen_sequence, active, source_line_id FROM repertoire_lines WHERE chapter_id = %s",
+                (chapter_id,),
+            ).fetchall():
+                known[tuple(annotations.strings(r["moves"]))] = (int(r["id"]), bool(r["active"]), r["source_line_id"])
+                book.spines[int(r["id"])] = annotations.strings(r["fen_sequence"])
             fill_ids: list[tuple[int, str]] = []
             for line in chapter.lines:
                 ix = by_position.get((b, c, tuple(line.moves)))
@@ -434,9 +453,23 @@ def _write(
                     (json.dumps([{"id": i, "sid": sid} for i, sid in fill_ids]),),
                 )
 
-    # What a replacement will switch off is not part of the repertoire the new lines must
-    # agree with (an old line prescribing e4 must not block its own replacement's d4).
-    vanishing: set[int] = _vanishing(conn, resolved) if scratch else set()
+    # Whether a book is replaced or only added to is settled here, before anything is written:
+    # a scratch run replaces a book the file declares complete and whose notes this side can
+    # all place. A note it cannot place (off its line, malformed, blank) is a loss on the way,
+    # and a book that lost anything keeps every line it has. Only the lines a replacement will
+    # switch off are left out of the repertoire the new lines must agree with (an old line
+    # prescribing e4 must not block its own replacement's d4); a book that is only added to
+    # keeps its lines as anchors, so a new line that disagrees with them comes in switched off.
+    for book in resolved:
+        if not scratch:
+            continue
+        if not book.spec.complete:
+            counts["books"]["not_complete"] += 1
+        elif _judge_notes(book, prepared):
+            counts["books"]["notes_lost"] += 1
+        else:
+            book.replace = True
+    vanishing: set[int] = _vanishing(conn, [book for book in resolved if book.replace])
     existing, dirty = existing_index(conn, exclude=vanishing)
     counts["dirty_anchors"] = len(dirty)
     batch = [prepared[ix] for book in resolved for _, ix in book.to_insert]
@@ -489,30 +522,25 @@ def _write(
                     book.notes.append((line_id, annotations.normalize_fen(n.fen_norm)))
                 except ValueError:
                     continue
-        # The book's notes are written — and judged — before anything of the book is retired:
-        # a note the file carries but this side cannot place (off its line, malformed, blank)
-        # is a loss on the way, and a book that lost anything is not replaced, only added to.
+        # The book's notes are written before anything of the book is retired, and the write
+        # must agree with the judgement the gate was built on: a book judged replaceable whose
+        # write still lost a note would have excluded lines it then keeps, so it stops the run.
         written = annotations.upsert_many(conn, notes, source="course", preserve_manual=preserve_manual)
         for k, v in written.items():
             counts["annotations"][k] += v
         lost = written["skipped_off_spine"] + written["blank"] + written["skipped_no_line"]
-        if scratch:
-            if not book.spec.complete:
-                counts["books"]["not_complete"] += 1
-            elif lost:
-                counts["books"]["notes_lost"] += 1
-            else:
-                structural |= _retire_absent(conn, book, counts)
+        if book.replace:
+            if lost:
+                raise OperatorError(f"book {book.ix}: a note judged placeable was not written")
+            structural |= _retire_absent(conn, book, counts)
     return structural
 
 
-def _vanishing(conn: Connection[Any], resolved: list[_Book]) -> set[int]:
-    """Lines of the file's complete books that the file no longer contains (including
-    every line of a chapter the file no longer contains)."""
+def _vanishing(conn: Connection[Any], replaced: list[_Book]) -> set[int]:
+    """Lines of the books being replaced that the file no longer contains (including every
+    line of a chapter the file no longer contains): exactly what `_retire_absent` switches off."""
     out: set[int] = set()
-    for book in resolved:
-        if not book.spec.complete:
-            continue
+    for book in replaced:
         rows = conn.execute(
             "SELECT rl.id FROM repertoire_lines rl JOIN chapters ch ON ch.id = rl.chapter_id"
             " WHERE ch.book_id = %s AND rl.active AND NOT (rl.id = ANY(%s))",
