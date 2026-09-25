@@ -108,6 +108,29 @@ export function buildArrows(p: { fen: string; moves?: string[] | null; ply?: num
   return arrows;
 }
 
+/**
+ * The (fen, preFen) pair the branch compare launches from: the latest player-decision node on the
+ * solver's walked path (the start FEN plus `line[0..moveIndex-1]`) and its parent. Walking back
+ * from the current node finds the last position with `color` to move that has a parent; null when
+ * there is none, or the line is malformed. The server validates the pair again.
+ */
+export function branchCompareTarget(startFen: string, line: string[], moveIndex: number, color: "w" | "b"): { fen: string; preFen: string } | null {
+  try {
+    const g = new Chess(startFen);
+    const replay = [g.fen()];
+    for (let i = 0; i < moveIndex && i < line.length; i++) {
+      g.move(line[i]);
+      replay.push(g.fen());
+    }
+    for (let j = replay.length - 1; j >= 1; j--) {
+      if (replay[j].split(" ")[1] === color) return { fen: replay[j], preFen: replay[j - 1] };
+    }
+  } catch {
+    /* malformed line */
+  }
+  return null;
+}
+
 /** `1. e4 e5 2. Nf3` for the first `ply` moves (all of them when `ply` is omitted). */
 export function buildPgn(moves: string[] | null | undefined, ply?: number | null): string {
   if (!moves?.length) return "";

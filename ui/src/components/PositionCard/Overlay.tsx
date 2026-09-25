@@ -8,6 +8,7 @@ import { ClassBadge } from "./CardInner";
 import { GamesTable } from "./GamesTable";
 import { LineReaderPanel } from "./LineReaderPanel";
 import { RepLinesPanel } from "./RepLinesPanel";
+import { SimilarPositionsPanel } from "./SimilarPositionsPanel";
 import { lineNamesSummary, recommended } from "./types";
 import type { PositionCardData } from "./types";
 
@@ -37,13 +38,14 @@ function CopyBlock({ label, text }: { label: string; text: string }) {
 /**
  * The full-screen view of one card, with ‹ › through the list: arrows, Escape, and swipes.
  *
- * While `suspended` (the page has a dialog open above it) the overlay listens to nothing, so
- * a key or a swipe meant for the dialog cannot also move the list underneath. Detaching is
- * the point: a flag checked inside a handler would still record the start of a swipe that
- * the dialog owns.
+ * While `suspended` (the page has a dialog open above it) or the similar-positions compare view is
+ * open, the overlay listens to nothing, so a key or a swipe meant for the dialog cannot also move
+ * the list underneath. Detaching is the point: a flag checked inside a handler would still record
+ * the start of a swipe that the dialog owns.
  */
 export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, suspended = false }: { items: PositionCardData[]; initialIndex: number; onClose: () => void; onIndexChange?: (i: number) => void; actions?: React.ReactNode; suspended?: boolean }) {
   const [index, setIndex] = useState(initialIndex);
+  const [compareOpen, setCompareOpen] = useState(false);
   // The list can shrink underneath an open overlay (a dismissal refetches it).
   const at = Math.min(index, items.length - 1);
   const d = items[at];
@@ -64,7 +66,7 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
   }, []);
 
   useEffect(() => {
-    if (suspended) return;
+    if (suspended || compareOpen) return;
     const go = (i: number) => {
       setIndex(i);
       onIndexChange?.(i);
@@ -96,10 +98,11 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
       window.removeEventListener("touchstart", onTouchStart);
       window.removeEventListener("touchend", onTouchEnd);
     };
-  }, [at, hasPrev, hasNext, onClose, onIndexChange, suspended]);
+  }, [at, hasPrev, hasNext, onClose, onIndexChange, suspended, compareOpen]);
 
   if (!d) return null;
   const step = (i: number) => {
+    setCompareOpen(false);
     setIndex(i);
     onIndexChange?.(i);
   };
@@ -204,6 +207,8 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
         {d.chessGameId != null && d.ply != null && <AiExplanationPanel key={`${d.chessGameId}:${d.ply}`} chessGameId={d.chessGameId} ply={d.ply} />}
 
         <LineReaderPanel fen={d.fen} repertoireLineId={null} />
+
+        <SimilarPositionsPanel fen={d.fen} queriedMove={played} orientation={d.color} mainArrows={mainArrows} compareOpen={compareOpen} onCompareOpenChange={setCompareOpen} />
 
         {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
 
