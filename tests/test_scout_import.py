@@ -270,7 +270,14 @@ def test_chesscom_equal_second_games_are_both_stored(clean: psycopg.Connection[D
     assert p.requests[-2][0].endswith("/games/archives")  # the walk asked for the archives, then the month
 
 
-def test_chesscom_incremental_walk_starts_at_the_cursors_month(clean: psycopg.Connection[DictRow]) -> None:
+@pytest.mark.parametrize("session_tz", ["UTC", "America/New_York", "Asia/Tokyo"])
+def test_chesscom_incremental_walk_starts_at_the_cursors_month(
+    clean: psycopg.Connection[DictRow], session_tz: str
+) -> None:
+    """Whatever time zone the connection returns timestamps in: the cursor's UTC month is the
+    first archive walked. A New York session turns a mid-September cursor into a month start
+    of 04:00 UTC, which used to drop September's archive and silently skip its games."""
+    clean.execute("SELECT set_config('TimeZone', %s, false)", (session_tz,))
     conn = clean
     pid = profile(conn, lichess=None, initialised=True)
     set_cursor(conn, pid, "chesscom", datetime(2026, 8, 15, tzinfo=UTC))
@@ -286,9 +293,16 @@ def test_chesscom_incremental_walk_starts_at_the_cursors_month(clean: psycopg.Co
     months = [u.split("/games/")[-1] for u, _ in p.requests if "/games/20" in u]
     assert months == ["2026/08", "2026/09"]
     assert cursor(conn, pid, "chesscom") == datetime(2026, 9, 2, tzinfo=UTC)
+    # a cursor in the first hour of a UTC month (still August in New York) walks from that month
+    set_cursor(conn, pid, "chesscom", datetime(2026, 9, 1, 0, 30, tzinfo=UTC))
+    p.requests.clear()
+    p.archives["2026/09"].append(chesscom_game(5, datetime(2026, 9, 3, tzinfo=UTC)))
+    importing.import_profiles(conn, window=5, client=p.client(), now=T0)
+    assert [u.split("/games/")[-1] for u, _ in p.requests if "/games/20" in u] == ["2026/09"]
+    assert views(conn, pid) == ["3", "4", "5"]
 
 
-# --- Lichess boundaries (test 6a) ---------------------------------------------------------------
+# --- Lichess boundaries ---------------------------------------------------------------------------
 
 
 def test_lichess_boundary_comes_from_the_ongoing_request_not_the_capped_stream(
@@ -394,7 +408,7 @@ def test_reset_lichess_cursors_and_the_cli_switch(
     assert '"cursors_reset": 1' in capsys.readouterr().out and views(conn, pid) == ["1", "new", "old"]
 
 
-# --- a storage failure is a failed run (test 4) ----------------------------------------------------
+# --- a storage failure is a failed run ------------------------------------------------------------
 
 
 def _capture_alerts(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int | None, str]]:

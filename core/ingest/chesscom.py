@@ -60,12 +60,18 @@ def fetch_archive(client: httpx.Client, url: str) -> list[dict[str, Any]]:
 
 
 def archives_since(archives: list[str], cutoff: datetime) -> list[str]:
-    """Keep archives whose month is at or after the cutoff's month."""
+    """Keep archives whose month is at or after the cutoff's UTC month. Archives are keyed by
+    UTC month, and a cutoff read from the database carries the session's time zone (a
+    mid-September instant in New York is still September 4:00 UTC as a month start, which
+    would drop September's archive), so the cutoff is moved to UTC first; a naive cutoff is
+    taken as UTC."""
+    at = cutoff.astimezone(UTC) if cutoff.tzinfo is not None else cutoff.replace(tzinfo=UTC)
+    first = at.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     keep: list[str] = []
     for url in archives:
         parts = url.rstrip("/").split("/")
         year, month = int(parts[-2]), int(parts[-1])
-        if datetime(year, month, 1, tzinfo=UTC) >= cutoff.replace(day=1, hour=0, minute=0, second=0, microsecond=0):
+        if datetime(year, month, 1, tzinfo=UTC) >= first:
             keep.append(url)
     return keep
 
