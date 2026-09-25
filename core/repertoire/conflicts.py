@@ -85,12 +85,14 @@ def _line_row(r: Row) -> Row:
 def listing(conn: Connection[Any]) -> list[Row]:
     """Positions where the player's lines, in any state, prescribe two or more distinct
     moves. Contested positions first, then by total lines descending, then by FEN; moves
-    within a position by effective count descending then by move."""
+    within a position by effective count descending then by move. The conflicted FENs are
+    an array the rows are filtered by: a join between the two CTE scans is planned as a
+    nested loop over 45k rows per conflicted position (1 s vs 0.2 s on the real data)."""
     rows = conn.execute(
         f"""
         WITH sig AS MATERIALIZED ({REP_SIGNATURES}),
-             at AS (SELECT fen FROM sig GROUP BY fen HAVING count(DISTINCT move) > 1)
-        SELECT sig.* FROM sig JOIN at USING (fen)
+             at AS MATERIALIZED (SELECT fen FROM sig GROUP BY fen HAVING count(DISTINCT move) > 1)
+        SELECT sig.* FROM sig WHERE sig.fen = ANY(ARRAY(SELECT fen FROM at))
         ORDER BY fen, move, book_title, chapter_title, line_name, line_id
         """,
         {"pid": PLAYER_ID},

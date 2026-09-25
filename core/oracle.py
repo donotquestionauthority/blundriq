@@ -579,3 +579,20 @@ def old_book_notes(conn: Connection[Any], book_id: int) -> list[dict[str, Any]]:
             (PLAYER_ID, book_id),
         ).fetchall()
     ]
+
+
+def old_conflict_lines(conn: Connection[Any]) -> list[dict[str, Any]]:
+    """Every line of the player's in the old database with everything the old conflict
+    listing and activation gate read: the row, its flags, its chapter's and book's titles,
+    flags and colour, in the old functions' column names."""
+    return [
+        dict(r)
+        for r in conn.execute(
+            "SELECT rl.id AS line_id, rl.line_name, rl.moves, rl.fen_sequence, rl.active AS rl_active,"
+            " ch.id AS chapter_id, ch.active AS c_active, ch.title AS chapter_title,"
+            " bk.id AS book_id, bk.active AS b_active, bk.title AS book_title, bk.color AS book_color"
+            " FROM repertoire_lines rl JOIN chapters ch ON ch.id = rl.chapter_id JOIN books bk ON bk.id = ch.book_id"
+            " WHERE bk.player_id = %s ORDER BY rl.id",
+            (PLAYER_ID,),
+        ).fetchall()
+    ]
