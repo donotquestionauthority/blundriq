@@ -1,4 +1,5 @@
-/** Types and calls for the repertoire read side: books, sections, toggles, notes, the walk-through. */
+/** Types and calls for the repertoire read side: books, sections, toggles, notes, the walk-through,
+ *  and the two compare surfaces. */
 import { api } from "./api";
 
 export interface RepertoireBook {
@@ -88,6 +89,94 @@ export interface RepLine {
   opp_dev_played: string | null;
   opp_dev_ply: number | null;
 }
+
+// --- Similar positions and Compare ----------------------------------------------------------
+// Both responses are hierarchical and server-final: one entry per board carrying all of its
+// groups, capped by the server in boards. The UI groups nothing, reduces nothing and derives no
+// chess of its own beyond turning a server SAN into arrow squares.
+
+export interface ArrivingMove {
+  san: string;
+  from: string;
+  to: string;
+  promotion: "q" | "r" | "b" | "n" | null;
+  is_castling: boolean;
+  is_en_passant: boolean;
+}
+
+export interface PrepGroup {
+  prep_move: string | null; // canonical SAN; null unless prep_status is 'move'
+  prep_status: "move" | "end_of_line" | "unreadable";
+  prep_raw_token: string | null; // the stored token, when 'unreadable'
+  is_queried_move: boolean;
+  arriving: ArrivingMove;
+  book_title: string | null;
+  chapter_title: string | null;
+  line_name: string | null;
+  line_id: number;
+  line_ply: number;
+  is_alternative: boolean;
+  carried_by_line_count: number;
+}
+
+export interface SimilarNeighbour {
+  fen: string;
+  distance: number;
+  same_material: boolean;
+  castling_delta: string[];
+  is_castle_shape: boolean;
+  diff_squares: { square: string; from: string | null; to: string | null }[];
+  board_prep_divergent: boolean;
+  groups: PrepGroup[];
+}
+
+export interface SimilarPositionsResponse {
+  query: { fen: string; move: string | null; max_distance: number; max_positions: number };
+  truncated: boolean;
+  positions_omitted: number;
+  neighbours: SimilarNeighbour[];
+}
+
+export interface MoveSquares {
+  from: string;
+  to: string;
+}
+
+export interface BranchSources {
+  repertoire: {
+    reply_san: string | null; // null when end_of_line or divergent
+    reply_squares: MoveSquares | null;
+    end_of_line: boolean;
+    line_count: number;
+    board_prep_divergent: boolean;
+    groups: PrepGroup[];
+  } | null;
+  /** Null whenever `repertoire` is set: the repertoire wins on a board. */
+  blunders: {
+    games: number;
+    worst: { move_played_san: string; move_played_squares: MoveSquares; best_move_san: string | null; best_move_squares: MoveSquares | null; centipawn_loss: number | null };
+  } | null;
+  /** Reserved: no producer yet, so always null; rendered whenever present. */
+  scout: { total_games: number; profiles: { name: string; games: number }[]; best_move_san: string | null; best_move_squares: MoveSquares | null } | null;
+}
+
+export interface CompareBranch {
+  child_fen: string;
+  opponent_move: ArrivingMove;
+  sources: BranchSources;
+}
+
+export interface BranchCompareResponse {
+  query: { fen: string; pre_fen: string; book_color: "white" | "black"; max_boards: number };
+  /** The branch the puzzle came from: always present, never in `branches`, never capped. */
+  current: CompareBranch;
+  truncated: boolean;
+  boards_omitted: number;
+  branches: CompareBranch[];
+}
+
+export const getSimilarPositions = (fen: string, move: string | null, signal?: AbortSignal) => api.get<SimilarPositionsResponse>(`/repertoire/similar?fen=${encodeURIComponent(fen)}${move ? `&move=${encodeURIComponent(move)}` : ""}`, signal);
+export const getBranchCompare = (fen: string, preFen: string, signal?: AbortSignal) => api.get<BranchCompareResponse>(`/repertoire/branch-compare?fen=${encodeURIComponent(fen)}&pre_fen=${encodeURIComponent(preFen)}`, signal);
 
 export const getBooks = () => api.get<{ books: RepertoireBook[] }>("/repertoire");
 export const getSections = (bookId: number) => api.get<{ sections: RepertoireSection[] }>(`/repertoire/${bookId}/sections`);

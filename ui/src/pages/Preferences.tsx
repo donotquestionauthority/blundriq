@@ -26,6 +26,7 @@ type PropSchema = {
 type Values = Record<string, unknown>;
 
 function groupOf(key: string): string {
+  if (key.startsWith("similar_") || key.startsWith("branch_compare_")) return "Repertoire";
   const head = key.split("_")[0];
   const named: Record<string, string> = {
     daily: "Home",

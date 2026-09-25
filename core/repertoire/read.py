@@ -232,6 +232,8 @@ def canonicalise(fen: str, pool: list[Row]) -> list[Row]:
     out: list[Row] = []
     for c in pool:
         move = board.parse_san(str(c["expected_move"]))
+        if not move:
+            raise ValueError("a null move ('--') is not a move")  # python-chess parses it without complaint
         out.append({**c, "canonical_move": board.san(move)})
     return out
 

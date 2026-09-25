@@ -37,7 +37,11 @@ Chess.com / Lichess APIs
   Repertoire (api) reads books › chapters › lines; a toggle flips one flag and rematches the games it can touch
            (core/repertoire/books.py); notes on positions and the line walk-through ──► repertoire_annotations
            (core/repertoire/annotations.py). `pipeline import-repertoire FILE` loads a neutral repertoire file
-           (core/repertoire/importing.py; docs/decisions/007) and rematches the window.
+           (core/repertoire/importing.py; docs/decisions/007) and rematches the window. Two compare surfaces
+           read the same lines: Similar positions on every card (core/repertoire/neighbourhood.py: the boards of
+           the active repertoire within a placement distance of the card's, same material exactly) and Compare
+           similar positions in the solver (core/repertoire/branch_compare.py: what the opponent could have
+           played one half-move back, from the repertoire and the player's own blunders).
 
   Home page reads: due count (Practice eligibility), games today/week, streaks, new blunders — recurring
            boards the Blunders list has never shown (seen_blunder_boards, which that page fills with what it
@@ -64,6 +68,8 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `core/repertoire/read.py` | The read side: which effectively-active lines pass through a board (`rep_lines`, by book colour, never defaulted), and the one reduction of many occurrences to a move (`project_ply`, `singular_move`: exact FEN first, canonical moves, fail-closed conflicts). |
 | `core/repertoire/annotations.py` | Notes on positions: the unattached note on a board, notes attached to a line, and the walk-through's projection of a book's notes onto a line. |
 | `core/repertoire/books.py` | The Repertoire page: books, sections, and switching a book, chapter or line on or off (rematches what it can touch). |
+| `core/repertoire/neighbourhood.py` | Similar positions: material-hash prefilter, exact signature verify on the matched plies only, placement distance, one entry per board with all of its groups (enumerated, never reduced), the cap in boards. |
+| `core/repertoire/branch_compare.py` | Branch compare: every opponent option at a puzzle's parent from the repertoire (leg R) and the player's blunders (leg B; a scout leg is reserved and empty), repertoire winning on a board, `current` always present and never capped. |
 | `core/repertoire/importing.py` | `pipeline import-repertoire`: the neutral file, identity by source ids, the cohort gate for new lines, replacement for a book the file marks complete. |
 | `core/deviations.py` | The Deviations page: patterns (book, chapter, ply, expected move) ranked by distinct games, their games, the repertoire's reading of each board, the seen set. |
 | `core/chess/san.py` | SAN normalisation, and move identity that does not depend on notation. |

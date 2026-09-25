@@ -2,21 +2,106 @@
 
 GET /repertoire, GET /repertoire/{book_id}/sections, PATCH /repertoire/{books|chapters|lines}/{id} — the
 Repertoire page. GET|PUT|DELETE /repertoire/annotation, GET /repertoire/lines/{id}/annotated — the note
-editor and the line walk-through, on every card and in Practice.
+editor and the line walk-through, on every card and in Practice. GET /repertoire/similar and
+GET /repertoire/branch-compare — the two compare surfaces (literal paths, registered before `/{book_id}`).
+
+Both compare routes re-serialise their FENs through python-chess before anything reads them: every
+stored FEN is python-chess-generated (the en-passant field is a square only when a capture is legal),
+while a client walking a live board writes one after any double push, so a raw client string would
+miss stored occurrences on that field alone.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal
 
+import chess
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from api import auth
 from core import db, settings
-from core.repertoire import annotations, books
+from core.repertoire import annotations, books, branch_compare, neighbourhood
 
 router = APIRouter(prefix="/repertoire", tags=["repertoire"], dependencies=[auth.Authed])
+
+
+def _board_or_400(fen: str) -> chess.Board:
+    """At least four fields (python-chess would fill a bare placement in as White to move, no
+    castling), parseable, and castling rights the placement supports (a Chess960 X-FEN string on
+    a 960 start is silently stripped otherwise)."""
+    try:
+        annotations.normalize_fen(fen)
+        board = chess.Board(fen)
+    except ValueError as exc:
+        raise HTTPException(400, "Not a position") from exc
+    if board.status() & chess.STATUS_BAD_CASTLING_RIGHTS:
+        raise HTTPException(400, "Not a position")
+    return board
+
+
+@router.get("/similar")
+def similar(
+    fen: str = Query(max_length=100),
+    move: str | None = Query(None, max_length=12),
+    max_distance: int | None = Query(None, ge=1, le=neighbourhood.MAX_DISTANCE_CEILING),
+) -> dict[str, Any]:
+    """The near neighbourhood of `fen` in the active repertoire. `move`, when given, must be
+    legal in `fen` and only flags `is_queried_move` on matching groups. `max_distance` may narrow
+    the setting, never widen it (400, not clamped)."""
+    board = _board_or_400(fen)
+    canonical_move: str | None = None
+    if move and move.strip():
+        try:
+            parsed = board.parse_san(move.strip())
+        except ValueError as exc:
+            raise HTTPException(400, "move is not legal in fen") from exc
+        if not parsed:
+            raise HTTPException(400, "move is not legal in fen")  # the null move parses; it is not a move
+        canonical_move = board.san(parsed)
+    with db.transaction() as conn:
+        s = settings.load(conn)
+        distance = s.similar_max_distance
+        if max_distance is not None:
+            if max_distance > distance:
+                raise HTTPException(400, "max_distance is above the setting")
+            distance = max_distance
+        try:
+            return neighbourhood.similar_positions(
+                conn, board.fen(), canonical_move, max_distance=distance, max_positions=s.similar_max_positions
+            )
+        except neighbourhood.NoSignature as exc:
+            raise HTTPException(400, "Not a position") from exc
+
+
+@router.get("/branch-compare")
+def compare_branches(fen: str = Query(max_length=100), pre_fen: str = Query(max_length=100)) -> dict[str, Any]:
+    """Every opponent option at `pre_fen`, the parent of the puzzle position `fen`. The server
+    validates the pair rather than trusting a client move: opposite sides to move, and exactly
+    one legal move from `pre_fen` reaches `fen`'s board (promotion and en passant come free)."""
+    fen_board = _board_or_400(fen)
+    pre_board = _board_or_400(pre_fen)
+    if fen_board.turn == pre_board.turn:
+        raise HTTPException(400, "pre_fen must be the opponent-to-move parent of fen")
+    target = annotations.normalize_fen(fen_board.fen())
+    matches: list[chess.Move] = []
+    for candidate in pre_board.legal_moves:
+        pre_board.push(candidate)
+        try:
+            if annotations.normalize_fen(pre_board.fen()) == target:
+                matches.append(candidate)
+        finally:
+            pre_board.pop()
+    if len(matches) != 1:
+        raise HTTPException(400, "fen is not reachable from pre_fen by exactly one legal move")
+    arriving = neighbourhood.parse_arriving(pre_board.fen(), pre_board.san(matches[0]))
+    assert arriving is not None
+    book_color = "white" if fen_board.turn == chess.WHITE else "black"
+    with db.transaction() as conn:
+        max_boards = settings.load(conn).branch_compare_max_boards
+        return branch_compare.branch_compare(
+            conn, fen_board.fen(), pre_board.fen(), arriving=arriving, book_color=book_color, max_boards=max_boards
+        )
 
 
 @router.get("")

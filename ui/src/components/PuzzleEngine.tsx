@@ -13,9 +13,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chess } from "chess.js";
 import type { Move, Square } from "chess.js";
 import { Chessboard } from "react-chessboard";
+import { BranchCompareView } from "./BranchCompareView";
 import { LineReaderPanel } from "./PositionCard/LineReaderPanel";
 import { HIGHLIGHT, SQUARES } from "../utils/board";
-import { mapKey, moveUci, sanResolvesToMove, uciToMove } from "../utils/chess";
+import { branchCompareTarget, mapKey, moveUci, sanResolvesToMove, uciToMove } from "../utils/chess";
 import type { AcceptanceMap } from "../practice";
 
 type PuzzleState = "playing" | "wrong" | "solved";
@@ -100,6 +101,13 @@ export function PuzzleEngine({
   const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
   const [solutionShown, setSolutionShown] = useState(false);
   const completeCalled = useRef(false);
+  // Compare similar positions: what else the opponent could have played before the latest decision
+  // node. Not in map mode (the player may leave the stored line, so the replay no longer describes
+  // the board), and not gated on attempt state: opening it before solving spoils one's own puzzle,
+  // like Show me, and touches no scoring. Closed on every puzzle change.
+  const [branchCompareOpen, setBranchCompareOpen] = useState(false);
+  useEffect(() => setBranchCompareOpen(false), [fen]);
+  const compareTarget = useMemo(() => (mapMode ? null : branchCompareTarget(finishLineMode ? finishLineFen : fen, activeSolutionLine, moveIndex, color)), [mapMode, finishLineMode, finishLineFen, fen, activeSolutionLine, moveIndex, color]);
   // Where the wrong move was played from; Try Again restores here, not the puzzle start.
   const checkpointFen = useRef(fen);
   const checkpointMoveIndex = useRef(0);
@@ -459,10 +467,15 @@ export function PuzzleEngine({
           </>
         )}
       </div>
+      {/* Always rendered, invisible without a target, so nothing below the board shifts. */}
+      <button type="button" data-testid="branch-compare-launch" onClick={() => compareTarget && setBranchCompareOpen(true)} disabled={!compareTarget} className={`w-full rounded border px-3 py-2 text-xs font-medium ${compareTarget ? "border-sky-300 bg-sky-50 text-sky-800 dark:border-sky-800 dark:bg-sky-900/30 dark:text-sky-300" : "pointer-events-none border-transparent text-transparent"}`}>
+        Compare similar positions
+      </button>
       {/* The note on the position the board is showing, and the whole line for a repertoire puzzle. */}
-      <div className="mt-3">
+      <div className="mt-3 w-full">
         <LineReaderPanel fen={game.fen()} repertoireLineId={repertoireLineId} />
       </div>
+      {branchCompareOpen && compareTarget && <BranchCompareView fen={compareTarget.fen} preFen={compareTarget.preFen} orientation={boardOrientation} onClose={() => setBranchCompareOpen(false)} />}
     </div>
   );
 }

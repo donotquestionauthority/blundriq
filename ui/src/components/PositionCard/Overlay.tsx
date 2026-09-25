@@ -2,12 +2,13 @@ import { useEffect, useState } from "react";
 import { Chessboard } from "react-chessboard";
 import { daysAgo } from "../../blunders";
 import { SQUARES } from "../../utils/board";
-import { buildArrows, buildPgn } from "../../utils/chess";
+import { buildArrows, buildPgn, sanToSquares } from "../../utils/chess";
 import { AiExplanationPanel } from "./AiExplanationPanel";
 import { ClassBadge } from "./CardInner";
 import { GamesTable } from "./GamesTable";
 import { LineReaderPanel } from "./LineReaderPanel";
 import { RepLinesPanel } from "./RepLinesPanel";
+import { SimilarPositionsPanel } from "./SimilarPositionsPanel";
 import { lineNamesSummary, recommended } from "./types";
 import type { PositionCardData } from "./types";
 
@@ -37,13 +38,14 @@ function CopyBlock({ label, text }: { label: string; text: string }) {
 /**
  * The full-screen view of one card, with ‹ › through the list: arrows, Escape, and swipes.
  *
- * While `suspended` (the page has a dialog open above it) the overlay listens to nothing, so
- * a key or a swipe meant for the dialog cannot also move the list underneath. Detaching is
- * the point: a flag checked inside a handler would still record the start of a swipe that
- * the dialog owns.
+ * While `suspended` (the page has a dialog open above it) or the similar-positions compare view is
+ * open, the overlay listens to nothing, so a key or a swipe meant for the dialog cannot also move
+ * the list underneath. Detaching is the point: a flag checked inside a handler would still record
+ * the start of a swipe that the dialog owns.
  */
 export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, suspended = false }: { items: PositionCardData[]; initialIndex: number; onClose: () => void; onIndexChange?: (i: number) => void; actions?: React.ReactNode; suspended?: boolean }) {
   const [index, setIndex] = useState(initialIndex);
+  const [compareOpen, setCompareOpen] = useState(false);
   // The list can shrink underneath an open overlay (a dismissal refetches it).
   const at = Math.min(index, items.length - 1);
   const d = items[at];
@@ -64,7 +66,7 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
   }, []);
 
   useEffect(() => {
-    if (suspended) return;
+    if (suspended || compareOpen) return;
     const go = (i: number) => {
       setIndex(i);
       onIndexChange?.(i);
@@ -96,15 +98,20 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
       window.removeEventListener("touchstart", onTouchStart);
       window.removeEventListener("touchend", onTouchEnd);
     };
-  }, [at, hasPrev, hasNext, onClose, onIndexChange, suspended]);
+  }, [at, hasPrev, hasNext, onClose, onIndexChange, suspended, compareOpen]);
 
   if (!d) return null;
   const step = (i: number) => {
+    setCompareOpen(false);
     setIndex(i);
     onIndexChange?.(i);
   };
   const pgn = d.moves && d.ply ? buildPgn(d.moves, d.ply) : "";
   const played = d.movePlayed ?? d.mostCommonPlayed ?? null;
+  // A deviation pattern spans boards: its most common played move is an aggregate over the pattern and
+  // its board is the latest game's, so the move can be illegal here. The similar-positions search only
+  // takes a move it can play on this board (the arrows already draw nothing for such a move).
+  const queriedMove = played && sanToSquares(d.fen, played) ? played : null;
   const best = recommended(d);
   // One derivation for the board here and for anything that shows the same board beside it.
   const mainArrows = buildArrows({ fen: d.fen, moves: d.moves, ply: d.ply, movePlayed: played, bestMove: best.move });
@@ -204,6 +211,8 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
         {d.chessGameId != null && d.ply != null && <AiExplanationPanel key={`${d.chessGameId}:${d.ply}`} chessGameId={d.chessGameId} ply={d.ply} />}
 
         <LineReaderPanel fen={d.fen} repertoireLineId={null} />
+
+        <SimilarPositionsPanel fen={d.fen} queriedMove={queriedMove} orientation={d.color} mainArrows={mainArrows} compareOpen={compareOpen} onCompareOpenChange={setCompareOpen} />
 
         {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
 
