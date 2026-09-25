@@ -430,7 +430,10 @@ def page(conn: Connection[Any], f: ScoutFilters, page_number: int = 0) -> dict[s
     positions: list[Row] = []
     for r in rows:
         row = {k: (int(v) if isinstance(v, int) else v) for k, v in r.items()}
-        row.update(extra[r["fen"]])
+        detail = dict(extra[r["fen"]])
+        if int(r["tier"]) == 1 and r["best_move"]:
+            detail["best_move"], detail["best_move_date"] = r["best_move"], None  # the blunder row's
+        row.update(detail)
         positions.append(row)
     return {
         "positions": positions,
