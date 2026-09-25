@@ -1,7 +1,9 @@
 """The repertoire read side, and its one write.
 
 GET /repertoire, GET /repertoire/{book_id}/sections, PATCH /repertoire/{books|chapters|lines}/{id} — the
-Repertoire page. GET|PUT|DELETE /repertoire/annotation, GET /repertoire/lines/{id}/annotated — the note
+Repertoire page; a PATCH switching a line on that the gate refuses is 409 `activation_conflict` with the
+refusal, and one switching a chapter or book on reports the lines it `held_back`. GET /repertoire/conflicts —
+the Conflicts page. GET|PUT|DELETE /repertoire/annotation, GET /repertoire/lines/{id}/annotated — the note
 editor and the line walk-through, on every card and in Practice. GET /repertoire/similar and
 GET /repertoire/branch-compare — the two compare surfaces (literal paths, registered before `/{book_id}`).
 
@@ -17,11 +19,12 @@ from typing import Any, Literal
 
 import chess
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from api import auth
 from core import db, settings
-from core.repertoire import annotations, books, branch_compare, neighbourhood
+from core.repertoire import annotations, books, branch_compare, conflicts, neighbourhood
 
 router = APIRouter(prefix="/repertoire", tags=["repertoire"], dependencies=[auth.Authed])
 
@@ -104,6 +107,18 @@ def compare_branches(fen: str = Query(max_length=100), pre_fen: str = Query(max_
         )
 
 
+@router.get("/conflicts")
+def list_conflicts() -> dict[str, Any]:
+    """Positions where two lines disagree (any state), identical lines in different chapters,
+    and the number of positions where two effectively-active lines disagree."""
+    with db.transaction() as conn:
+        return {
+            "positions": conflicts.listing(conn),
+            "duplicates": conflicts.duplicates(conn),
+            "contested": conflicts.contested_count(conn),
+        }
+
+
 @router.get("")
 def list_books() -> dict[str, Any]:
     with db.transaction() as conn:
@@ -115,13 +130,19 @@ class ActiveBody(BaseModel):
 
 
 @router.patch("/{kind}/{id}")
-def set_active(kind: Literal["books", "chapters", "lines"], id: int, body: ActiveBody) -> dict[str, Any]:
-    with db.transaction() as conn:
-        window = settings.load(conn).analysis_game_limit
-        result = books.set_active(conn, kind, id, body.active, window)
+def set_active(kind: Literal["books", "chapters", "lines"], id: int, body: ActiveBody) -> Any:
+    """200 `{detail: "updated", rematch, held_back}`; 409 `{detail: "activation_conflict",
+    refusal}` for a line the gate refused (nothing changed); 404 when the id is not the
+    player's."""
+    try:
+        with db.transaction() as conn:
+            window = settings.load(conn).analysis_game_limit
+            result = books.set_active(conn, kind, id, body.active, window)
+    except books.Refused as exc:
+        return JSONResponse({"detail": "activation_conflict", "refusal": exc.refusal.as_row()}, status_code=409)
     if result is None:
         raise HTTPException(404, "Not found")
-    return {"detail": "updated", "rematch": result}
+    return {"detail": "updated", **result}
 
 
 def _fen_norm_or_400(fen: str) -> str:

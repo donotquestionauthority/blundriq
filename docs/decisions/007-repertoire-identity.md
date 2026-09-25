@@ -22,5 +22,16 @@ before a change cannot publish results computed from them after it.
 
 The toggles on the Repertoire page are the one remedy for a deviation that should not
 count: there is no dismissal for deviations, because the line would still prescribe the
-move and the deviation would recur. A toggle carries no gate; when two active lines
-disagree at a position, the read side reports the conflict instead of guessing.
+move and the deviation would recur. Switching off is never gated. Switching on runs the
+import's gate: a line, or the lines a chapter or book would bring into play, must agree with
+every effectively-active line at each position where the book's side is to move (and, where
+no active line covers a position, a container's own lines resolve their disagreement by
+plurality, as an import does). A refused line stays off and the page says which position
+and which lines refused it; a chapter or book still comes on, with the lines the gate
+refused switched off in the same transaction and reported, so a container never brings a
+contested position with it. A target that is already on is a no-op: a line that is on is an
+anchor, never a candidate, so re-gating it could only switch its fellows off and leave the
+results citing them stale. A flip under a container that is off is not gated; the gate runs
+when the container comes on. The Conflicts page lists every position where two lines in any
+state disagree, marks the ones where two active lines do (the positions the read side fails
+closed on), and offers the same toggles to resolve them.

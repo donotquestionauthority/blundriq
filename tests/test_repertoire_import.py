@@ -165,18 +165,38 @@ def _prep(color: str, *lines: list[str]) -> list[importing.Prepared]:
     return out
 
 
+def _active(verdicts: list[importing.Verdict]) -> list[str]:
+    return ["active" if v.active else "inactive" for v in verdicts]
+
+
 def test_the_batch_resolves_its_own_disagreement_by_plurality_then_file_order() -> None:
     batch = _prep("white", ["e4", "e5", "Nf3"], ["e4", "e5", "Bc4"], ["e4", "e5", "Nf3", "Nc6"], ["e4", "c5", "Nf3"])
-    assert importing.decide({}, set(), batch) == ["active", "inactive", "active", "active"]
+    assert _active(importing.decide({}, set(), batch)) == ["active", "inactive", "active", "active"]
     tie = _prep("white", ["e4", "e5", "Bc4"], ["e4", "e5", "Nf3"])
-    assert importing.decide({}, set(), tie) == ["active", "inactive"]  # earliest chapter wins a tie
+    assert _active(importing.decide({}, set(), tie)) == ["active", "inactive"]  # earliest chapter wins a tie
 
 
 def test_an_active_existing_line_anchors_and_a_dirty_position_blocks() -> None:
     after_e5 = importing.spine(None, ["e4", "e5"])[2]
     batch = _prep("white", ["e4", "e5", "Nf3"], ["e4", "e5", "Bc4"])
-    assert importing.decide({after_e5: {"Bc4"}}, set(), batch) == ["inactive", "active"]
-    assert importing.decide({after_e5: {"Bc4", "Nf3"}}, {after_e5}, batch) == ["inactive", "inactive"]
+    assert _active(importing.decide({after_e5: {"Bc4"}}, set(), batch)) == ["inactive", "active"]
+    assert _active(importing.decide({after_e5: {"Bc4", "Nf3"}}, {after_e5}, batch)) == ["inactive", "inactive"]
+
+
+def test_a_verdict_names_the_first_blocking_position_and_why() -> None:
+    after_e5 = importing.spine(None, ["e4", "e5"])[2]
+    after_nc6 = importing.spine(None, ["e4", "e5", "Nf3", "Nc6"])[4]
+    batch = _prep("white", ["e4", "e5", "Nf3", "Nc6", "Bc4"], ["e4", "e5", "Nf3", "Nc6", "Bb5"], ["e4", "e5", "d4"])
+    # The two Nf3 lines only disagree at move 3, where nothing anchors: the earliest (Bc4) wins.
+    v = importing.decide({}, set(), batch)
+    assert v[0] == importing.Verdict(True)
+    assert v[1] == importing.Verdict(False, after_nc6, "Bb5", "cohort", "Bc4")
+    assert v[2] == importing.Verdict(False, after_e5, "d4", "cohort", "Nf3")
+    # Against an anchor the first blocked position is the anchor's, and dirty beats everything.
+    v = importing.decide({after_e5: {"Bc4"}}, set(), batch)
+    assert v[0] == importing.Verdict(False, after_e5, "Nf3", "anchor", "Bc4")
+    v = importing.decide({after_e5: {"Bc4", "Nf3"}}, {after_e5}, batch)
+    assert v[2] == importing.Verdict(False, after_e5, "d4", "dirty", None)
 
 
 def test_the_gate_reads_only_effectively_active_lines(db: psycopg.Connection[DictRow]) -> None:
@@ -209,7 +229,7 @@ def test_a_new_line_the_repertoire_disagrees_with_comes_in_switched_off(
 def test_toggles_flip_one_flag_and_rematch_only_the_games_it_can_touch(db: psycopg.Connection[DictRow]) -> None:
     h.book(db, 1, "Italian", "white")
     h.chapter(db, 1, 1, "Giuoco")
-    h.line(db, 1, 1, "Main", ["e4", "e5", "Nf3", "Nc6", "Bc4"])
+    h.line(db, 1, 1, "Petroff", ["e4", "e5", "Nf3", "Nf6", "Nxe5"])
     h.line(db, 2, 1, "Spanish", ["e4", "e5", "Nf3", "Nc6", "Bb5"], active=False)
     h.game(db, 1, ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6"], days_ago=1)
     h.game(db, 2, ["d4", "d5"], days_ago=2)
@@ -221,21 +241,21 @@ def test_toggles_flip_one_flag_and_rematch_only_the_games_it_can_touch(db: psyco
         row = db.execute("SELECT deviation_by FROM game_repertoire_results WHERE chess_game_id = %s", (gid,)).fetchone()
         return None if row is None else str(row["deviation_by"])
 
-    assert by(1) == "me" and by(2) is None
+    assert by(1) == "opponent" and by(2) is None
     row = db.execute("SELECT no_repertoire_match FROM player_games WHERE chess_game_id = 2").fetchone()
     assert row is not None and row["no_repertoire_match"] is True
     # Switching the Spanish line on: game 1 contains its second position, game 2 does not.
     out = books.set_active(db, "lines", 2, True, 100)
-    assert out is not None and out["candidates"] == 1
+    assert out is not None and out["rematch"]["candidates"] == 1 and out["held_back"] == []
     assert by(1) == "none"
     # Switching the whole book off: only game 1 cites its lines.
     out = books.set_active(db, "books", 1, False, 100)
-    assert out is not None and out["candidates"] == 1 and out["lines"] == 0
+    assert out is not None and out["rematch"]["candidates"] == 1 and out["rematch"]["lines"] == 0
     assert db.execute("SELECT count(*) AS n FROM game_repertoire_results").fetchone()["n"] == 0  # type: ignore[index]
     assert books.set_active(db, "chapters", 99, True, 100) is None
     assert books.books(db)[0]["active"] is False
     sections = books.sections(db, 1)
-    assert sections is not None and [ln["name"] for ln in sections[0]["lines"]] == ["Main", "Spanish"]
+    assert sections is not None and [ln["name"] for ln in sections[0]["lines"]] == ["Petroff", "Spanish"]
     assert books.sections(db, 99) is None
 
 
@@ -417,7 +437,7 @@ def test_a_tie_inside_one_chapter_goes_to_the_lexically_first_move() -> None:
         )
         for i, m in enumerate(lines)
     ]
-    assert importing.decide({}, set(), batch) == ["inactive", "active"]
+    assert _active(importing.decide({}, set(), batch)) == ["inactive", "active"]
 
 
 def test_notes_are_written_in_bulk_with_every_outcome_counted(db: psycopg.Connection[DictRow]) -> None:
@@ -485,18 +505,21 @@ def test_a_chapter_toggle_rematches_the_games_that_cite_its_lines(db: psycopg.Co
 
     h.book(db, 1, "Italian", "white")
     h.chapter(db, 1, 1, "Giuoco")
-    h.chapter(db, 2, 1, "Tabiya")
+    h.chapter(db, 2, 1, "Tabiya", active=False)
     h.line(db, 1, 1, "Main", ["e4", "e5", "Nf3", "Nc6", "Bc4"])
     root = h.spine(None, ["e4", "e5", "Nf3", "Nc6"])[4]
-    h.line(db, 2, 2, "From the tabiya", ["Bb5", "a6"], fens=importing.spine(root, ["Bb5", "a6"]), active=False)
+    h.line(db, 2, 2, "From the tabiya", ["Bb5", "a6"], fens=importing.spine(root, ["Bb5", "a6"]))
     h.game(db, 1, ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4"], days_ago=1)
     matching.match_player(db, 100)
     assert db.execute("SELECT deviation_by FROM game_repertoire_results").fetchone()["deviation_by"] == "me"  # type: ignore[index]
-    # A tabiya line coming on is found by the game containing its first position after the root.
-    out = books.set_active(db, "chapters", 2, True, 100)
-    assert out is not None and out["candidates"] == 1
+    # Giuoco off: only the game that cites its line is looked at again. Then the tabiya line
+    # coming on (nothing anchors Bb5 any more) is found by the game containing its first
+    # position after the root.
     out = books.set_active(db, "chapters", 1, False, 100)
-    assert out is not None and out["candidates"] == 1
+    assert out is not None and out["rematch"]["candidates"] == 1
+    out = books.set_active(db, "chapters", 2, True, 100)
+    assert out is not None and out["rematch"]["candidates"] == 1 and out["held_back"] == []
+    assert db.execute("SELECT deviation_by FROM game_repertoire_results").fetchone()["deviation_by"] == "none"  # type: ignore[index]
 
 
 def test_a_note_the_file_moved_off_its_line_never_costs_the_existing_note(

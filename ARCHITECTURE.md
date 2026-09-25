@@ -35,7 +35,10 @@ Chess.com / Lichess APIs
            they agree on)
 
   Repertoire (api) reads books › chapters › lines; a toggle flips one flag and rematches the games it can touch
-           (core/repertoire/books.py); notes on positions and the line walk-through ──► repertoire_annotations
+           (core/repertoire/books.py), and switching on is gated: what would disagree with an active line is
+           refused (a line) or held back (a chapter's or book's lines) by core/repertoire/conflicts.py, which
+           also serves the Conflicts page (positions where two lines disagree, identical lines in different
+           chapters, the contested count on the Repertoire page); notes on positions and the line walk-through ──► repertoire_annotations
            (core/repertoire/annotations.py). `pipeline import-repertoire FILE` loads a neutral repertoire file
            (core/repertoire/importing.py; docs/decisions/007) and rematches the window. Two compare surfaces
            read the same lines: Similar positions on every card (core/repertoire/neighbourhood.py: the boards of
@@ -67,7 +70,8 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `core/repertoire/matching.py` | Game-vs-line matching and the match step; rematching after the repertoire changed; the one lock everything that reads the repertoire to publish, or changes it, holds (docs/decisions/007). |
 | `core/repertoire/read.py` | The read side: which effectively-active lines pass through a board (`rep_lines`, by book colour, never defaulted), and the one reduction of many occurrences to a move (`project_ply`, `singular_move`: exact FEN first, canonical moves, fail-closed conflicts). |
 | `core/repertoire/annotations.py` | Notes on positions: the unattached note on a board, notes attached to a line, and the walk-through's projection of a book's notes onto a line. |
-| `core/repertoire/books.py` | The Repertoire page: books, sections, and switching a book, chapter or line on or off (rematches what it can touch). |
+| `core/repertoire/books.py` | The Repertoire page: books, sections, and switching a book, chapter or line on or off (gated on the way on, rematches what it can touch). |
+| `core/repertoire/conflicts.py` | One signature relation (every line's move at its book side's plies, effectiveness computed): the Conflicts page's listing and duplicates, the contested count, and the gate a toggle runs (`importing.decide` over existing rows). |
 | `core/repertoire/neighbourhood.py` | Similar positions: material-hash prefilter, exact signature verify on the matched plies only, placement distance, one entry per board with all of its groups (enumerated, never reduced), the cap in boards. |
 | `core/repertoire/branch_compare.py` | Branch compare: every opponent option at a puzzle's parent from the repertoire (leg R) and the player's blunders (leg B; a scout leg is reserved and empty), repertoire winning on a board, `current` always present and never capped. |
 | `core/repertoire/importing.py` | `pipeline import-repertoire`: the neutral file, identity by source ids, the cohort gate for new lines, replacement for a book the file marks complete. |

@@ -38,6 +38,7 @@ def test_everything_needs_login(app_env: None) -> None:
     assert c.get("/deviations").status_code == 401
     assert c.get("/repertoire").status_code == 401
     assert c.get("/repertoire/annotation", params={"fen": h.START}).status_code == 401
+    assert c.get("/repertoire/conflicts").status_code == 401
 
 
 def test_deviations_list_and_seen(client: TestClient) -> None:
@@ -66,6 +67,38 @@ def test_books_sections_and_toggles(client: TestClient) -> None:
     assert client.get("/deviations", params={"time_class": "all"}).json()["total"] == 0
     assert client.patch("/repertoire/lines/9", json={"active": True}).status_code == 404
     assert client.patch("/repertoire/things/1", json={"active": True}).status_code == 422
+
+
+def test_conflicts_listing_refusal_and_held_back(client: TestClient, clean: psycopg.Connection[DictRow]) -> None:
+    h.chapter(clean, 2, 1, "Intro")
+    h.line(clean, 2, 2, "Spanish", MAIN[:4] + ["Bb5"], active=False)
+    h.line(clean, 3, 2, "Same", MAIN)
+    clean.commit()
+    after_nc6 = h.spine(None, MAIN[:4])[4]
+    r = client.get("/repertoire/conflicts").json()
+    assert r["contested"] == 0
+    assert [p["fen"] for p in r["positions"]] == [after_nc6] and r["positions"][0]["contested"] is False
+    assert [g["move"] for g in r["positions"][0]["moves"]] == ["Bc4", "Bb5"]
+    assert [[ln["line_id"] for ln in g["lines"]] for g in r["duplicates"]] == [[1, 3]]
+    # A line the gate refuses: 409 with the refusal, nothing changed.
+    r = client.patch("/repertoire/lines/2", json={"active": True})
+    assert r.status_code == 409 and r.json()["detail"] == "activation_conflict"
+    refusal = r.json()["refusal"]
+    assert (refusal["line_id"], refusal["fen"], refusal["move"], refusal["reason"]) == (2, after_nc6, "Bb5", "anchor")
+    assert refusal["rivals"][0]["line_id"] == 1 and refusal["rivals"][0]["move"] == "Bc4"
+    # Under a chapter that is off the flip is latent; the chapter then comes on with the
+    # refused line held back and the agreeing line accepted.
+    assert client.patch("/repertoire/chapters/2", json={"active": False}).status_code == 200
+    r = client.patch("/repertoire/lines/2", json={"active": True})
+    assert r.status_code == 200 and r.json()["held_back"] == []
+    r = client.patch("/repertoire/chapters/2", json={"active": True})
+    assert r.status_code == 200 and r.json()["detail"] == "updated"
+    assert [x["line_id"] for x in r.json()["held_back"]] == [2] and r.json()["rematch"]["candidates"] == 2
+    sections = client.get("/repertoire/1/sections").json()["sections"]
+    assert sections[1]["active"] is True and [ln["active"] for ln in sections[1]["lines"]] == [False, True]
+    # Already on: a no-op answer.
+    r = client.patch("/repertoire/chapters/2", json={"active": True})
+    assert r.status_code == 200 and r.json()["held_back"] == [] and r.json()["rematch"]["candidates"] == 0
 
 
 def test_notes_round_trip(client: TestClient) -> None:

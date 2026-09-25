@@ -108,6 +108,7 @@ class Prepared:
     line: LineIn
     fens: list[str]
     signatures: list[tuple[str, str]]  # (fen before, move) at the player's turns
+    line_id: int | None = None  # an existing row put through the gate by a toggle; None for a file line
 
 
 def load_file(path: Path) -> RepertoireFile:
@@ -166,10 +167,22 @@ def prepare(doc: RepertoireFile) -> list[Prepared]:
 
 # --- the cohort gate ---------------------------------------------------------------
 
-Decision = Literal["active", "inactive"]
+
+@dataclass(frozen=True)
+class Verdict:
+    """Whether a line may come in active and, when it may not, the first position (in line
+    order) that blocked it, the move the line plays there, why, and the move holding the
+    position against it: the anchor's move, the cohort's winning move, or None when the
+    active repertoire already disagrees there (`dirty`)."""
+
+    active: bool
+    fen: str | None = None
+    move: str | None = None
+    reason: Literal["anchor", "dirty", "cohort"] | None = None
+    rival: str | None = None
 
 
-def decide(existing: dict[str, set[str]], dirty: set[str], batch: list[Prepared]) -> list[Decision]:
+def decide(existing: dict[str, set[str]], dirty: set[str], batch: list[Prepared]) -> list[Verdict]:
     """For each prepared line (in file order), whether it may come in active. `existing`
     maps a player-turn position to the moves effectively-active lines already prescribe
     there; `dirty` is the positions where they already disagree."""
@@ -184,24 +197,24 @@ def decide(existing: dict[str, set[str]], dirty: set[str], batch: list[Prepared]
         if len(counter) <= 1 or existing.get(fen):
             continue
         winner[fen] = min(counter, key=lambda m: (-counter[m], first_chapter[(fen, m)], m))
-    decisions: list[Decision] = []
+    verdicts: list[Verdict] = []
     for p in batch:
-        verdict: Decision = "active"
+        verdict = Verdict(True)
         for fen, move in p.signatures:
             if fen in dirty:
-                verdict = "inactive"
+                verdict = Verdict(False, fen, move, "dirty")
                 break
             anchors = existing.get(fen)
             if anchors:
                 if move not in anchors:
-                    verdict = "inactive"
+                    verdict = Verdict(False, fen, move, "anchor", next(iter(anchors)))
                     break
                 continue
             if fen in winner and winner[fen] != move:
-                verdict = "inactive"
+                verdict = Verdict(False, fen, move, "cohort", winner[fen])
                 break
-        decisions.append(verdict)
-    return decisions
+        verdicts.append(verdict)
+    return verdicts
 
 
 def existing_index(conn: Connection[Any], exclude: set[int] | None = None) -> tuple[dict[str, set[str]], set[str]]:
@@ -482,7 +495,7 @@ def _write(
     for book in resolved:
         for chapter_id, ix in book.to_insert:
             p = prepared[ix]
-            active = decisions[ix] == "active"
+            active = decisions[ix].active
             lrow = conn.execute(
                 "INSERT INTO repertoire_lines"
                 " (chapter_id, line_name, moves, fen_sequence, active, is_alternative, source_line_id)"
