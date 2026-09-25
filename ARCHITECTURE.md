@@ -14,7 +14,8 @@ Chess.com / Lichess APIs
         ├─► pipeline match-repertoire ──► game_repertoire_results, game_result_lines
         │        (books / chapters / repertoire_lines come from `pipeline import-repertoire <file>`)
         │
-        ├─► pipeline import-opponents ──► opponent_views  (Scout matches on chess_games.position_keys)
+        ├─► pipeline import-opponents ──► opponent_views  (a scouted opponent's side of a chess_games row;
+        │        hourly, after srs-maintain; onboards a profile added on the Scout page)
         │
         ▼
   pipeline generate-puzzles ──► puzzles  (blunder, own_mate, deviation; corpus rows are
@@ -46,6 +47,12 @@ Chess.com / Lichess APIs
            similar positions in the solver (core/repertoire/branch_compare.py: what the opponent could have
            played one half-move back, from the repertoire and the player's own blunders).
 
+  Scout (api) reads opponent_views against the player's games, blunders and repertoire on the fly
+           (core/scout/): the opponent's activity and openings, the positions where they choose, and the
+           boards both sides reach ranked by the player's blunders there; dismissal is Blunders'
+           table, and GET /scout/dismissed lists every dismissed board for restoring. Compare's third
+           column comes from the same views.
+
   Home page reads: due count (Practice eligibility), games today/week, streaks, new blunders — recurring
            boards the Blunders list has never shown (seen_blunder_boards, which that page fills with what it
            rendered; the first look ever records the whole list as known) — one predicate in core/blunders.py,
@@ -73,7 +80,7 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `core/repertoire/books.py` | The Repertoire page: books, sections, and switching a book, chapter or line on or off (gated on the way on, rematches what it can touch). |
 | `core/repertoire/conflicts.py` | One signature relation (every line's move at its book side's plies, effectiveness computed): the Conflicts page's listing and duplicates, the contested count, and the gate a toggle runs (`importing.decide` over existing rows). |
 | `core/repertoire/neighbourhood.py` | Similar positions: material-hash prefilter, exact signature verify on the matched plies only, placement distance, one entry per board with all of its groups (enumerated, never reduced), the cap in boards. |
-| `core/repertoire/branch_compare.py` | Branch compare: every opponent option at a puzzle's parent from the repertoire (leg R) and the player's blunders (leg B; a scout leg is reserved and empty), repertoire winning on a board, `current` always present and never capped. |
+| `core/repertoire/branch_compare.py` | Branch compare: every opponent option at a puzzle's parent from the repertoire (leg R), the player's blunders (leg B) and scouted opponents' games (leg S, with the engine's move at the child from the player's analysed games), repertoire winning on a board, `current` always present and never capped. |
 | `core/repertoire/importing.py` | `pipeline import-repertoire`: the neutral file, identity by source ids, the cohort gate for new lines, replacement for a book the file marks complete. |
 | `core/deviations.py` | The Deviations page: patterns (book, chapter, ply, expected move) ranked by distinct games, their games, the repertoire's reading of each board, the seen set. |
 | `core/chess/san.py` | SAN normalisation, and move identity that does not depend on notation. |
@@ -91,7 +98,8 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `core/puzzles/serve.py` | The play queue: batches from the five buckets, pending and skip, the corpus rotation, the browse and trophy lists, the due count. |
 | `core/puzzles/srs.py` | The six-level ladder, one attempt's transition, attempt summaries, king demotion (`pipeline srs-maintain`). |
 | `core/puzzles/attempts.py` | Grading (line replay or acceptance map) and recording an attempt in one transaction. |
-| `core/scout/` (to come) | Opponent profiles and on-the-fly position stats. |
+| `core/scout/` | Scout: `profiles.py` (add with handle verification, remove, list), `importing.py` (`pipeline import-opponents`: onboarding, the two cursors, the Lichess boundary from its own request, a storage failure as a failed run), `positions.py` (the three-tier list in one statement, chain collapse, dismissed boards excluded, card details with the repertoire's move and the engine's from the replay game), `nodes.py` (where the opponent chooses), `report.py` (activity, openings, best and worst lines by shrunk win rate). |
+| `core/activity.py` | Games played in the last 24 h / 7 d / 30 d / ever, for the player (Home, every variant) or an opponent (Scout). |
 | `core/review/` (to come) | Review detection (no tablebase rung; see decisions/001). |
 | `core/blunders.py` | The Blunders page: boards ranked by distinct games and severity, their games, dismissal. |
 | `core/ai.py`, `core/prompts.py` | Explaining a blunder: context read from the database, sandboxed prompt templates, provider call over HTTP, cache, hourly and daily caps. |
