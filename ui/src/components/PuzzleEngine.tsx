@@ -15,8 +15,10 @@ import type { Move, Square } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import { BranchCompareView } from "./BranchCompareView";
 import { LineReaderPanel } from "./PositionCard/LineReaderPanel";
+import { SolverSimilarModal } from "./PositionCard/SolverSimilarModal";
+import { useSimilarPositions } from "../hooks/useSimilarPositions";
 import { HIGHLIGHT, SQUARES } from "../utils/board";
-import { branchCompareTarget, mapKey, moveUci, sanResolvesToMove, uciToMove } from "../utils/chess";
+import { branchCompareTarget, mapKey, moveUci, sanResolvesToMove, similarTarget, uciToMove } from "../utils/chess";
 import type { AcceptanceMap } from "../practice";
 
 type PuzzleState = "playing" | "wrong" | "solved";
@@ -52,6 +54,9 @@ export interface PuzzleEngineProps {
 }
 
 const btn = "rounded border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900 disabled:opacity-40 disabled:pointer-events-none";
+const launcher = "flex-1 rounded border px-3 py-2 text-xs font-medium";
+const launcherOn = "border-sky-300 bg-sky-50 text-sky-800 dark:border-sky-800 dark:bg-sky-900/30 dark:text-sky-300";
+const launcherOff = "pointer-events-none border-transparent text-transparent";
 const btnAccent = "rounded border border-sky-300 bg-sky-50 px-3 py-1.5 text-sm text-sky-800 dark:border-sky-800 dark:bg-sky-900/30 dark:text-sky-300 disabled:opacity-40 disabled:pointer-events-none";
 
 export function PuzzleEngine({
@@ -108,6 +113,22 @@ export function PuzzleEngine({
   const [branchCompareOpen, setBranchCompareOpen] = useState(false);
   useEffect(() => setBranchCompareOpen(false), [fen]);
   const compareTarget = useMemo(() => (mapMode ? null : branchCompareTarget(finishLineMode ? finishLineFen : fen, activeSolutionLine, moveIndex, color)), [mapMode, finishLineMode, finishLineFen, fen, activeSolutionLine, moveIndex, color]);
+  // Similar positions in the repertoire: the board at the latest player decision and the line's move
+  // there. Its own target, not Compare's — no parent is needed, so the first decision and a one-move
+  // puzzle have one. Ungated like Compare; the view's neighbours name the book move, so opening it
+  // before answering spoils one's own puzzle in the same way. Closed on every puzzle change. The
+  // search is owned here, enabled while the view is open: reopening on the same board shows the
+  // remembered answer, and a target change while open (the reply auto-playing) asks about the new one.
+  const [similarOpen, setSimilarOpen] = useState(false);
+  useEffect(() => setSimilarOpen(false), [fen]);
+  const similarAt = useMemo(() => (mapMode ? null : similarTarget(finishLineMode ? finishLineFen : fen, activeSolutionLine, moveIndex, color)), [mapMode, finishLineMode, finishLineFen, fen, activeSolutionLine, moveIndex, color]);
+  const similarSearch = useSimilarPositions(similarAt?.fen ?? "", similarAt?.move ?? null, similarOpen && similarAt !== null);
+  // A view whose target has gone (Play On into a reply, a line change) is closed, not left open to
+  // reappear on its own when the next target arrives.
+  useEffect(() => {
+    if (!compareTarget) setBranchCompareOpen(false);
+    if (!similarAt) setSimilarOpen(false);
+  }, [compareTarget, similarAt]);
   // Where the wrong move was played from; Try Again restores here, not the puzzle start.
   const checkpointFen = useRef(fen);
   const checkpointMoveIndex = useRef(0);
@@ -467,15 +488,21 @@ export function PuzzleEngine({
           </>
         )}
       </div>
-      {/* Always rendered, invisible without a target, so nothing below the board shifts. */}
-      <button type="button" data-testid="branch-compare-launch" onClick={() => compareTarget && setBranchCompareOpen(true)} disabled={!compareTarget} className={`w-full rounded border px-3 py-2 text-xs font-medium ${compareTarget ? "border-sky-300 bg-sky-50 text-sky-800 dark:border-sky-800 dark:bg-sky-900/30 dark:text-sky-300" : "pointer-events-none border-transparent text-transparent"}`}>
-        What if {compareTarget?.preFen.split(" ")[1] === "w" ? "White" : "Black"} had played differently?
-      </button>
+      {/* Both launchers always rendered, invisible without a target, so nothing below the board shifts. */}
+      <div className="flex w-full flex-col gap-2 sm:flex-row">
+        <button type="button" data-testid="branch-compare-launch" onClick={() => compareTarget && setBranchCompareOpen(true)} disabled={!compareTarget} className={`${launcher} ${compareTarget ? launcherOn : launcherOff}`}>
+          What if {compareTarget?.preFen.split(" ")[1] === "w" ? "White" : "Black"} had played differently?
+        </button>
+        <button type="button" data-testid="similar-launch" onClick={() => similarAt && setSimilarOpen(true)} disabled={!similarAt} className={`${launcher} ${similarAt ? launcherOn : launcherOff}`}>
+          Similar positions in your repertoire
+        </button>
+      </div>
       {/* The note on the position the board is showing, and the whole line for a repertoire puzzle. */}
       <div className="mt-3 w-full">
         <LineReaderPanel fen={game.fen()} repertoireLineId={repertoireLineId} />
       </div>
       {branchCompareOpen && compareTarget && <BranchCompareView fen={compareTarget.fen} preFen={compareTarget.preFen} orientation={boardOrientation} onClose={() => setBranchCompareOpen(false)} />}
+      {similarOpen && similarAt && <SolverSimilarModal fen={similarAt.fen} move={similarAt.move} search={similarSearch} orientation={boardOrientation} onClose={() => setSimilarOpen(false)} />}
     </div>
   );
 }

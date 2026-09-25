@@ -163,7 +163,7 @@ class Settings(BaseModel):
         default=10, ge=0, le=100, description="Prior strength for Scout win-rate smoothing."
     )
     similar_max_distance: int = Field(
-        default=4,
+        default=6,
         ge=1,
         le=8,
         description="Similar positions: most squares a repertoire position may differ from the card's board by.",

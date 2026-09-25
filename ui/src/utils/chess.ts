@@ -1,4 +1,5 @@
 import { Chess } from "chess.js";
+import type { Move } from "chess.js";
 import { ARROWS } from "./board";
 
 /**
@@ -65,10 +66,23 @@ export function uciToMove(uci: string): { from: string; to: string; promotion?: 
   return { from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.slice(4) || undefined };
 }
 
+/**
+ * Play `san` on `g` and return the move, or null when it is not a legal move there. chess.js
+ * accepts the null move `--` (a "move" from a square to itself that passes the turn) and returns it
+ * as if legal; python-chess does the same, and the server refuses it — so nothing here may take
+ * `g.move()`'s truthiness as legality. An unparseable token throws in chess.js; the caller's own
+ * try/catch decides what that means for it.
+ */
+function legalMove(g: Chess, san: string): Move | null {
+  const move = g.move(san);
+  if (!move || move.san === "--" || move.from === move.to) return null;
+  return move;
+}
+
 /** `[from, to]` of a SAN move in a position, or null if it is not legal there. */
 export function sanToSquares(fen: string, san: string): [string, string] | null {
   try {
-    const move = new Chess(fen).move(san);
+    const move = legalMove(new Chess(fen), san);
     return move ? [move.from, move.to] : null;
   } catch {
     return null;
@@ -81,8 +95,8 @@ export function lastMoveSquares(moves: string[] | null | undefined, ply: number 
   if (!moves || !ply || ply < 1 || ply > moves.length) return null;
   try {
     const game = new Chess();
-    for (let i = 0; i < ply - 1; i++) game.move(moves[i]);
-    const move = game.move(moves[ply - 1]);
+    for (let i = 0; i < ply - 1; i++) if (!legalMove(game, moves[i])) return null;
+    const move = legalMove(game, moves[ply - 1]);
     return move ? [move.from, move.to] : null;
   } catch {
     return null;
@@ -139,7 +153,7 @@ export function branchCompareTarget(startFen: string, line: string[], moveIndex:
     const g = new Chess(startFen);
     const replay = [g.fen()];
     for (let i = 0; i < moveIndex && i < line.length; i++) {
-      g.move(line[i]);
+      if (!legalMove(g, line[i])) return null;
       replay.push(g.fen());
     }
     for (let j = replay.length - 1; j >= 1; j--) {
@@ -149,6 +163,36 @@ export function branchCompareTarget(startFen: string, line: string[], moveIndex:
     /* malformed line */
   }
   return null;
+}
+
+/**
+ * The (fen, move) pair the solver's Similar-positions search asks about: the board at the latest
+ * player decision on the walked path and the line's move there. Unlike `branchCompareTarget` it
+ * needs no parent, so the first decision (index 0) and a one-move player-first puzzle both have a
+ * target. Let `i` be the largest player-ply index `<= min(moveIndex, line.length - 1)` — player
+ * plies are the even indexes when `color` is to move on `activeFen`, the odd ones otherwise; the
+ * target is the board after `line[0..i)` from `activeFen` and `move = line[i]`. Null for an empty
+ * line, when no player ply is within the bound yet (an opponent-first puzzle at index 0, before the
+ * reply has auto-played), and — failing closed — when a move of `line[0..i]` is not legal on the
+ * board it is applied to (the move at `i` included, so the server is never asked about a token
+ * the board cannot play; a null move `--` counts as not legal). Map mode is the caller's to exclude.
+ */
+export function similarTarget(activeFen: string, line: string[], moveIndex: number, color: "w" | "b"): { fen: string; move: string } | null {
+  if (line.length === 0) return null;
+  try {
+    const g = new Chess(activeFen);
+    const playerFirst = g.turn() === color;
+    const bound = Math.min(moveIndex, line.length - 1);
+    let i = -1;
+    for (let k = 0; k <= bound; k++) if ((k % 2 === 0) === playerFirst) i = k;
+    if (i < 0) return null;
+    for (let k = 0; k < i; k++) if (!legalMove(g, line[k])) return null;
+    const fen = g.fen();
+    if (!legalMove(g, line[i])) return null;
+    return { fen, move: line[i] };
+  } catch {
+    return null;
+  }
 }
 
 /** `1. e4 e5 2. Nf3` for the first `ply` moves (all of them when `ply` is omitted). */

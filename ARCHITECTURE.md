@@ -42,10 +42,11 @@ Chess.com / Lichess APIs
            chapters, the contested count on the Repertoire page); notes on positions and the line walk-through ──► repertoire_annotations
            (core/repertoire/annotations.py). `pipeline import-repertoire FILE` loads a neutral repertoire file
            (core/repertoire/importing.py; docs/decisions/007) and rematches the window. Two compare surfaces
-           read the same lines: Similar positions on every card (core/repertoire/neighbourhood.py: the boards of
-           the active repertoire within a placement distance of the card's, same material exactly) and Compare
-           similar positions in the solver (core/repertoire/branch_compare.py: what the opponent could have
-           played one half-move back, from the repertoire and the player's own blunders).
+           read the same lines: Similar positions on every card and in the solver (core/repertoire/neighbourhood.py:
+           the boards of the active repertoire within a placement distance of the queried board, same material
+           exactly; the solver asks about the board at its latest player decision) and Compare similar
+           positions in the solver (core/repertoire/branch_compare.py: what the opponent could have played
+           one half-move back, from the repertoire and the player's own blunders).
 
   Scout (api) reads opponent_views against the player's games, blunders and repertoire on the fly
            (core/scout/): the opponent's activity and openings, the positions where they choose, and the

@@ -534,7 +534,7 @@ def test_routes_need_login(app_env: None) -> None:
 
 def test_similar_route_validates_and_reserialises(client: TestClient) -> None:
     r = client.get("/repertoire/similar", params={"fen": fen_after(ITALIAN[:6]), "move": "c2c3"})
-    assert r.status_code == 200 and r.json()["query"]["move"] == "c3" and r.json()["query"]["max_distance"] == 4
+    assert r.status_code == 200 and r.json()["query"]["move"] == "c3" and r.json()["query"]["max_distance"] == 6
     assert r.json()["neighbours"][0]["distance"] == 0
     # A client FEN with a phantom en-passant square (chess.js after a double push) is handed to the search
     # as python-chess's own serialisation (the branch-compare test below is where the field matters).
@@ -557,7 +557,7 @@ def test_similar_route_validates_and_reserialises(client: TestClient) -> None:
         == 2
     )
     assert (
-        client.get("/repertoire/similar", params={"fen": fen_after(ITALIAN[:6]), "max_distance": 5}).status_code == 400
+        client.get("/repertoire/similar", params={"fen": fen_after(ITALIAN[:6]), "max_distance": 7}).status_code == 400
     )
     assert (
         client.get("/repertoire/similar", params={"fen": fen_after(ITALIAN[:6]), "max_distance": 0}).status_code == 422
@@ -616,6 +616,14 @@ def test_settings_ceiling_matches_the_module() -> None:
     from core import settings
 
     assert settings.schema()["properties"]["similar_max_distance"]["maximum"] == nb.MAX_DISTANCE_CEILING
+
+
+def test_fresh_install_searches_six_squares_out() -> None:
+    """A repertoire's sibling lines differ by a developed knight and a castled king (2 + 4): the
+    default reaches them. Rob's own row keeps whatever he set; this is the fresh-install value."""
+    from core import settings
+
+    assert settings.Settings().similar_max_distance == 6
 
 
 def test_json_round_trip_of_a_response(rep: psycopg.Connection[DictRow]) -> None:

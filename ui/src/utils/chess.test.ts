@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Chess } from "chess.js";
-import { mapKey, normalizeSan, sanResolvesToMove } from "./chess";
+import { lastMoveSquares, mapKey, normalizeSan, sanResolvesToMove, sanToSquares } from "./chess";
 
 describe("normalizeSan", () => {
   // Pinned against the Python mirror; the two must agree.
@@ -39,5 +39,16 @@ describe("mapKey", () => {
     expect(mapKey(g)).toBe("rnbqkbnr/1pp1pppp/p7/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6");
     // The move-count fields never take part in the key.
     expect(mapKey(new Chess("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 7 40"))).toBe("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - -");
+  });
+});
+
+describe("null moves in the arrow helpers", () => {
+  const FEN = "r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4";
+  it("`--` draws no arrow and breaks a replay: chess.js plays it, the server does not", () => {
+    expect(sanToSquares(FEN, "--")).toBeNull();
+    expect(sanToSquares(FEN, "c3")).toEqual(["c2", "c3"]);
+    expect(lastMoveSquares(["e4", "--", "Nf3"], 3)).toBeNull();
+    expect(lastMoveSquares(["e4", "e5", "--"], 3)).toBeNull();
+    expect(lastMoveSquares(["e4", "e5", "Nf3"], 3)).toEqual(["g1", "f3"]);
   });
 });

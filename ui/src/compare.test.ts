@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { branchArrows, distanceLabel, groupKey, neighbourArrows, prepLabel } from "./compare";
 import type { CompareBranch, PrepGroup, SimilarNeighbour } from "./repertoire";
 import { ARROWS } from "./utils/board";
-import { branchCompareTarget } from "./utils/chess";
+import { branchCompareTarget, similarTarget } from "./utils/chess";
 
 const AFTER_BC5 = "r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4";
 const AFTER_BC4 = "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3";
@@ -110,5 +110,59 @@ describe("branchCompareTarget", () => {
   it("fails closed on a malformed line", () => {
     expect(branchCompareTarget(AFTER_BC4, ["Bc5", "Qxh7"], 2, "w")).toBeNull();
     expect(branchCompareTarget("not a fen", ["Bc5"], 1, "w")).toBeNull();
+  });
+});
+
+describe("similarTarget", () => {
+  const afterC3 = (fen: string | undefined) => expect(fen).toContain("2P2N2"); // c3 pushed: the c-pawn off c2, beside Nf3
+  it("a player-first one-move puzzle has a target at the first decision and after solving: the start board and its move", () => {
+    expect(similarTarget(AFTER_BC5, ["c3"], 0, "w")).toEqual({ fen: AFTER_BC5, move: "c3" });
+    expect(similarTarget(AFTER_BC5, ["c3"], 1, "w")).toEqual({ fen: AFTER_BC5, move: "c3" });
+    // Compare has none at either moment: no parent.
+    expect(branchCompareTarget(AFTER_BC5, ["c3"], 0, "w")).toBeNull();
+    expect(branchCompareTarget(AFTER_BC5, ["c3"], 1, "w")).toBeNull();
+  });
+  it("an opponent-first puzzle has no target before the reply has auto-played, then the board after it", () => {
+    expect(similarTarget(AFTER_BC4, ["Bc5", "c3", "Nf6", "d4"], 0, "w")).toBeNull();
+    expect(similarTarget(AFTER_BC4, ["Bc5", "c3", "Nf6", "d4"], 1, "w")).toEqual({ fen: AFTER_BC5, move: "c3" });
+    expect(similarTarget(AFTER_BC4, ["Bc5", "c3", "Nf6", "d4"], 2, "w")).toEqual({ fen: AFTER_BC5, move: "c3" }); // c3 played, Nf6 not yet
+  });
+  it("at a later decision it is the board the player just faced; past the end of the line it is the last decision", () => {
+    const t = similarTarget(AFTER_BC4, ["Bc5", "c3", "Nf6", "d4"], 3, "w");
+    expect(t?.move).toBe("d4");
+    expect(t?.fen.split(" ")[1]).toBe("w");
+    afterC3(t?.fen);
+    expect(t?.fen).toContain("2n2n2"); // ...Nf6 on the board
+    expect(similarTarget(AFTER_BC4, ["Bc5", "c3", "Nf6", "d4"], 4, "w")).toEqual(t); // solved
+    expect(similarTarget(AFTER_BC4, ["Bc5", "c3", "Nf6", "d4"], 99, "w")).toEqual(t); // bound is the line's end
+  });
+  it("Play On applies the same rule to the finish-line board and its remaining moves", () => {
+    const g = similarTarget(AFTER_BC5, ["c3", "Nf6", "d4", "exd4", "cxd4"], 0, "w");
+    expect(g).toEqual({ fen: AFTER_BC5, move: "c3" });
+    // The remainder from the board after c3 Nf6: White (the player) to move, so index 0 is the first decision.
+    const rest = similarTarget("r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/2P2N2/PP1P1PPP/RNBQK2R w KQkq - 1 5", ["d4", "exd4", "cxd4"], 0, "w");
+    expect(rest?.move).toBe("d4");
+  });
+  it("is null for an empty line and fails closed on an illegal move up to and including the target's own", () => {
+    expect(similarTarget(AFTER_BC5, [], 0, "w")).toBeNull();
+    expect(similarTarget(AFTER_BC4, ["Bc5", "Qxh7", "Nf6"], 3, "w")).toBeNull(); // Qxh7 illegal before the target
+    expect(similarTarget(AFTER_BC5, ["Qxh7"], 0, "w")).toBeNull(); // the target's own move is illegal
+    expect(similarTarget(AFTER_BC5, ["c3", "Nf6", "Qxh7"], 2, "w")).toBeNull(); // ... at a later decision too
+    expect(similarTarget("not a fen", ["c3"], 0, "w")).toBeNull();
+  });
+  it("a null move is not a legal move: as the target, in the prefix, and for Compare's replay too", () => {
+    // chess.js plays `--` and reports it as a move; the server refuses it, so the helper must not offer it.
+    expect(similarTarget(AFTER_BC5, ["--"], 0, "w")).toBeNull();
+    expect(similarTarget(AFTER_BC5, ["--", "Nf6", "d4"], 2, "w")).toBeNull();
+    expect(similarTarget(AFTER_BC4, ["Bc5", "--", "Nf6", "d4"], 3, "w")).toBeNull();
+    expect(branchCompareTarget(AFTER_BC4, ["--", "c3"], 2, "w")).toBeNull();
+    expect(branchCompareTarget(AFTER_BC4, ["Bc5", "--", "Nf6"], 3, "w")).toBeNull();
+  });
+  it("as Black: the player's plies are the odd indexes of a White-first line", () => {
+    const t = similarTarget(AFTER_BC4, ["Bc5", "c3", "Nf6"], 0, "b");
+    expect(t).toEqual({ fen: AFTER_BC4, move: "Bc5" });
+    const later = similarTarget(AFTER_BC4, ["Bc5", "c3", "Nf6"], 2, "b");
+    expect(later?.move).toBe("Nf6");
+    expect(later?.fen.split(" ")[1]).toBe("b");
   });
 });
