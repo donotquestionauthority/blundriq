@@ -1,7 +1,8 @@
 /**
  * Similar positions in the repertoire: the near neighbourhood of the card's board, as a
- * collapsible panel. It fetches only when expanded — the count is an output of the search, so a
- * collapsed header shows none. The fetch, its cache and its abort rules are `useSimilarPositions`,
+ * collapsible panel. It fetches only when expanded — the count is an output of the search, so the
+ * header shows one only once a search has answered, and keeps it when the panel is collapsed
+ * again. The fetch, its cache and its abort rules are `useSimilarPositions`,
  * shared with the solver's modal; the panel's expanded state is what enables it, so collapsing
  * aborts. A change of identity collapses the panel (derived in the same render, so the fetcher is
  * never enabled for a board the user has not asked about) and closes the compare view.

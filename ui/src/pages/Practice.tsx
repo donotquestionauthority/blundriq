@@ -772,9 +772,9 @@ function FiltersPopover({
   const activeCount = (subtype ? 1 : 0) + (srsFilter !== "due" ? 1 : 0) + (lastNGames !== 0 ? 1 : 0);
 
   // The panel is positioned by the toolbar (the nearest `relative` ancestor), never by its button:
-  // spanning the toolbar's edges keeps it inside a phone's viewport wherever the button wraps to —
-  // hung from the button's edge, 288 px ran past the screen — and hangs 288 px from the toolbar's
-  // right edge, where the button sits, from `sm` up.
+  // on a phone it spans the toolbar's edges, so it stays inside the viewport wherever the row has
+  // wrapped the button to; from `sm` up it is 288 px wide, hung from the toolbar's right edge,
+  // where the button sits.
   return (
     <div ref={rootRef}>
       <button

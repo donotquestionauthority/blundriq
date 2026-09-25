@@ -150,6 +150,14 @@ describe("similarTarget", () => {
     expect(similarTarget(AFTER_BC5, ["c3", "Nf6", "Qxh7"], 2, "w")).toBeNull(); // ... at a later decision too
     expect(similarTarget("not a fen", ["c3"], 0, "w")).toBeNull();
   });
+  it("a null move is not a legal move: as the target, in the prefix, and for Compare's replay too", () => {
+    // chess.js plays `--` and reports it as a move; the server refuses it, so the helper must not offer it.
+    expect(similarTarget(AFTER_BC5, ["--"], 0, "w")).toBeNull();
+    expect(similarTarget(AFTER_BC5, ["--", "Nf6", "d4"], 2, "w")).toBeNull();
+    expect(similarTarget(AFTER_BC4, ["Bc5", "--", "Nf6", "d4"], 3, "w")).toBeNull();
+    expect(branchCompareTarget(AFTER_BC4, ["--", "c3"], 2, "w")).toBeNull();
+    expect(branchCompareTarget(AFTER_BC4, ["Bc5", "--", "Nf6"], 3, "w")).toBeNull();
+  });
   it("as Black: the player's plies are the odd indexes of a White-first line", () => {
     const t = similarTarget(AFTER_BC4, ["Bc5", "c3", "Nf6"], 0, "b");
     expect(t).toEqual({ fen: AFTER_BC4, move: "Bc5" });
