@@ -151,6 +151,36 @@ export function branchCompareTarget(startFen: string, line: string[], moveIndex:
   return null;
 }
 
+/**
+ * The (fen, move) pair the solver's Similar-positions search asks about: the board at the latest
+ * player decision on the walked path and the line's move there. Unlike `branchCompareTarget` it
+ * needs no parent, so the first decision (index 0) and a one-move player-first puzzle both have a
+ * target. Let `i` be the largest player-ply index `<= min(moveIndex, line.length - 1)` — player
+ * plies are the even indexes when `color` is to move on `activeFen`, the odd ones otherwise; the
+ * target is the board after `line[0..i)` from `activeFen` and `move = line[i]`. Null for an empty
+ * line, when no player ply is within the bound yet (an opponent-first puzzle at index 0, before the
+ * reply has auto-played), and — failing closed — when a move of `line[0..i]` is illegal on the
+ * board it is applied to (the move at `i` included, so the server is never asked about a token
+ * the board cannot play). Map mode is the caller's to exclude.
+ */
+export function similarTarget(activeFen: string, line: string[], moveIndex: number, color: "w" | "b"): { fen: string; move: string } | null {
+  if (line.length === 0) return null;
+  try {
+    const g = new Chess(activeFen);
+    const playerFirst = g.turn() === color;
+    const bound = Math.min(moveIndex, line.length - 1);
+    let i = -1;
+    for (let k = 0; k <= bound; k++) if ((k % 2 === 0) === playerFirst) i = k;
+    if (i < 0) return null;
+    for (let k = 0; k < i; k++) if (!g.move(line[k])) return null;
+    const fen = g.fen();
+    if (!g.move(line[i])) return null;
+    return { fen, move: line[i] };
+  } catch {
+    return null;
+  }
+}
+
 /** `1. e4 e5 2. Nf3` for the first `ply` moves (all of them when `ply` is omitted). */
 export function buildPgn(moves: string[] | null | undefined, ply?: number | null): string {
   if (!moves?.length) return "";

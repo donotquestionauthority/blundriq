@@ -1,6 +1,8 @@
 /**
- * Every similar position on one screen, beside the card's own board (with the card's own arrows,
- * built once by the Overlay). Renders the data the panel already fetched: no request of its own.
+ * Every similar position on one screen, beside the asker's own board (with its own arrows, built
+ * once by the host). Renders what the host's `useSimilarPositions` holds: no request of its own.
+ * The Overlay's panel opens it over a loaded answer; the solver opens it at once and passes the
+ * search's status through, so the searching, failed and empty states are drawn here too.
  *
  * Two mechanisms keep a key or a swipe from reaching the Overlay underneath. The Overlay detaches
  * its listeners while `compareOpen` (the state gate: it also covers a gesture whose start this
@@ -16,7 +18,27 @@ import type { BoardArrow } from "../../utils/chess";
 import { distanceLabel, groupKey } from "../../compare";
 import { DivergentTag, GroupRow, NeighbourBoard } from "./SimilarPositionsPanel";
 
-export function SimilarCompareView({ fen, mainArrows, neighbours, orientation, onClose }: { fen: string; mainArrows: BoardArrow[]; neighbours: SimilarNeighbour[]; orientation: "white" | "black"; onClose: () => void }) {
+export function SimilarCompareView({
+  fen,
+  mainArrows,
+  neighbours,
+  orientation,
+  onClose,
+  status = "loaded",
+  onRetry,
+  maxDistance = null,
+}: {
+  fen: string;
+  mainArrows: BoardArrow[];
+  neighbours: SimilarNeighbour[];
+  orientation: "white" | "black";
+  onClose: () => void;
+  /** The host's search state; `neighbours` is read only when loaded. */
+  status?: "loading" | "loaded" | "error";
+  onRetry?: () => void;
+  /** For the empty state's message; the answer's own `query.max_distance`. */
+  maxDistance?: number | null;
+}) {
   const boardId = "similarpinned" + useId().replace(/[^a-zA-Z0-9-]/g, "");
   const touchStartX = useRef<number | null>(null);
 
@@ -61,9 +83,11 @@ export function SimilarCompareView({ fen, mainArrows, neighbours, orientation, o
             <button type="button" onClick={onClose} className="text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">
               ← Back
             </button>
-            <span className="text-xs text-zinc-500">
-              {neighbours.length} similar position{neighbours.length === 1 ? "" : "s"}
-            </span>
+            {status === "loaded" && (
+              <span className="text-xs text-zinc-500">
+                {neighbours.length} similar position{neighbours.length === 1 ? "" : "s"}
+              </span>
+            )}
           </div>
           <div className="flex items-start gap-3 lg:block">
             <div className="w-44 shrink-0 lg:w-full" data-testid="pinned-board">
@@ -73,21 +97,44 @@ export function SimilarCompareView({ fen, mainArrows, neighbours, orientation, o
           </div>
         </div>
 
-        <div className="mt-3 grid flex-1 grid-cols-2 gap-3 lg:mt-0 xl:grid-cols-3">
-          {neighbours.map((n) => (
-            <div key={n.fen} className="space-y-1.5 rounded border border-zinc-200 p-2 dark:border-zinc-800">
-              <NeighbourBoard n={n} orientation={orientation} />
-              <p className="text-xs">
-                {distanceLabel(n)} {n.board_prep_divergent && <DivergentTag />}
-              </p>
-              {n.castling_delta.length > 0 && <p className="text-xs text-zinc-500">Castling rights differ: {n.castling_delta.join(", ")}.</p>}
-              <div className="space-y-1">
-                {n.groups.map((g) => (
-                  <GroupRow key={groupKey(g)} g={g} />
-                ))}
-              </div>
+        <div className="mt-3 flex-1 lg:mt-0">
+          {status === "loading" && (
+            <div className="flex items-center gap-2 p-4 text-sm text-zinc-500">
+              <span className="h-4 w-4 animate-spin rounded-full border border-zinc-400 border-t-transparent" />
+              Searching your repertoire…
             </div>
-          ))}
+          )}
+          {status === "error" && (
+            <div className="flex items-center justify-between rounded border border-zinc-200 p-4 text-sm dark:border-zinc-800">
+              <span role="alert" className="text-red-600 dark:text-red-400">
+                Couldn't load similar positions.
+              </span>
+              {onRetry && (
+                <button type="button" onClick={onRetry} className="rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-700">
+                  Retry
+                </button>
+              )}
+            </div>
+          )}
+          {status === "loaded" && neighbours.length === 0 && <p className="p-4 text-xs text-zinc-500">No similar positions within {maxDistance ?? "the configured"} squares of your active repertoire.</p>}
+          {status === "loaded" && neighbours.length > 0 && (
+            <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
+              {neighbours.map((n) => (
+                <div key={n.fen} className="space-y-1.5 rounded border border-zinc-200 p-2 dark:border-zinc-800">
+                  <NeighbourBoard n={n} orientation={orientation} />
+                  <p className="text-xs">
+                    {distanceLabel(n)} {n.board_prep_divergent && <DivergentTag />}
+                  </p>
+                  {n.castling_delta.length > 0 && <p className="text-xs text-zinc-500">Castling rights differ: {n.castling_delta.join(", ")}.</p>}
+                  <div className="space-y-1">
+                    {n.groups.map((g) => (
+                      <GroupRow key={groupKey(g)} g={g} />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

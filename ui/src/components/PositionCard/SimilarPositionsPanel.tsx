@@ -1,26 +1,22 @@
 /**
  * Similar positions in the repertoire: the near neighbourhood of the card's board, as a
  * collapsible panel. It fetches only when expanded — the count is an output of the search, so a
- * collapsed header shows none — and remembers each answer for the panel's lifetime under its
- * request identity, which is (fen, queriedMove) and not the FEN alone: `is_queried_move` is
- * computed against the queried move, and two cards can share a board while questioning different
- * moves. A change of identity collapses the panel, aborts anything in flight and closes the compare
- * view; so does unmounting.
+ * collapsed header shows none. The fetch, its cache and its abort rules are `useSimilarPositions`,
+ * shared with the solver's modal; the panel's expanded state is what enables it, so collapsing
+ * aborts. A change of identity collapses the panel and closes the compare view.
  *
  * The response is server-final: one entry per board with all of its groups. The only chess done
  * here is turning a server SAN into arrow squares.
  */
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { CSSProperties } from "react";
 import { Chessboard } from "react-chessboard";
-import { getSimilarPositions } from "../../repertoire";
-import type { PrepGroup, SimilarNeighbour, SimilarPositionsResponse } from "../../repertoire";
+import type { PrepGroup, SimilarNeighbour } from "../../repertoire";
 import { distanceLabel, groupKey, neighbourArrows, prepLabel } from "../../compare";
+import { similarRequestKey, useSimilarPositions } from "../../hooks/useSimilarPositions";
 import { HIGHLIGHT, SQUARES } from "../../utils/board";
 import type { BoardArrow } from "../../utils/chess";
 import { SimilarCompareView } from "./SimilarCompareView";
-
-type Status = "idle" | "loading" | "loaded" | "error";
 
 /** One neighbour board: differing squares highlighted, its arrows drawn. Every board on the page
  *  has its own id (react-chessboard resolves touch taps by element id). */
@@ -76,66 +72,25 @@ export function SimilarPositionsPanel({
   compareOpen?: boolean;
   onCompareOpenChange?: (open: boolean) => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const [status, setStatus] = useState<Status>("idle");
-  const [data, setData] = useState<SimilarPositionsResponse | null>(null);
+  const requestKey = similarRequestKey(fen, queriedMove);
+  // Expanded FOR an identity: a new identity is collapsed by derivation, in the same render, so
+  // the fetcher is never enabled for a board the user has not asked about.
+  const [expandedFor, setExpandedFor] = useState<string | null>(null);
+  const expanded = expandedFor === requestKey;
   const [openRow, setOpenRow] = useState<string | null>(null);
-  // '|' occurs in neither a FEN nor a SAN, so the key is injective.
-  const requestKey = fen + "|" + (queriedMove ?? "");
-  const cache = useRef<Map<string, SimilarPositionsResponse>>(new Map());
-  const abortRef = useRef<AbortController | null>(null);
+  const { status, data, retry } = useSimilarPositions(fen, queriedMove, expanded);
 
   useEffect(() => {
-    setExpanded(false);
-    setStatus("idle");
-    setData(null);
     setOpenRow(null);
-    abortRef.current?.abort();
-    abortRef.current = null;
     onCompareOpenChange?.(false);
     // The setter is stable; the effect keys on the request identity alone.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestKey]);
 
-  useEffect(() => () => abortRef.current?.abort(), []);
-
-  async function load() {
-    const cached = cache.current.get(requestKey);
-    if (cached) {
-      setData(cached);
-      setStatus("loaded");
-      return;
-    }
-    setStatus("loading");
-    const controller = new AbortController();
-    abortRef.current = controller;
-    try {
-      const resp = await getSimilarPositions(fen, queriedMove ?? null, controller.signal);
-      cache.current.set(requestKey, resp); // under the key the request was made with
-      if (controller.signal.aborted) return;
-      setData(resp);
-      setStatus("loaded");
-    } catch {
-      if (controller.signal.aborted) return;
-      setStatus("error");
-    }
-  }
-
-  function toggle() {
-    if (expanded) {
-      abortRef.current?.abort();
-      setExpanded(false);
-      if (status === "loading") setStatus("idle");
-      return;
-    }
-    setExpanded(true);
-    if (status === "idle" || status === "error") void load();
-  }
-
   const neighbours = data?.neighbours ?? [];
   return (
     <div className="rounded border border-zinc-200 dark:border-zinc-800" data-testid="similar-panel">
-      <button type="button" onClick={toggle} aria-expanded={expanded} className="flex w-full items-center justify-between px-3 py-2.5 text-left">
+      <button type="button" onClick={() => setExpandedFor(expanded ? null : requestKey)} aria-expanded={expanded} className="flex w-full items-center justify-between px-3 py-2.5 text-left">
         <span className="text-xs uppercase tracking-wide text-zinc-500">
           Similar positions in your repertoire
           {status === "loaded" && data && (
@@ -158,7 +113,7 @@ export function SimilarPositionsPanel({
               <span role="alert" className="text-red-600 dark:text-red-400">
                 Couldn't load similar positions.
               </span>
-              <button type="button" onClick={() => void load()} className="rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-700">
+              <button type="button" onClick={retry} className="rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-700">
                 Retry
               </button>
             </div>
