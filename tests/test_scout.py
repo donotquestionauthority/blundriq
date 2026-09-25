@@ -58,7 +58,7 @@ def opp_game(
     *,
     profile_id: int = 1,
     played_as: str = "black",
-    result: str = "win",
+    result: str | None = "win",
     days_ago: float = 1,
     variant: str = "standard",
     family: str | None = None,
@@ -175,16 +175,20 @@ def test_colour_filter(scout: psycopg.Connection[DictRow]) -> None:
 
 def test_chess960_games_count_for_nothing_on_either_side(scout: psycopg.Connection[DictRow]) -> None:
     """Gate 3: a Chess960 game holding the same boards (a standard start, as Chess960 can
-    deal) surfaces nothing, whether it is the opponent's or the player's."""
+    deal) surfaces nothing — the opponent's against the player's standard game, and the
+    player's against the opponent's standard game."""
     conn = scout
-    conn.execute("DELETE FROM opponent_views WHERE chess_game_id = 102")
-    conn.execute("DELETE FROM player_games WHERE chess_game_id = 2")
-    before = page_fens(conn)
+    conn.execute("DELETE FROM opponent_views WHERE chess_game_id = 102")  # the player still has P8_D3 (game 2)
+    assert {f for f, _ in page_fens(conn)} == {P8}
     opp_game(conn, 103, ITALIAN_D3, variant="chess960")
-    assert page_fens(conn) == before
+    assert {f for f, _ in page_fens(conn)} == {P8}
+    conn.execute("DELETE FROM opponent_views WHERE chess_game_id = 103")
+    opp_game(conn, 104, ITALIAN_D3)
+    conn.execute("DELETE FROM player_games WHERE chess_game_id = 2")  # the opponent still has P8_D3 (game 104)
+    assert {f for f, _ in page_fens(conn)} == {P8}
     h.game(conn, 3, ITALIAN_D3, variant="chess960")
-    assert page_fens(conn) == before
-    assert positions.opp_since(conn, 1, 2) is None  # the 960 game takes no window slot
+    assert {f for f, _ in page_fens(conn)} == {P8}
+    assert positions.opp_since(conn, 1, 3) is None  # the 960 game takes no window slot
     assert positions.my_since(conn, 2) is None
 
 
@@ -394,10 +398,10 @@ PARENT = fens(ITALIAN)[5]  # after 3.Bc4, Black to move
 CURRENT = fens(ITALIAN)[6]  # 3...Bc5
 TWO_KNIGHTS = ["e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "d3"]
 ARRIVING = parse_arriving(PARENT, "Bc5")
-assert ARRIVING is not None
 
 
 def compare(conn: psycopg.Connection[DictRow]) -> dict[str, Any]:
+    assert ARRIVING is not None
     return branch_compare.branch_compare(conn, CURRENT, PARENT, arriving=ARRIVING, book_color="black", max_boards=12)
 
 
