@@ -7,6 +7,7 @@ export function GamesTable({ games, bestLabel, title = "Games" }: { games: Posit
   const hasMoves = games.some((g) => g.move_played || g.best_move);
   const hasCp = games.some((g) => g.cp_loss);
   const hasOpening = games.some((g) => g.opening || g.as);
+  const hasResult = games.some((g) => g.result || g.classification);
   return (
     <div>
       <p className="mb-2 text-xs uppercase tracking-wide text-zinc-500">
@@ -16,7 +17,7 @@ export function GamesTable({ games, bestLabel, title = "Games" }: { games: Posit
         <thead className="text-zinc-500">
           <tr>
             <th className="py-1 font-normal">Date</th>
-            <th className="py-1 font-normal">Result</th>
+            {hasResult && <th className="py-1 font-normal">Result</th>}
             {hasOpening && <th className="py-1 font-normal">Opening</th>}
             {hasMoves && <th className="py-1 font-normal">Played</th>}
             {hasMoves && <th className="py-1 font-normal">{bestLabel}</th>}
@@ -37,10 +38,12 @@ export function GamesTable({ games, bestLabel, title = "Games" }: { games: Posit
                     when
                   )}
                 </td>
-                <td className="py-1">
-                  <span className="mr-1.5 text-zinc-500">{g.result ?? ""}</span>
-                  {g.classification && <ClassBadge cls={g.classification} />}
-                </td>
+                {hasResult && (
+                  <td className="py-1">
+                    <span className="mr-1.5 text-zinc-500">{g.result ?? ""}</span>
+                    {g.classification && <ClassBadge cls={g.classification} />}
+                  </td>
+                )}
                 {hasOpening && (
                   <td className="py-1 text-zinc-600 dark:text-zinc-400">
                     {g.opening || "—"}
