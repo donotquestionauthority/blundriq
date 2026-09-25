@@ -10,7 +10,7 @@ from psycopg import Connection
 
 # The hourly chain, in order (pipeline/cli.py runs exactly these). Home reports on these
 # steps only: a hand-run step that failed once would otherwise stay red for ever.
-HOURLY_STEPS = ("import", "match", "analyze", "generate-puzzles", "srs-maintain", "housekeep")
+HOURLY_STEPS = ("import", "match", "analyze", "generate-puzzles", "srs-maintain", "import-opponents", "housekeep")
 
 
 def start(conn: Connection[Any], step: str) -> int:

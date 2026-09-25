@@ -12,7 +12,9 @@ solved today when it has a correct attempt today; retries of the same puzzle cou
 game counts when it was played today, whatever the variant — Chess960 counts here, because
 Home measures playing, not analysis. The week starts on Monday. A streak
 is the run of consecutive days that met the target, ending today if today already has,
-otherwise ending yesterday: an unfinished day never breaks a streak.
+otherwise ending yesterday: an unfinished day never breaks a streak. The activity strip
+(games in the last 24 h / 7 d / 30 d / ever) is `core.activity`, the same counts Scout shows
+for an opponent.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from typing import Any, LiteralString
 
 from psycopg import Connection
 
-from core import blunders, deviations, runs
+from core import activity, blunders, deviations, runs
 from core.constants import PLAYER_ID
 from core.puzzles import serve
 from core.settings import Settings
@@ -100,5 +102,6 @@ def page(conn: Connection[Any], config: Settings) -> dict[str, Any]:
             "target": config.daily_game_target,
             "streak": streak(game_days, config.daily_game_target, today),
         },
+        "activity": activity.counts(conn, activity.Player()),
         "pipeline": runs.hourly_status(conn),
     }

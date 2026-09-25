@@ -26,19 +26,23 @@ def is_ongoing(game: dict[str, Any]) -> bool:
     return text(game, "status") in ONGOING_STATUSES
 
 
-def stream_games(client: httpx.Client, username: str, since_ms: int) -> Iterator[dict[str, Any]]:
-    """Yield raw game dicts newest first, ONGOING GAMES INCLUDED (`ongoing=true`): the
-    importer never stores them, but it needs their creation times to place the next
-    import's boundary (see core/ingest/run.py). `since` filters by creation time.
-    A transport failure mid-stream raises FetchError."""
+def stream_games(
+    client: httpx.Client, username: str, since_ms: int, *, finished: bool = True, sort: str = "dateDesc"
+) -> Iterator[dict[str, Any]]:
+    """Yield raw game dicts, ONGOING GAMES INCLUDED (`ongoing=true`): an importer never
+    stores them, but it needs their creation times to place the next import's boundary
+    (see core/ingest/run.py and core/scout/importing.py). `since` filters by creation time.
+    `finished=False` asks for the games in progress only — the cheap request the opponent
+    importer discovers its boundary with. A transport failure mid-stream raises FetchError."""
     params = {
         "since": since_ms,
-        "sort": "dateDesc",
+        "sort": sort,
         "moves": "true",
         "opening": "true",
         "clocks": "true",
         "evals": "false",
         "ongoing": "true",
+        "finished": "true" if finished else "false",
     }
     try:
         with client.stream("GET", f"{API}/games/user/{username}", params=params, headers=HEADERS, timeout=TIMEOUT) as r:

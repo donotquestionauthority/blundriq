@@ -23,6 +23,10 @@ ANALYSABLE_VARIANTS = (VARIANT_STANDARD,)
 BLUNDER_CLASSES = ("miss", "blunder", "mistake", "inaccuracy")
 BLUNDER_SCORE_WEIGHTS = {"miss": 8, "blunder": 4, "mistake": 2, "inaccuracy": 1}
 
+# Scout: a position shared with an opponent counts only from this 0-based ply on (the first
+# few moves of every game are shared with everyone).
+SCOUT_MIN_MATCH_PLY = 6
+
 # Puzzle sources that exist in this system. 'endgame_drill' from the old
 # system does not, and its rows are dropped in migration.
 PUZZLE_SOURCES = ("blunder", "deviation", "own_mate", "lichess_cc0", "scout", "custom")

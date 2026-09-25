@@ -8,6 +8,7 @@
     pipeline analyze [--workers N] [--limit N] [--game-id ID ...]
     pipeline generate-puzzles
     pipeline srs-maintain                         un-retire mastered puzzles whose pattern recurred
+    pipeline import-opponents [--profile ID] [--reset-lichess-cursors]   scouted opponents' games
     pipeline import-corpus --csv FILE             rebuild the Lichess CC0 corpus sample
     pipeline import-repertoire FILE --mode update|scratch [--preserve-manual] [--dry-run]
     pipeline housekeep
@@ -36,6 +37,7 @@ from core.ingest import run as ingest
 from core.puzzles import corpus, srs
 from core.puzzles.generate import run as puzzles
 from core.repertoire import importing, matching
+from core.scout import importing as scout_importing
 
 
 def _db_init(_: argparse.Namespace) -> int:
@@ -140,6 +142,20 @@ def _step_srs_maintain(conn: psycopg.Connection[Any], _: argparse.Namespace) -> 
     return srs.demote_kings(conn, settings.load(conn))
 
 
+def _step_import_opponents(conn: psycopg.Connection[Any], args: argparse.Namespace) -> dict[str, Any]:
+    """`--reset-lichess-cursors` is the one-time cutover switch (core/scout/importing.py): the
+    reset and the walk it triggers run under this step's row. The hourly chain never passes it."""
+    reset = 0
+    if getattr(args, "reset_lichess_cursors", False):
+        reset = scout_importing.reset_lichess_cursors(conn)
+    summary = scout_importing.import_profiles(
+        conn, window=settings.load(conn).analysis_game_limit, profile_id=getattr(args, "profile", None)
+    )
+    if reset:
+        summary["cursors_reset"] = reset
+    return summary
+
+
 def _step_housekeep(conn: psycopg.Connection[Any], _: argparse.Namespace) -> dict[str, Any]:
     return housekeeping.run(conn, settings.load(conn).analysis_game_limit)
 
@@ -195,6 +211,7 @@ def hourly_steps() -> dict[str, Step]:
         "analyze": _step_analyze,
         "generate-puzzles": _step_generate_puzzles,
         "srs-maintain": _step_srs_maintain,
+        "import-opponents": _step_import_opponents,
         "housekeep": _step_housekeep,
     }
     return {name: steps[name] for name in runs.HOURLY_STEPS}
@@ -289,6 +306,15 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("srs-maintain", help="un-retire mastered puzzles whose pattern has recurred").set_defaults(
         func=_cmd("srs-maintain", _step_srs_maintain)
     )
+
+    p_opp = sub.add_parser("import-opponents", help="fetch scouted opponents' games (onboards new profiles)")
+    p_opp.add_argument("--profile", type=int, help="only this profile id")
+    p_opp.add_argument(
+        "--reset-lichess-cursors",
+        action="store_true",
+        help="cutover only: walk every initialised profile's Lichess history once more, from the start",
+    )
+    p_opp.set_defaults(func=_cmd("import-opponents", _step_import_opponents))
 
     p_corpus = sub.add_parser("import-corpus", help="rebuild the Lichess CC0 corpus sample from the published CSV")
     p_corpus.add_argument("--csv", required=True, help="the decompressed lichess_db_puzzle.csv")
