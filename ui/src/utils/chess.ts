@@ -108,6 +108,26 @@ export function buildArrows(p: { fen: string; moves?: string[] | null; ply?: num
   return arrows;
 }
 
+/** A decision node's arrows: one per opponent reply, its opacity scaled by how often they chose
+ *  it, under a blue arrow for the move that led here when the coverage agrees on one. A reply that
+ *  is not legal on the board draws nothing. */
+export function decisionNodeArrows(p: { fen: string; replies: { move: string; cnt: number }[] | null | undefined; leadIn?: string | null; leadPreFen?: string | null }): BoardArrow[] {
+  const arrows: BoardArrow[] = [];
+  if (p.leadIn && p.leadPreFen) {
+    const sq = sanToSquares(p.leadPreFen, p.leadIn);
+    if (sq) arrows.push({ startSquare: sq[0], endSquare: sq[1], color: ARROWS.opponent });
+  }
+  const replies = p.replies ?? [];
+  const maxCnt = Math.max(...replies.map((r) => r.cnt), 1);
+  for (const r of replies) {
+    const sq = sanToSquares(p.fen, r.move);
+    if (!sq) continue;
+    const alpha = Math.round(255 * (0.35 + 0.65 * (r.cnt / maxCnt)));
+    arrows.push({ startSquare: sq[0], endSquare: sq[1], color: `${ARROWS.book}${alpha.toString(16).padStart(2, "0")}` });
+  }
+  return arrows;
+}
+
 /**
  * The (fen, preFen) pair the branch compare launches from: the latest player-decision node on the
  * solver's walked path (the start FEN plus `line[0..moveIndex-1]`) and its parent. Walking back

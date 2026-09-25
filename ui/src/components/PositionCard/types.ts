@@ -11,6 +11,9 @@ export interface PositionCardGame {
   cp_loss?: number | null;
   move_played?: string | null;
   best_move?: string | null;
+  /** Scout, an opponent's game: what they played and which side they had. */
+  opening?: string;
+  as?: string;
 }
 
 export interface PositionCardData {
@@ -29,7 +32,10 @@ export interface PositionCardData {
    *  move the similar-positions search asks about). */
   mostCommonPlayed?: string | null;
   bestMove?: string | null;
-  /** Deviations: the move the matched line expected (slot 2 of the arrow precedence). */
+  /** Scout: the date of the analysed game the engine's move was read from. */
+  bestMoveDate?: string | null;
+  /** Deviations: the move the matched line expected (slot 2 of the arrow precedence).
+   *  Scout: the repertoire's agreed move, which there outranks the engine's. */
   expectedMove?: string | null;
   /** The one move the repertoire agrees on at this board, or null (slot 3). */
   repExpectedMove?: string | null;
@@ -49,6 +55,15 @@ export interface PositionCardData {
   /** New since the visit boundary the page was opened with (Home → Blunders). */
   isNew?: boolean;
   games: PositionCardGame[];
+  /** Scout: the opponent's games through this board, shown beside the player's. */
+  oppGames?: PositionCardGame[];
+  /** Scout, a decision node: the opponent's replies here (the arrows), how many more were
+   *  cut, the move that led here across the player's coverage and the board before it. */
+  oppReplies?: Array<{ move: string; cnt: number }> | null;
+  repliesMore?: number;
+  leadIn?: string | null;
+  leadPreFen?: string | null;
+  nodeFreq?: number;
 }
 
 export type BoardSize = "S" | "M" | "L";

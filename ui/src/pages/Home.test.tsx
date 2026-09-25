@@ -14,6 +14,7 @@ const page = (over: Partial<HomePage> = {}): HomePage => ({
   new_deviations: 1,
   puzzles: { due: 14, solved_today: 3, target: 10, streak: 4 },
   games: { today: 0, week: 5, target: 1, streak: 2 },
+  activity: { last_1: 1, last_7: 6, last_30: 21, total: 1234 },
   pipeline: { last_ok_at: new Date(Date.now() - 23 * 60_000).toISOString(), failed: [] },
   ...over,
 });
@@ -119,5 +120,21 @@ describe("Home page", () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 500, statusText: "boom", json: async () => ({ detail: "database away" }) })));
     renderPage();
     expect(await screen.findByRole("alert")).toHaveTextContent("database away");
+  });
+});
+
+describe("the activity strip", () => {
+  it("shows the four counts", async () => {
+    stub(page());
+    render(
+      <MemoryRouter>
+        <Home />
+      </MemoryRouter>,
+    );
+    const strip = await screen.findByLabelText("Played");
+    expect(strip.textContent).toContain("24 h 1");
+    expect(strip.textContent).toContain("7 d 6");
+    expect(strip.textContent).toContain("30 d 21");
+    expect(strip.textContent).toContain("all 1234");
   });
 });

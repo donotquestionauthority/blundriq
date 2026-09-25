@@ -113,15 +113,17 @@ export function BranchCompareView({ fen, preFen, orientation, onClose }: { fen: 
   const current = status === "loaded" ? (data?.current ?? null) : null;
   const branches = status === "loaded" ? (data?.branches ?? []) : [];
   const box = "rounded border border-zinc-200 dark:border-zinc-800";
+  const mover = preFen.split(" ")[1] === "w" ? "White" : "Black";
 
   return (
-    <div role="dialog" aria-label="Compare similar positions" className="fixed inset-0 z-[60] overflow-y-auto overscroll-contain bg-zinc-50 dark:bg-zinc-950" data-testid="branch-compare-view">
+    <div role="dialog" aria-label={`What if ${mover} had played differently?`} className="fixed inset-0 z-[60] overflow-y-auto overscroll-contain bg-zinc-50 dark:bg-zinc-950" data-testid="branch-compare-view">
       <div className="mx-auto w-full max-w-6xl p-3 lg:flex lg:items-start lg:gap-6 lg:p-6">
         <div className="sticky top-0 z-10 -mx-3 border-b border-zinc-200 bg-zinc-50 px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950 lg:top-6 lg:mx-0 lg:w-72 lg:shrink-0 lg:self-start lg:rounded lg:border lg:p-3">
           <div className="flex items-center justify-between pb-2">
             <button type="button" onClick={onClose} className="text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">
               ← Back
             </button>
+            <span className="text-xs text-zinc-500">Every {mover} move your repertoire, your blunders, or a scouted opponent has met at this point.</span>
             {status === "loaded" && (
               <span className="text-xs text-zinc-500">
                 {branches.length} alternative{branches.length === 1 ? "" : "s"}
@@ -162,7 +164,7 @@ export function BranchCompareView({ fen, preFen, orientation, onClose }: { fen: 
               </button>
             </div>
           )}
-          {status === "loaded" && branches.length === 0 && <p className="p-4 text-xs text-zinc-500">No alternatives from the previous position: no other repertoire branch and no blunder history there.</p>}
+          {status === "loaded" && branches.length === 0 && <p className="p-4 text-xs text-zinc-500">No alternatives from the previous position: no other repertoire branch, no blunder history and no scouted game there.</p>}
           {status === "loaded" && branches.length > 0 && (
             <>
               <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">

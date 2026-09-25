@@ -2,7 +2,7 @@ import { useId } from "react";
 import { Chessboard } from "react-chessboard";
 import { daysAgo } from "../../blunders";
 import { SQUARES } from "../../utils/board";
-import { buildArrows } from "../../utils/chess";
+import { buildArrows, decisionNodeArrows } from "../../utils/chess";
 import { lineNamesSummary, recommended } from "./types";
 import type { BoardSize, PositionCardData } from "./types";
 
@@ -19,13 +19,27 @@ export function ClassBadge({ cls }: { cls: string }) {
   return <span className={`inline-block rounded px-1.5 py-0.5 text-xs font-medium ${CLASS_TONE[cls] ?? ""}`}>{cls}</span>;
 }
 
+/** "after your Nf3, they play: Nf6 ×4 · Nc6 ×2 · +1 more" — a decision node's replies. */
+export function RepliesLine({ d }: { d: PositionCardData }) {
+  const replies = d.oppReplies ?? [];
+  return (
+    <p className="text-xs" data-testid="replies-line">
+      <span className="text-zinc-500">{d.leadIn ? `after your ${d.leadIn}, they play:` : "they play:"}</span>{" "}
+      <span className="font-mono">{replies.map((r) => `${r.move} ×${r.cnt}`).join(" · ")}</span>
+      {d.repliesMore ? <span className="text-zinc-500"> · +{d.repliesMore} more</span> : null}
+    </p>
+  );
+}
+
 /** The face of a card: a static board with the three arrows, and the position's numbers. */
 export function CardInner({ d, headerRight, boardSize = "M", onBoardClick }: { d: PositionCardData; headerRight?: React.ReactNode; boardSize?: BoardSize; onBoardClick?: () => void }) {
   // react-chessboard resolves a tap by looking its squares up by element id, so every board
   // on a page needs its own id or taps on later boards land on the first one.
   const boardId = "pc" + useId().replace(/[^a-zA-Z0-9-]/g, "");
-  const played = d.movePlayed ?? d.mostCommonPlayed ?? null;
-  const best = recommended(d).move;
+  const node = d.oppReplies != null;
+  const played = node ? null : (d.movePlayed ?? d.mostCommonPlayed ?? null);
+  const best = node ? null : recommended(d).move;
+  const arrows = node ? decisionNodeArrows({ fen: d.fen, replies: d.oppReplies, leadIn: d.leadIn, leadPreFen: d.leadPreFen }) : buildArrows({ fen: d.fen, moves: d.moves, ply: d.ply, movePlayed: played, bestMove: best });
   return (
     <div className="flex gap-3 p-3">
       <div className={`aspect-square w-7/12 shrink-0 ${BOARD_MAX[boardSize]}`}>
@@ -39,7 +53,7 @@ export function CardInner({ d, headerRight, boardSize = "M", onBoardClick }: { d
             boardStyle: { borderRadius: "4px", cursor: onBoardClick ? "pointer" : undefined },
             ...SQUARES,
             boardOrientation: d.color,
-            arrows: buildArrows({ fen: d.fen, moves: d.moves, ply: d.ply, movePlayed: played, bestMove: best }),
+            arrows,
           }}
         />
       </div>
@@ -62,6 +76,7 @@ export function CardInner({ d, headerRight, boardSize = "M", onBoardClick }: { d
         ) : (
           d.context && <p className="line-clamp-2 text-xs text-zinc-500">{d.context}</p>
         )}
+        {node && <RepliesLine d={d} />}
         {(played || best) && (
           <div className="flex flex-wrap items-center gap-1.5 font-mono text-xs">
             {played && <span className="text-red-600 dark:text-red-400">{played}</span>}
