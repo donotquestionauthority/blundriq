@@ -9,9 +9,9 @@ the new settings' defaults). They run against the old database; the new `similar
 Inputs: every blunder board of the sample games and a seeded slice of all blunders (the move
 played as the queried move), a seeded slice of repertoire nodes; for branch compare the
 (position, parent) pair of every such blunder and repertoire node. Both caps are raised to 50 so
-the scout leg — phase 6 here, so `sources.scout` is stripped and scout-only branches are dropped
-from the old output — cannot move the cap. Chess960 games are left out of the inputs: the old
-legs did not filter variants, here their blunders count for nothing (a known difference).
+the scout leg — no producer here, so `sources.scout` is stripped and scout-only branches are
+dropped from the old output — cannot move the cap. The reads live in `core.oracle`, which leaves
+Chess960 games out: the old legs did not filter variants, here their blunders count for nothing.
 
     python tools/oracle/diff_compare.py --old-src /path/to/old-src   (the extracted archive)
 """
@@ -30,6 +30,7 @@ from typing import Any
 import chess
 from common import oracle, report, sample_ids, scratch
 
+from core import oracle as q
 from core.constants import PLAYER_ID
 from core.repertoire import branch_compare as new_bc
 from core.repertoire import neighbourhood as new_nb
@@ -69,21 +70,9 @@ def lift(old_src: Path) -> tuple[Any, Any]:
 def queries(old: Any) -> tuple[list[tuple[str, str | None]], list[tuple[str, str]]]:
     """(similar queries as (fen, move), branch pairs as (fen, pre_fen))."""
     rng = random.Random(402)
-    with old.cursor() as cur:
-        cur.execute(
-            "SELECT b.fen, b.move_played, b.ply, cg.fen_sequence FROM blunders b JOIN chess_games cg ON cg.id = b.chess_game_id"
-            " WHERE b.player_id = %s AND cg.fen_sequence IS NOT NULL AND cg.variant = 'standard' ORDER BY b.id",
-            (PLAYER_ID,),
-        )
-        blunders = [dict(r) for r in cur.fetchall()]
-        cur.execute(
-            "SELECT rl.moves, rl.fen_sequence FROM repertoire_lines rl JOIN chapters ch ON ch.id = rl.chapter_id"
-            " JOIN books bk ON bk.id = ch.book_id WHERE bk.player_id = %s AND rl.active ORDER BY rl.id",
-            (PLAYER_ID,),
-        )
-        lines = [dict(r) for r in cur.fetchall()]
-        cur.execute("SELECT b.fen FROM blunders b WHERE b.chess_game_id = ANY(%s)", (sample_ids(),))
-        sample_fens = [str(r["fen"]) for r in cur.fetchall()]
+    blunders = q.old_blunder_boards(old)
+    lines = q.old_active_lines(old)
+    sample_fens = q.old_blunder_fens(old, sample_ids())
     picked = rng.sample(blunders, min(300, len(blunders)))
     similar: list[tuple[str, str | None]] = [(chess.Board(f).fen(), None) for f in sample_fens]
     pairs: list[tuple[str, str]] = []
@@ -137,7 +126,7 @@ def strip_scout(resp: dict[str, Any]) -> dict[str, Any]:
     kept = []
     for b in out["branches"]:
         if b["sources"]["repertoire"] is None and b["sources"]["blunders"] is None:
-            continue  # scout-only: phase 6
+            continue  # scout-only: no scout source here
         b["sources"]["scout"] = None
         kept.append(b)
     out["branches"] = kept

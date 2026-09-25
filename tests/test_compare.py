@@ -623,7 +623,7 @@ def test_json_round_trip_of_a_response(rep: psycopg.Connection[DictRow]) -> None
     json.dumps(compare(rep))
 
 
-# --- what an independent read said the suite would not catch ------------------------------
+# --- edge cases: null moves, malformed FENs, ply 0, repetitions, corrupt rows, ordering ----------
 
 
 def test_null_moves_are_not_moves_anywhere() -> None:
@@ -792,3 +792,38 @@ def test_end_of_line_is_only_when_no_move_group(rep: psycopg.Connection[DictRow]
         and [g["prep_status"] for g in cur["groups"]] == ["move", "end_of_line"]
     )
     rep.rollback()
+
+
+def test_a_patterns_most_common_move_can_be_illegal_on_its_displayed_board(
+    client: TestClient, rep: psycopg.Connection[DictRow]
+) -> None:
+    """A deviation pattern spans boards: its board is the latest game's and its most common played move
+    an aggregate over the pattern, so the two need not fit. The route rejects the pair; the card sends
+    the move only when it is legal on the board (Deviations.test.tsx covers the card)."""
+    from core import deviations, settings
+
+    scandi = ["e4", "d5", "Nf3", "Nc6"]
+    for gid, moves, played, days in (
+        (11, scandi + ["exd5"], "exd5", 3),
+        (12, scandi + ["exd5"], "exd5", 2),
+        (13, ITALIAN[:4] + ["d4"], "d4", 1),
+    ):
+        fens = h.game(rep, gid, moves, days_ago=days)
+        h.result(
+            rep, gid, book_id=1, chapter_id=1, ply=4, by="me", expected="Bc4", played=played, fen=fens[4], line_ids=[1]
+        )
+    rep.commit()
+    from dataclasses import replace
+
+    f = replace(deviations.default_filters(settings.Settings()), time_class="all")
+    card = deviations.positions(rep, f, "all")["positions"][0]
+    assert (
+        card["count"] == 3 and card["most_common_played"] == "exd5" and card["deviation_fen"] == fen_after(ITALIAN[:4])
+    )
+    assert (
+        client.get(
+            "/repertoire/similar", params={"fen": card["deviation_fen"], "move": card["most_common_played"]}
+        ).status_code
+        == 400
+    )
+    assert client.get("/repertoire/similar", params={"fen": card["deviation_fen"]}).status_code == 200

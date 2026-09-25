@@ -69,7 +69,7 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `core/repertoire/annotations.py` | Notes on positions: the unattached note on a board, notes attached to a line, and the walk-through's projection of a book's notes onto a line. |
 | `core/repertoire/books.py` | The Repertoire page: books, sections, and switching a book, chapter or line on or off (rematches what it can touch). |
 | `core/repertoire/neighbourhood.py` | Similar positions: material-hash prefilter, exact signature verify on the matched plies only, placement distance, one entry per board with all of its groups (enumerated, never reduced), the cap in boards. |
-| `core/repertoire/branch_compare.py` | Branch compare: every opponent option at a puzzle's parent from the repertoire (leg R) and the player's blunders (leg B; scout is phase 6), repertoire winning on a board, `current` always present and never capped. |
+| `core/repertoire/branch_compare.py` | Branch compare: every opponent option at a puzzle's parent from the repertoire (leg R) and the player's blunders (leg B; a scout leg is reserved and empty), repertoire winning on a board, `current` always present and never capped. |
 | `core/repertoire/importing.py` | `pipeline import-repertoire`: the neutral file, identity by source ids, the cohort gate for new lines, replacement for a book the file marks complete. |
 | `core/deviations.py` | The Deviations page: patterns (book, chapter, ply, expected move) ranked by distinct games, their games, the repertoire's reading of each board, the seen set. |
 | `core/chess/san.py` | SAN normalisation, and move identity that does not depend on notation. |

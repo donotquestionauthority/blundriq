@@ -158,6 +158,39 @@ describe("Deviations page", () => {
     expect(within(dialog).getByRole("columnheader", { name: "Expected" })).toBeInTheDocument();
   });
 
+  it("similar positions asks about the pattern's most common move only when it is legal on the displayed board", async () => {
+    // A pattern spans boards: its board is the latest game's, its most common played move an aggregate. Here the
+    // aggregate `exd5` is not playable on the displayed board (after 1.e4 e5 2.Nf3 Nc6); the panel must still work.
+    const calls = stubFetch({
+      "/settings": () => ({ status: 200, body: SETTINGS }),
+      "/deviations": () => ({ status: 200, body: page([pattern({ most_common_played: "exd5" })]) }),
+      "/repertoire/similar": (_m, _b, q) => (q.has("move") ? { status: 400, body: { detail: "move is not legal in fen" } } : { status: 200, body: { query: { fen: q.get("fen"), move: null, max_distance: 4, max_positions: 12 }, truncated: false, positions_omitted: 0, neighbours: [] } }),
+    });
+    renderPage();
+    fireEvent.click(await screen.findByText("3×"));
+    const dialog = await screen.findByRole("dialog", { name: "Position" });
+    fireEvent.click(within(dialog).getByRole("button", { name: /Similar positions in your repertoire/ }));
+    expect(await within(dialog).findByText(/No similar positions within 4 squares/)).toBeInTheDocument();
+    const similar = calls.filter((c) => c.path === "/repertoire/similar");
+    expect(similar).toHaveLength(1);
+    expect(similar[0].query.get("fen")).toBe(AFTER_NC6);
+    expect(similar[0].query.has("move")).toBe(false);
+  });
+
+  it("similar positions asks about the most common move when it is legal on the displayed board", async () => {
+    const calls = stubFetch({
+      "/settings": () => ({ status: 200, body: SETTINGS }),
+      "/deviations": () => ({ status: 200, body: page([pattern()]) }),
+      "/repertoire/similar": (_m, _b, q) => ({ status: 200, body: { query: { fen: q.get("fen"), move: q.get("move"), max_distance: 4, max_positions: 12 }, truncated: false, positions_omitted: 0, neighbours: [] } }),
+    });
+    renderPage();
+    fireEvent.click(await screen.findByText("3×"));
+    const dialog = await screen.findByRole("dialog", { name: "Position" });
+    fireEvent.click(within(dialog).getByRole("button", { name: /Similar positions in your repertoire/ }));
+    await within(dialog).findByText(/No similar positions within 4 squares/);
+    expect(calls.filter((c) => c.path === "/repertoire/similar")[0].query.get("move")).toBe("d4");
+  });
+
   it("marks the patterns the server flags and acknowledges exactly what each rendered response says", async () => {
     let flagged = true;
     const calls = stubFetch({

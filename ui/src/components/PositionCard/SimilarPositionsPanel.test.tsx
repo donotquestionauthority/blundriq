@@ -258,7 +258,7 @@ describe("SimilarCompareView in the Overlay", () => {
   });
 });
 
-// --- what an independent read said the suite would not catch ------------------------------
+// --- each event layer on its own; the cache, the identity and the queried move ------------------
 
 describe("the two layers, each on its own", () => {
   it("the view consumes Escape, arrows and a qualifying swipe before any bubble listener, and passes a tap through", async () => {

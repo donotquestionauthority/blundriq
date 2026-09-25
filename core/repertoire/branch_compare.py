@@ -14,8 +14,8 @@ the parent from two sources, merged into one board per branch:
   the blunder's own element equals its stored canonical FEN) makes the arithmetic
   self-checking: an off-by-one yields zero rows and the positive-control test goes red. Games
   whose bulk JSON housekeeping has nulled drop out — the recency window is a feature.
-* S — scouted opponents' games: phase 6. The payload keeps `sources.scout` (null) and the
-  ordering keeps its third tier so the UI ships whole.
+* S — scouted opponents' games: reserved. Nothing produces it yet; the payload keeps
+  `sources.scout` (null) and the ordering keeps its third tier so the UI renders it the day it exists.
 
 Repertoire wins on a board: a branch with a repertoire source carries `blunders: None` by
 construction. The branch whose child board is `fen` is `current` — always present (the
@@ -237,7 +237,7 @@ def branch_compare(
         rep_rows = [dict(r) for r in cur.fetchall()]
         cur.execute(cast(LiteralString, _BLUNDER_BRANCHES_SQL.format(analysable=analysable_sql("cg"))), params)
         blunder_rows = [dict(r) for r in cur.fetchall()]
-    scout_map: dict[str, Row] = {}  # phase 6
+    scout_map: dict[str, Row] = {}  # reserved: no scout source yet
     current, ordered = merge_branches(
         normalize_fen(fen), repertoire_by_board(rep_rows), blunders_by_board(blunder_rows), scout_map
     )

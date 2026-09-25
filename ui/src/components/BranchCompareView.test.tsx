@@ -141,7 +141,7 @@ describe("the Compare launcher in PuzzleEngine", () => {
   });
 });
 
-describe("what an independent read said the suite would not catch", () => {
+describe("pair changes, puzzle changes and map mode", () => {
   it("a pair change while mounted shows loading, aborts the old request, and a late old answer never lands", async () => {
     let resolveFirst: (v: { status: number; body: unknown }) => void = () => {};
     let n = 0;

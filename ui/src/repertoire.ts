@@ -156,7 +156,7 @@ export interface BranchSources {
     games: number;
     worst: { move_played_san: string; move_played_squares: MoveSquares; best_move_san: string | null; best_move_squares: MoveSquares | null; centipawn_loss: number | null };
   } | null;
-  /** Phase 6; always null until then, rendered whenever present. */
+  /** Reserved: no producer yet, so always null; rendered whenever present. */
   scout: { total_games: number; profiles: { name: string; games: number }[]; best_move_san: string | null; best_move_squares: MoveSquares | null } | null;
 }
 

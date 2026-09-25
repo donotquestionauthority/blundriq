@@ -512,6 +512,46 @@ def old_deviation_rows(
         return [dict(r) for r in cur.fetchall()]
 
 
+def old_blunder_boards(conn: Connection[Any]) -> list[dict[str, Any]]:
+    """Every blunder of the player's in the old database whose game still holds its moves, with the
+    game's FEN sequence, by id; Chess960 games are left out (core.chess.eligibility), the one thing
+    the old compare surfaces did not filter."""
+    return [
+        dict(r)
+        for r in conn.execute(
+            cast(
+                LiteralString,
+                "SELECT b.fen, b.move_played, b.ply, cg.fen_sequence FROM blunders b"
+                " JOIN chess_games cg ON cg.id = b.chess_game_id"
+                f" WHERE b.player_id = %s AND cg.fen_sequence IS NOT NULL AND {analysable_sql('cg')} ORDER BY b.id",
+            ),
+            (PLAYER_ID,),
+        ).fetchall()
+    ]
+
+
+def old_blunder_fens(conn: Connection[Any], ids: list[int]) -> list[str]:
+    """The boards of the blunders of the given games in the old database."""
+    return [
+        str(r["fen"])
+        for r in conn.execute(
+            "SELECT b.fen FROM blunders b WHERE b.chess_game_id = ANY(%s) ORDER BY b.id", (ids,)
+        ).fetchall()
+    ]
+
+
+def old_active_lines(conn: Connection[Any]) -> list[dict[str, Any]]:
+    """Every active line of the player's in the old database (moves and FEN sequence), by id."""
+    return [
+        dict(r)
+        for r in conn.execute(
+            "SELECT rl.moves, rl.fen_sequence FROM repertoire_lines rl JOIN chapters ch ON ch.id = rl.chapter_id"
+            " JOIN books bk ON bk.id = ch.book_id WHERE bk.player_id = %s AND rl.active ORDER BY rl.id",
+            (PLAYER_ID,),
+        ).fetchall()
+    ]
+
+
 def old_repertoire_lines(conn: Connection[Any]) -> list[dict[str, Any]]:
     """Every line of the player's in the old database, with its chapter and book, by id."""
     return [

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Chessboard } from "react-chessboard";
 import { daysAgo } from "../../blunders";
 import { SQUARES } from "../../utils/board";
-import { buildArrows, buildPgn } from "../../utils/chess";
+import { buildArrows, buildPgn, sanToSquares } from "../../utils/chess";
 import { AiExplanationPanel } from "./AiExplanationPanel";
 import { ClassBadge } from "./CardInner";
 import { GamesTable } from "./GamesTable";
@@ -108,6 +108,10 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
   };
   const pgn = d.moves && d.ply ? buildPgn(d.moves, d.ply) : "";
   const played = d.movePlayed ?? d.mostCommonPlayed ?? null;
+  // A deviation pattern spans boards: its most common played move is an aggregate over the pattern and
+  // its board is the latest game's, so the move can be illegal here. The similar-positions search only
+  // takes a move it can play on this board (the arrows already draw nothing for such a move).
+  const queriedMove = played && sanToSquares(d.fen, played) ? played : null;
   const best = recommended(d);
   // One derivation for the board here and for anything that shows the same board beside it.
   const mainArrows = buildArrows({ fen: d.fen, moves: d.moves, ply: d.ply, movePlayed: played, bestMove: best.move });
@@ -208,7 +212,7 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
 
         <LineReaderPanel fen={d.fen} repertoireLineId={null} />
 
-        <SimilarPositionsPanel fen={d.fen} queriedMove={played} orientation={d.color} mainArrows={mainArrows} compareOpen={compareOpen} onCompareOpenChange={setCompareOpen} />
+        <SimilarPositionsPanel fen={d.fen} queriedMove={queriedMove} orientation={d.color} mainArrows={mainArrows} compareOpen={compareOpen} onCompareOpenChange={setCompareOpen} />
 
         {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
 
