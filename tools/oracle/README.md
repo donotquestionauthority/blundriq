@@ -25,6 +25,9 @@ disposable and is modified.
     python tools/oracle/diff_annotations.py --old-src DIR
                                                  # the line walk-through's notes, every line, against
                                                  # the old projection lifted from the archived source
+    python tools/oracle/diff_compare.py --old-src DIR
+                                                 # Similar positions and branch compare against the old
+                                                 # modules executed from the archive, on the same queries
 
 `diff_puzzles.py --generation` deletes the generated puzzles before remaking them, and
 deleting a puzzle cascades its SRS row away, so it refuses to run unless the database name
