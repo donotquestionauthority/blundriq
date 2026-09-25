@@ -167,6 +167,18 @@ class Settings(BaseModel):
     repertoire_opponent_min_ply: int = Field(
         default=8, ge=1, le=40, description="Minimum ply for an opponent line to count against the repertoire."
     )
+    similar_max_distance: int = Field(
+        default=4,
+        ge=1,
+        le=8,
+        description="Similar positions: most squares a repertoire position may differ from the card's board by.",
+    )
+    similar_max_positions: int = Field(
+        default=12, ge=1, le=50, description="Similar positions: most boards shown (each with all of its lines)."
+    )
+    branch_compare_max_boards: int = Field(
+        default=12, ge=1, le=50, description="Compare similar positions: most alternative branches shown."
+    )
     branch_min: int = Field(default=2, ge=1, le=20, description="Minimum games for a branch to appear in branch views.")
     reply_min_freq: int = Field(
         default=1, ge=1, le=50, description="Minimum frequency for an opponent reply to be listed."
