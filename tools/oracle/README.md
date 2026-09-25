@@ -32,6 +32,10 @@ disposable and is modified.
                                                  # the Conflicts page's listing and the activation gate on
                                                  # every line not in play, against the old functions lifted
                                                  # from the archive and run over its rows
+    python tools/oracle/diff_scout.py --old-src DIR
+                                                 # Scout's positions, decision nodes and report against the
+                                                 # old route's queries lifted from the archive (all-time
+                                                 # windows; the scratch copy's dismissals are emptied first)
 
 `diff_puzzles.py --generation` deletes the generated puzzles before remaking them, and
 deleting a puzzle cascades its SRS row away, so it refuses to run unless the database name
