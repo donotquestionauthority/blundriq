@@ -246,6 +246,24 @@ describe("Scout page", () => {
     expect(panel.textContent).toContain("Dismissed boards (0)");
   });
 
+  it("removing the last opponent keeps the shared Dismissed panel, and Restore still works there", async () => {
+    const state = { profiles: [profile()], positions: [position()], nodes: [], dismissed: [P8] };
+    const calls = stubFetch(routes(state));
+    renderPage();
+    await screen.findByLabelText("Activity");
+    expect(screen.getByTestId("dismissed-panel").textContent).toContain("Dismissed boards (1)");
+    fireEvent.click(screen.getByRole("button", { name: "Manage" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, remove" }));
+    await screen.findByText("No opponents yet — add one to scout.");
+    const panel = screen.getByTestId("dismissed-panel");
+    expect(panel.textContent).toContain("Dismissed boards (1)");
+    fireEvent.click(within(panel).getByRole("button", { name: /Dismissed boards/ }));
+    fireEvent.click(within(panel).getByRole("button", { name: "Restore" }));
+    await waitFor(() => expect(panel.textContent).toContain("Dismissed boards (0)"));
+    expect(calls.filter((c) => c.path === "/scout/dismiss" && c.method === "DELETE").map((c) => c.body)).toEqual([{ fen: P8 }]);
+  });
+
   it("with no opponents the add form is open", async () => {
     const state = { profiles: [], positions: [], nodes: [], dismissed: [] as string[] };
     stubFetch(routes(state));

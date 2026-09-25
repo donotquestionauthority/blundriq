@@ -315,14 +315,15 @@ function DismissedPanel({ version, onRestored }: { version: number; onRestored: 
   );
 }
 
-function ScoutBody({ profile, filters, setFilters }: { profile: OpponentProfile; filters: ScoutFilters; setFilters: (f: ScoutFilters) => void }) {
+/** The page for one opponent. `version` is the page-wide dismissal counter: a dismissal here or
+ *  a restore from the Dismissed panel bumps it and every list refetches. */
+function ScoutBody({ profile, filters, setFilters, version, bump }: { profile: OpponentProfile; filters: ScoutFilters; setFilters: (f: ScoutFilters) => void; version: number; bump: () => void }) {
   const [page, setPage] = useState(0);
   const [sel, setSel] = useState<LineSel | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [creating, setCreating] = useState<CreatePuzzleSource | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [version, setVersion] = useState(0);
   const key = JSON.stringify(filters);
   const report = useApi(() => getReport(profile.id, filters.opp_last_n), [profile.id, filters.opp_last_n, version]);
   const nodes = useApi(() => getDecisionNodes(profile.id, filters), [profile.id, key, version]);
@@ -349,7 +350,7 @@ function ScoutBody({ profile, filters, setFilters }: { profile: OpponentProfile;
     setFailure(null);
     try {
       await dismissBoard(fen);
-      setVersion((v) => v + 1);
+      bump();
     } catch (e) {
       setFailure(e instanceof Error ? e.message : String(e));
     } finally {
@@ -521,8 +522,6 @@ function ScoutBody({ profile, filters, setFilters }: { profile: OpponentProfile;
         )}
       </section>
 
-      <DismissedPanel version={version} onRestored={() => setVersion((v) => v + 1)} />
-
       {creating && <CreatePuzzleModal key={creating.fen} source={creating} onClose={() => setCreating(null)} onCreated={(made) => setToast(made.visible ? "Puzzle created" : "Puzzle created, but hidden for now: this board is dismissed, or your repertoire already covers the position")} />}
       {toast && (
         <div role="status" className="fixed bottom-6 left-1/2 z-[60] max-w-md -translate-x-1/2 rounded-lg border border-zinc-200 bg-white px-4 py-2 text-sm shadow-2xl dark:border-zinc-800 dark:bg-zinc-900">
@@ -538,6 +537,10 @@ export default function Scout() {
   const [selected, setSelected] = useState<number | null>(null);
   const [manage, setManage] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Dismissals are shared with Blunders and outlive every opponent, so the panel that restores
+  // them is mounted whether or not a profile is selected (or exists at all).
+  const [version, setVersion] = useState(0);
+  const bump = () => setVersion((v) => v + 1);
   const profiles = useApi(async () => (await getProfiles()).profiles);
 
   useEffect(() => {
@@ -587,7 +590,12 @@ export default function Scout() {
           />
         </div>
       )}
-      {filters && current && <ScoutBody key={current.id} profile={current} filters={filters} setFilters={setFilters} />}
+      {filters && current && <ScoutBody key={current.id} profile={current} filters={filters} setFilters={setFilters} version={version} bump={bump} />}
+      {profiles.data && (
+        <div className="mt-4">
+          <DismissedPanel version={version} onRestored={bump} />
+        </div>
+      )}
     </div>
   );
 }
