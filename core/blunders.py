@@ -386,6 +386,17 @@ def dismiss(conn: Connection[Any], fen: str) -> None:
     )
 
 
+def dismissed(conn: Connection[Any]) -> list[dict[str, Any]]:
+    """Every dismissed board, newest first — whether or not it qualifies on any list today.
+    Scout's Dismissed-boards panel restores from this; the Blunders list only marks the boards
+    it would otherwise show."""
+    rows = conn.execute(
+        "SELECT fen, dismissed_at FROM dismissed_blunder_fens WHERE player_id = %s ORDER BY dismissed_at DESC, id DESC",
+        (PLAYER_ID,),
+    ).fetchall()
+    return [{"fen": r["fen"], "dismissed_at": r["dismissed_at"].isoformat()} for r in rows]
+
+
 def restore(conn: Connection[Any], fen: str) -> None:
     """Undo a dismissal, whichever occurrence's FEN is given."""
     conn.execute(

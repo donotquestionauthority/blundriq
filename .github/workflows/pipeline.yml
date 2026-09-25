@@ -1,6 +1,6 @@
 name: pipeline
 
-# The hourly run: import → match → analyze → housekeep. The only workflow with
+# The hourly run: import → match → analyze → generate-puzzles → srs-maintain → import-opponents → housekeep. The only workflow with
 # access to the database secret. Each step logs a pipeline_runs row; a failure
 # stops the chain and sends one alert (core/notify.py).
 

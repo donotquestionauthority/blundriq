@@ -153,19 +153,14 @@ class Settings(BaseModel):
         default=["Date", "Color", "Opponent", "Result", "Repertoire", "Section", "Deviation", "Link"],
         description="Columns shown on the Games page, in order.",
     )
-    scout_default_last_n_games: int = Field(default=500, ge=10, le=5000, description="Default game window on Scout.")
+    scout_default_last_n_games: int = Field(
+        default=500, ge=10, le=5000, description="Default game window on Scout, for both sides."
+    )
     scout_default_min_occurrences: int = Field(
         default=2, ge=1, le=50, description="Default minimum occurrences on Scout."
     )
-    scout_my_window_days: int = Field(default=30, ge=1, le=3650, description="Day window for my games on Scout.")
-    scout_opponent_window_days: int = Field(
-        default=90, ge=1, le=3650, description="Day window for opponent games on Scout."
-    )
     scout_bayesian_prior_strength: int = Field(
         default=10, ge=0, le=100, description="Prior strength for Scout win-rate smoothing."
-    )
-    repertoire_opponent_min_ply: int = Field(
-        default=8, ge=1, le=40, description="Minimum ply for an opponent line to count against the repertoire."
     )
     similar_max_distance: int = Field(
         default=4,

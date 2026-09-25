@@ -14,6 +14,8 @@ export interface HomePage {
   new_deviations: number;
   puzzles: { due: number; solved_today: number; target: number; streak: number };
   games: { today: number; week: number; target: number; streak: number };
+  /** Games played in the last 24 h / 7 d / 30 d / ever, every variant. */
+  activity: { last_1: number; last_7: number; last_30: number; total: number };
   pipeline: {
     /** When the hourly chain last ran through to its last step. */
     last_ok_at: string | null;

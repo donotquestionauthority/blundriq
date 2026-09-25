@@ -14,8 +14,13 @@ the parent from two sources, merged into one board per branch:
   the blunder's own element equals its stored canonical FEN) makes the arithmetic
   self-checking: an off-by-one yields zero rows and the positive-control test goes red. Games
   whose bulk JSON housekeeping has nulled drop out — the recency window is a feature.
-* S — scouted opponents' games: reserved. Nothing produces it yet; the payload keeps
-  `sources.scout` (null) and the ordering keeps its third tier so the UI renders it the day it exists.
+* S — scouted opponents' games through the parent where the **opponent** account was the side
+  to move (`opponent_views.played_as`), so a game the scouted account played from the other
+  side, or in which they were the player's opponent of the day, never counts: which profiles
+  played each option and in how many distinct games. The child's best move is the engine's at
+  that board from the player's most recent analysed game reaching it (the same read the Scout
+  cards use), so a scout-only branch draws blue and green when the player has met the position
+  in an analysed game, blue alone when not.
 
 Repertoire wins on a board: a branch with a repertoire source carries `blunders: None` by
 construction. The branch whose child board is `fen` is `current` — always present (the
@@ -78,6 +83,42 @@ WHERE b.player_id = %(pid)s AND {analysable}
   AND bq_canonical_fen(cg.fen_sequence->>((b.ply - 1)::int)) = bq_canonical_fen(%(pre_fen)s)
   AND b.canonical_fen = bq_canonical_fen(cg.fen_sequence->>(b.ply::int)) || ' 0 1'
 ORDER BY b.centipawn_loss DESC NULLS LAST, b.id DESC
+"""
+
+_SCOUT_BRANCHES_SQL = """
+SELECT op.id AS profile_id, op.name AS profile_name, cg.id AS chess_game_id,
+       cg.fen_sequence->>((k.ord - 1)::int) AS parent_fen,
+       cg.moves->>((k.ord - 1)::int)        AS branch_move,
+       cg.fen_sequence->>(k.ord::int)       AS child_fen
+FROM opponent_views ov
+JOIN opponent_profiles op ON op.id = ov.opponent_profile_id
+JOIN chess_games cg ON cg.id = ov.chess_game_id,
+LATERAL unnest(cg.position_keys) WITH ORDINALITY AS k(key, ord)
+WHERE op.player_id = %(pid)s AND op.active AND {analysable}
+  AND cg.fen_sequence IS NOT NULL AND cg.moves IS NOT NULL
+  AND cg.position_keys @> ARRAY[bq_position_key(%(pre_fen)s)]
+  AND k.key = bq_position_key(%(pre_fen)s)
+  AND bq_canonical_fen(cg.fen_sequence->>((k.ord - 1)::int)) = bq_canonical_fen(%(pre_fen)s)
+  AND LEFT(ov.played_as, 1) = SPLIT_PART(%(pre_fen)s, ' ', 2)
+  AND cg.moves->>((k.ord - 1)::int) IS NOT NULL
+ORDER BY op.name, op.id, cg.id, k.ord
+"""
+
+# The engine's best move at each of a set of boards, from the player's most recent analysed
+# game reaching it: the game and the alignment rule core/scout/positions.py's replay read uses
+# (the entry's `ply` must equal the element's index, or no move is read).
+_BEST_AT_BOARDS_SQL = """
+SELECT DISTINCT ON (bq_canonical_fen(elem.fen))
+       bq_canonical_fen(elem.fen) AS board, elem.fen,
+       CASE WHEN (cg.ply_analysis -> (elem.ordinality - 1)::int ->> 'ply')::int = (elem.ordinality - 1)::int
+            THEN cg.ply_analysis -> (elem.ordinality - 1)::int ->> 'best_move' END AS best_move
+FROM player_games pg
+JOIN chess_games cg ON cg.id = pg.chess_game_id,
+     jsonb_array_elements_text(cg.fen_sequence) WITH ORDINALITY AS elem(fen, ordinality)
+WHERE pg.player_id = %(pid)s AND {analysable} AND cg.ply_analysis IS NOT NULL
+  AND cg.position_keys && (SELECT array_agg(bq_position_key(f)) FROM unnest(%(fens)s::text[]) AS f)
+  AND bq_canonical_fen(elem.fen) = ANY(%(boards)s)
+ORDER BY bq_canonical_fen(elem.fen), cg.played_at DESC NULLS LAST, cg.id DESC
 """
 
 
@@ -187,6 +228,62 @@ def blunders_by_board(rows: list[Row]) -> dict[str, Row]:
     }
 
 
+def scout_by_board(rows: list[Row], best_moves: dict[str, str | None] | None = None) -> dict[str, Row]:
+    """Leg S rows to {child board: branch with a scout source}: distinct games per profile,
+    profiles by games then name. `best_moves` maps a child board key to the engine's move there
+    (None when no analysed game of the player's carries it)."""
+    games: dict[str, dict[tuple[int, str], set[int]]] = {}
+    rep: dict[str, Row] = {}
+    for r in rows:
+        try:
+            board_key = normalize_fen(str(r["child_fen"]))
+        except ValueError:
+            continue
+        arriving = parse_arriving(r["parent_fen"], r["branch_move"])
+        if arriving is None:
+            continue
+        games.setdefault(board_key, {}).setdefault((int(r["profile_id"]), str(r["profile_name"])), set()).add(
+            int(r["chess_game_id"])
+        )
+        rep.setdefault(board_key, {"child_fen": r["child_fen"], "arriving": arriving})
+    out: dict[str, Row] = {}
+    for board_key, by_profile in games.items():
+        profiles = sorted(
+            ({"name": name, "games": len(ids)} for (_pid, name), ids in by_profile.items()),
+            key=lambda p: (-int(p["games"]), str(p["name"])),
+        )
+        best = (best_moves or {}).get(board_key)
+        best_san, best_squares = _reply_squares(str(rep[board_key]["child_fen"]), best)
+        out[board_key] = {
+            "child_fen": rep[board_key]["child_fen"],
+            "arriving": rep[board_key]["arriving"],
+            "source": {
+                "total_games": sum(int(p["games"]) for p in profiles),
+                "profiles": profiles,
+                "best_move_san": best_san,
+                "best_move_squares": best_squares,
+            },
+        }
+    return out
+
+
+def best_moves_at(conn: Connection[Any], fens: list[str]) -> dict[str, str | None]:
+    """{board key: engine's best move} from the player's analysed games, for the boards given."""
+    boards: dict[str, str] = {}
+    for fen in fens:
+        try:
+            boards.setdefault(normalize_fen(fen), fen)
+        except ValueError:
+            continue
+    if not boards:
+        return {}
+    rows = conn.execute(
+        cast(LiteralString, _BEST_AT_BOARDS_SQL.format(analysable=analysable_sql("cg"))),
+        {"pid": PLAYER_ID, "fens": list(boards.values()), "boards": list(boards)},
+    ).fetchall()
+    return {str(r["board"]): (r["best_move"] or None) for r in rows}
+
+
 def merge_branches(
     current_key: str, rep_map: dict[str, Row], blunder_map: dict[str, Row], scout_map: dict[str, Row]
 ) -> tuple[Row | None, list[Row]]:
@@ -237,7 +334,9 @@ def branch_compare(
         rep_rows = [dict(r) for r in cur.fetchall()]
         cur.execute(cast(LiteralString, _BLUNDER_BRANCHES_SQL.format(analysable=analysable_sql("cg"))), params)
         blunder_rows = [dict(r) for r in cur.fetchall()]
-    scout_map: dict[str, Row] = {}  # reserved: no scout source yet
+        cur.execute(cast(LiteralString, _SCOUT_BRANCHES_SQL.format(analysable=analysable_sql("cg"))), params)
+        scout_rows = [dict(r) for r in cur.fetchall()]
+    scout_map = scout_by_board(scout_rows, best_moves_at(conn, [str(r["child_fen"]) for r in scout_rows]))
     current, ordered = merge_branches(
         normalize_fen(fen), repertoire_by_board(rep_rows), blunders_by_board(blunder_rows), scout_map
     )

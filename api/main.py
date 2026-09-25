@@ -21,6 +21,7 @@ from api.routes import home as home_routes
 from api.routes import practice as practice_routes
 from api.routes import puzzles as puzzles_routes
 from api.routes import repertoire as repertoire_routes
+from api.routes import scout as scout_routes
 from api.routes import settings as settings_routes
 from core import secrets
 
@@ -58,6 +59,7 @@ def create_app() -> FastAPI:
     app.include_router(settings_routes.router)
     app.include_router(games_routes.router)
     app.include_router(home_routes.router)
+    app.include_router(scout_routes.router)
     app.include_router(practice_routes.router)
     app.include_router(blunders_routes.router)
     app.include_router(deviations_routes.router)

@@ -132,7 +132,7 @@ def test_the_hourly_chain_generates_puzzles_after_analysis(
     assert cli.main(["run"]) == 0
     capsys.readouterr()
     steps = [r["step"] for r in conn.execute("SELECT step FROM pipeline_runs ORDER BY id").fetchall()]
-    assert steps == ["import", "match", "analyze", "generate-puzzles", "srs-maintain", "housekeep"]
+    assert steps == ["import", "match", "analyze", "generate-puzzles", "srs-maintain", "import-opponents", "housekeep"]
 
 
 def test_generate_puzzles_runs_on_its_own(

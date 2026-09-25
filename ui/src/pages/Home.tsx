@@ -75,6 +75,29 @@ function Play({ g }: { g: HomePage["games"] }) {
   );
 }
 
+function ActivityStrip({ a }: { a: HomePage["activity"] }) {
+  return (
+    <section className={`${tile} mt-4`} aria-label="Played">
+      <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
+        <span className="text-sm font-medium text-zinc-500">Played</span>
+        {(
+          [
+            ["24 h", a.last_1],
+            ["7 d", a.last_7],
+            ["30 d", a.last_30],
+            ["all", a.total],
+          ] as const
+        ).map(([label, n]) => (
+          <span key={label} className="text-sm">
+            <span className="text-zinc-500">{label} </span>
+            <span className="font-semibold">{n}</span>
+          </span>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function LookedAt({ at }: { at: string | null }) {
   return <span className="text-xs text-zinc-500">{at ? `last looked ${new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}` : "never looked"}</span>;
 }
@@ -154,6 +177,7 @@ export default function Home() {
             <Play g={data.games} />
             <SinceLastVisit d={data} />
           </div>
+          <ActivityStrip a={data.activity} />
           <Pipeline p={data.pipeline} />
         </>
       )}

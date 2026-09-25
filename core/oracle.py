@@ -596,3 +596,32 @@ def old_conflict_lines(conn: Connection[Any]) -> list[dict[str, Any]]:
             (PLAYER_ID,),
         ).fetchall()
     ]
+
+
+# --- scout -----------------------------------------------------------------------------------
+
+
+def old_opponent_profiles(conn: Connection[Any]) -> list[dict[str, Any]]:
+    """The player's active opponent profiles in the old database (ids are kept by the migration)."""
+    return [
+        dict(r)
+        for r in conn.execute(
+            "SELECT id, name FROM opponent_profiles WHERE player_id = %s AND active ORDER BY id", (PLAYER_ID,)
+        ).fetchall()
+    ]
+
+
+def old_app_settings(conn: Connection[Any], keys: list[str]) -> dict[str, str]:
+    """The old key/value settings rows, as stored (text)."""
+    rows = conn.execute("SELECT key, value FROM app_settings WHERE key = ANY(%s)", (keys,)).fetchall()
+    return {str(r["key"]): str(r["value"]) for r in rows}
+
+
+def forget_dismissals(conn: Connection[Any]) -> int:
+    """Empty the shared dismissed-boards table of the scratch copy, so a comparison against the
+    old Scout queries (which never read it) sees every board."""
+    require_scratch_database(conn)
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM dismissed_blunder_fens WHERE player_id = %s", (PLAYER_ID,))
+        conn.commit()
+        return cur.rowcount

@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 import { Chessboard } from "react-chessboard";
 import { daysAgo } from "../../blunders";
 import { SQUARES } from "../../utils/board";
-import { buildArrows, buildPgn, sanToSquares } from "../../utils/chess";
+import { buildArrows, buildPgn, decisionNodeArrows, sanToSquares } from "../../utils/chess";
 import { AiExplanationPanel } from "./AiExplanationPanel";
-import { ClassBadge } from "./CardInner";
+import { ClassBadge, RepliesLine } from "./CardInner";
 import { GamesTable } from "./GamesTable";
 import { LineReaderPanel } from "./LineReaderPanel";
 import { RepLinesPanel } from "./RepLinesPanel";
@@ -107,14 +107,15 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
     onIndexChange?.(i);
   };
   const pgn = d.moves && d.ply ? buildPgn(d.moves, d.ply) : "";
-  const played = d.movePlayed ?? d.mostCommonPlayed ?? null;
+  const node = d.oppReplies != null;
+  const played = node ? null : (d.movePlayed ?? d.mostCommonPlayed ?? null);
   // A deviation pattern spans boards: its most common played move is an aggregate over the pattern and
   // its board is the latest game's, so the move can be illegal here. The similar-positions search only
   // takes a move it can play on this board (the arrows already draw nothing for such a move).
   const queriedMove = played && sanToSquares(d.fen, played) ? played : null;
-  const best = recommended(d);
+  const best = node ? { move: null, label: "Best" as const } : recommended(d);
   // One derivation for the board here and for anything that shows the same board beside it.
-  const mainArrows = buildArrows({ fen: d.fen, moves: d.moves, ply: d.ply, movePlayed: played, bestMove: best.move });
+  const mainArrows = node ? decisionNodeArrows({ fen: d.fen, replies: d.oppReplies, leadIn: d.leadIn, leadPreFen: d.leadPreFen }) : buildArrows({ fen: d.fen, moves: d.moves, ply: d.ply, movePlayed: played, bestMove: best.move });
   const nav = "flex h-8 w-8 items-center justify-center rounded border border-zinc-300 disabled:opacity-30 dark:border-zinc-700";
 
   return (
@@ -183,6 +184,11 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
           />
         </div>
 
+        {node && (
+          <div className="rounded border border-zinc-200 p-3 text-sm dark:border-zinc-800">
+            <RepliesLine d={d} />
+          </div>
+        )}
         {(played || best.move) && (
           <div className="space-y-1 rounded border border-zinc-200 p-3 text-sm dark:border-zinc-800">
             {played && (
@@ -196,6 +202,9 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
               <div className="flex items-center gap-3">
                 <span className="w-16 text-xs text-zinc-500">{best.label}</span>
                 <span className="font-mono text-emerald-600 dark:text-emerald-400">{best.move}</span>
+                {d.oppGames && (
+                  <span className="ml-auto text-xs text-zinc-500">{best.label === "Expected" && d.expectedMove ? "your repertoire plays this" : d.bestMoveDate ? `from your game on ${d.bestMoveDate}` : ""}</span>
+                )}
               </div>
             )}
             {d.bestLine && <p className="break-words pt-1 font-mono text-xs text-zinc-500">{d.bestLine}</p>}
@@ -221,7 +230,8 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
 
         {d.repLines?.length ? <RepLinesPanel key={d.fen} lines={d.repLines} /> : null}
 
-        {d.games.length > 0 ? <GamesTable games={d.games} bestLabel={best.label} /> : <p className="py-2 text-center text-xs text-zinc-500">No game history for this position.</p>}
+        {d.games.length > 0 ? <GamesTable games={d.games} bestLabel={best.label} title={d.oppGames ? "My games" : "Games"} /> : !node && <p className="py-2 text-center text-xs text-zinc-500">No game history for this position.</p>}
+        {d.oppGames && (d.oppGames.length > 0 ? <GamesTable games={d.oppGames} bestLabel={best.label} title="Their games" /> : <p className="py-2 text-center text-xs text-zinc-500">None of their games reach this position.</p>)}
 
         <p className="pb-4 text-center text-xs text-zinc-500">Swipe or use ‹ › to move through the list</p>
       </div>

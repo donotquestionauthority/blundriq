@@ -1,12 +1,11 @@
 """The import step: fetch new games for the player from one platform and store them.
 
 Incremental mode (the hourly default):
-- Chess.com walks the archives of the last `months` months, oldest first, one
-  transaction per archive, skipping games strictly older than the newest
-  stored game (`<`, not `<=`: end times have second resolution and a new game
-  can share the newest game's second; the upsert dedups). An interrupted run
-  leaves only newer archives unfetched, and they are still newer than the
-  stored games, so the next run fetches them.
+- Chess.com walks the archives of the last `months` months, oldest first
+  (`core/ingest/walk.py`, shared with the opponent importer), one transaction
+  per archive, skipping games strictly older than the newest stored game. An
+  interrupted run leaves only newer archives unfetched, and they are still
+  newer than the stored games, so the next run fetches them.
 - Lichess streams newest first from `since`, committing every 100 games.
   `since` filters by a game's CREATION time and the stream contains finished
   games plus (with `ongoing=true`) games still in progress. The boundary the
@@ -32,7 +31,7 @@ import httpx
 from psycopg import Connection, sql
 
 from core.constants import PLAYER_ID
-from core.ingest import chesscom, lichess
+from core.ingest import lichess, walk
 from core.ingest.records import GameRecord, integer
 from core.ingest.store import store_game
 from core.player import usernames
@@ -101,19 +100,8 @@ def import_chesscom(
     started_at = datetime.now(UTC)
     latest = None if all_history else latest_played_at(conn, "chesscom")
     conn.commit()
-    archives = chesscom.fetch_archives(client, username)
-    if not all_history:
-        cutoff = datetime.now(UTC) - timedelta(days=30 * (months or INITIAL_IMPORT_MONTHS))
-        archives = chesscom.archives_since(archives, cutoff)
-    for url in archives:
-        games = chesscom.fetch_archive(client, url)
-        records: list[GameRecord | None] = []
-        for game in games:
-            end_time = game.get("end_time")
-            played_at = datetime.fromtimestamp(int(end_time), tz=UTC) if end_time else None
-            if latest is not None and played_at is not None and played_at < latest:
-                continue
-            records.append(chesscom.parse_game(game, username))
+    cutoff = None if all_history else datetime.now(UTC) - timedelta(days=30 * (months or INITIAL_IMPORT_MONTHS))
+    for records in walk.chesscom_games(client, username, since=latest, cutoff=cutoff):
         _store_batch(conn, records, summary)
     _stamp_completed(conn, "chesscom", started_at)
     return summary

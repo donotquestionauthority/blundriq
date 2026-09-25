@@ -128,6 +128,14 @@ def test_chesscom_archives_since() -> None:
     urls = [f"https://api.chess.com/pub/player/{ME}/games/2026/0{m}" for m in range(1, 10)]
     kept = chesscom.archives_since(urls, datetime(2026, 7, 15, tzinfo=UTC))
     assert [u[-2:] for u in kept] == ["07", "08", "09"]
+    # the month is the cutoff's UTC month whatever zone the instant is expressed in
+    from zoneinfo import ZoneInfo
+
+    ny = datetime(2026, 7, 15, tzinfo=UTC).astimezone(ZoneInfo("America/New_York"))
+    assert chesscom.archives_since(urls, ny) == kept
+    edge = datetime(2026, 8, 1, 0, 30, tzinfo=UTC).astimezone(ZoneInfo("America/New_York"))  # July 31 in NY
+    assert [u[-2:] for u in chesscom.archives_since(urls, edge)] == ["08", "09"]
+    assert chesscom.archives_since(urls, datetime(2026, 7, 15)) == kept  # naive = UTC
 
 
 def test_lichess_parse_game() -> None:

@@ -32,7 +32,7 @@ describe("Layout navigation", () => {
     expect(more).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(more);
     const menu = screen.getByRole("menu");
-    expect(within(menu).getAllByRole("menuitem").map((el) => el.textContent)).toEqual(["Repertoire", "Games", "Preferences"]);
+    expect(within(menu).getAllByRole("menuitem").map((el) => el.textContent)).toEqual(["Scout", "Repertoire", "Games", "Preferences"]);
     expect(more).toHaveAttribute("aria-expanded", "true");
   });
 
@@ -61,17 +61,17 @@ describe("Layout navigation", () => {
     fireEvent.keyDown(screen.getByRole("menu"), { key: "ArrowDown" });
     expect(items[0]).toHaveFocus();
     fireEvent.keyDown(items[0], { key: "ArrowUp" });
-    expect(items[2]).toHaveFocus();
+    expect(items[3]).toHaveFocus();
   });
 
-  it("the hamburger panel lists all seven pages and Log out, and closes on a link", () => {
+  it("the hamburger panel lists all eight pages and Log out, and closes on a link", () => {
     renderAt("/");
     const burger = screen.getByRole("button", { name: "Menu" });
     expect(burger).toHaveAttribute("aria-expanded", "false");
     expect(document.getElementById("nav-panel")).toBeNull();
     fireEvent.click(burger);
     const panel = document.getElementById("nav-panel")!;
-    expect(within(panel).getAllByRole("link").map((el) => el.textContent)).toEqual(["Home", "Practice", "Blunders", "Deviations", "Repertoire", "Games", "Preferences"]);
+    expect(within(panel).getAllByRole("link").map((el) => el.textContent)).toEqual(["Home", "Practice", "Blunders", "Deviations", "Scout", "Repertoire", "Games", "Preferences"]);
     expect(within(panel).getByRole("button", { name: "Log out" })).toBeInTheDocument();
     fireEvent.click(within(panel).getByRole("link", { name: "Practice" }));
     expect(screen.getByText("practice page")).toBeInTheDocument();

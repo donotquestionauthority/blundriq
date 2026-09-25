@@ -469,7 +469,7 @@ export function PuzzleEngine({
       </div>
       {/* Always rendered, invisible without a target, so nothing below the board shifts. */}
       <button type="button" data-testid="branch-compare-launch" onClick={() => compareTarget && setBranchCompareOpen(true)} disabled={!compareTarget} className={`w-full rounded border px-3 py-2 text-xs font-medium ${compareTarget ? "border-sky-300 bg-sky-50 text-sky-800 dark:border-sky-800 dark:bg-sky-900/30 dark:text-sky-300" : "pointer-events-none border-transparent text-transparent"}`}>
-        Compare similar positions
+        What if {compareTarget?.preFen.split(" ")[1] === "w" ? "White" : "Black"} had played differently?
       </button>
       {/* The note on the position the board is showing, and the whole line for a repertoire puzzle. */}
       <div className="mt-3 w-full">
