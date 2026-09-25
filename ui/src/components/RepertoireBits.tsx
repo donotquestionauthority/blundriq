@@ -22,7 +22,7 @@ export function Toggle({ on, label, busy, onChange }: { on: boolean; label: stri
 
 export function ArrowBoard({ id, fen, orientation, arrows, size = 160 }: { id: string; fen: string; orientation: "white" | "black"; arrows: BoardArrow[]; size?: number }) {
   return (
-    <div style={{ width: size }} className="shrink-0">
+    <div style={{ width: size }} className="shrink-0 self-start">
       <Chessboard options={{ id, position: fen, allowDragging: false, boardStyle: { borderRadius: "6px" }, ...SQUARES, boardOrientation: orientation, arrows }} />
     </div>
   );
