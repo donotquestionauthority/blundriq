@@ -187,7 +187,7 @@ def initialised(conn: psycopg.Connection[DictRow], pid: int) -> bool:
 
 
 def test_onboarding_takes_the_newest_n_eligible_games_per_source(clean: psycopg.Connection[DictRow]) -> None:
-    """Test 5: a Chess960 game among the newest N+1 consumes no slot, so the N stored are the
+    """A Chess960 game among the newest N+1 consumes no slot, so the N stored are the
     N standard ones and the oldest of them is the (N+1)th raw game; ongoing Lichess games are
     seen, never stored, never counted."""
     conn = clean
@@ -234,7 +234,7 @@ def test_a_profile_with_no_source_is_initialised_at_once(clean: psycopg.Connecti
 
 
 def test_a_profile_with_one_failing_source_stays_uninitialised(clean: psycopg.Connection[DictRow]) -> None:
-    """Test 6: the Lichess side fetches, the Chess.com side 429s: the run is red, the Lichess
+    """The Lichess side fetches, the Chess.com side 429s: the run is red, the Lichess
     games are stored and its cursor stamped, and the profile onboards on a later run."""
     conn = clean
     pid = profile(conn)
@@ -255,7 +255,7 @@ def test_a_profile_with_one_failing_source_stays_uninitialised(clean: psycopg.Co
 
 
 def test_chesscom_equal_second_games_are_both_stored(clean: psycopg.Connection[DictRow]) -> None:
-    """Test 6b: two games ending in the same second, the second one only visible after the
+    """Two games ending in the same second, the second one only visible after the
     first set the cursor. Skipping `<=` would lose it for ever; `<` refetches the first and
     the upsert dedups."""
     conn = clean
@@ -294,7 +294,7 @@ def test_chesscom_incremental_walk_starts_at_the_cursors_month(clean: psycopg.Co
 def test_lichess_boundary_comes_from_the_ongoing_request_not_the_capped_stream(
     clean: psycopg.Connection[DictRow],
 ) -> None:
-    """6a(i)-(ii): an ongoing correspondence game created before the newest N finished games
+    """An ongoing correspondence game created before the newest N finished games
     is invisible to a capped onboarding stream; the boundary must still be its creation time,
     so the run after it finishes stores it."""
     conn = clean
@@ -319,7 +319,7 @@ def test_lichess_boundary_comes_from_the_ongoing_request_not_the_capped_stream(
 
 
 def test_lichess_stamp_only_after_a_complete_walk(clean: psycopg.Connection[DictRow]) -> None:
-    """6a(iii): a transport failure mid-stream leaves the cursor unchanged and counts as a
+    """A transport failure mid-stream leaves the cursor unchanged and counts as a
     failed source; what was committed before it stays; the rerun completes the walk."""
     conn = clean
     pid = profile(conn, chesscom=None, initialised=True)
@@ -337,7 +337,7 @@ def test_lichess_stamp_only_after_a_complete_walk(clean: psycopg.Connection[Dict
 def test_lichess_null_cursor_on_an_initialised_source_walks_the_whole_history(
     clean: psycopg.Connection[DictRow],
 ) -> None:
-    """6a(iv): reconciliation. The old cursor was an end time; a game created before it and
+    """Reconciliation. The old cursor was an end time; a game created before it and
     finished after it is only reachable from since=0. Interrupted, NULL stays; the rerun completes."""
     conn = clean
     pid = profile(conn, chesscom=None, initialised=True)
@@ -364,7 +364,7 @@ def test_reset_lichess_cursors_and_the_cli_switch(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """6a(v): the reset nulls every active Lichess cursor of an initialised profile, none of
+    """The reset nulls every active Lichess cursor of an initialised profile, none of
     the Chess.com ones, deletes nothing; `import-opponents --reset-lichess-cursors` then walks
     and stamps, and a second plain run is an ordinary incremental one."""
     conn = clean
@@ -409,8 +409,11 @@ def test_a_game_that_fails_to_store_fails_the_run_and_holds_the_cursor(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """A real database error on the second of three games in one archive: the savepoint keeps
+    the first and the third, the run is red and alerts, the cursor stays; the retry is green."""
     conn = clean
     pid = profile(conn, lichess=None, initialised=True)
+    set_cursor(conn, pid, "chesscom", T0 - timedelta(days=3))
     p = Platforms()
     p.archives["2026/09"] = [
         chesscom_game(1, T0 - timedelta(days=2)),
@@ -419,26 +422,26 @@ def test_a_game_that_fails_to_store_fails_the_run_and_holds_the_cursor(
     ]
     real_client = httpx.Client
     monkeypatch.setattr(httpx, "Client", lambda *a, **k: real_client(transport=httpx.MockTransport(p.handle)))
-    real_store = importing.store_opponent_game
+    real_upsert = importing.upsert_game
 
-    def poisoned(conn: Any, profile_id: int, record: Any) -> bool:
+    def poisoned(conn: Any, record: Any) -> int:
         if record.platform_game_id == "2":
-            raise RuntimeError("disk full")
-        return real_store(conn, profile_id, record)
+            conn.execute("INSERT INTO chess_games (platform, platform_game_id) VALUES ('nope', 'x')")  # CHECK fails
+        return real_upsert(conn, record)
 
-    monkeypatch.setattr(importing, "store_opponent_game", poisoned)
+    monkeypatch.setattr(importing, "upsert_game", poisoned)
     sent = _capture_alerts(monkeypatch)
     args = argparse.Namespace(alert=True, profile=None, reset_lichess_cursors=False)
     assert cli._run_step("import-opponents", cli._step_import_opponents, args) == 1
     err = capsys.readouterr().err
     assert "import-opponents: FAILED (StepFailed)" in err and OPP not in err
     assert views(conn, pid) == ["1", "3"]  # the games before and after it are stored
-    assert cursor(conn, pid, "chesscom") is None
+    assert cursor(conn, pid, "chesscom") == T0 - timedelta(days=3)
     run = conn.execute("SELECT status, error FROM pipeline_runs ORDER BY id DESC LIMIT 1").fetchone()
     assert run and run["status"] == "failed" and '"failed": 1' in run["error"]
     assert [s[0] for s in sent] == ["import-opponents"]
     # the next run stores it, advances the cursor and is green
-    monkeypatch.setattr(importing, "store_opponent_game", real_store)
+    monkeypatch.setattr(importing, "upsert_game", real_upsert)
     assert cli._run_step("import-opponents", cli._step_import_opponents, args) == 0
     assert views(conn, pid) == ["1", "2", "3"] and cursor(conn, pid, "chesscom") == T0
     assert len(sent) == 1

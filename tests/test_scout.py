@@ -132,7 +132,7 @@ def page_fens(conn: psycopg.Connection[DictRow], **over: Any) -> list[tuple[str,
 
 
 def test_only_player_to_move_positions_and_chain_collapse(scout: psycopg.Connection[DictRow]) -> None:
-    """Gate 1: P7 (the opponent to move) never surfaces. Gate 2: P6 is a branch point (two
+    """P7 (the opponent to move) never surfaces. P6 is a branch point (two
     surfaced successors) and stays; P8 and P8_D3 are leaves and stay; with one branch pruned
     P6 becomes an interior point and is collapsed."""
     got = page_fens(scout)
@@ -174,7 +174,7 @@ def test_colour_filter(scout: psycopg.Connection[DictRow]) -> None:
 
 
 def test_chess960_games_count_for_nothing_on_either_side(scout: psycopg.Connection[DictRow]) -> None:
-    """Gate 3: a Chess960 game holding the same boards (a standard start, as Chess960 can
+    """A Chess960 game holding the same boards (a standard start, as Chess960 can
     deal) surfaces nothing — the opponent's against the player's standard game, and the
     player's against the opponent's standard game."""
     conn = scout
@@ -207,7 +207,7 @@ def test_min_freq_counts_distinct_opponent_games(scout: psycopg.Connection[DictR
 
 
 def test_dismissed_boards_are_excluded_and_listed_for_restore(scout: psycopg.Connection[DictRow]) -> None:
-    """Test 8: a tier-3 board with no blunder row, dismissed: absent here, absent from
+    """A tier-3 board with no blunder row, dismissed: absent here, absent from
     Blunders' dismissed list, present in the shared list, back after restore."""
     conn = scout
     blunders.dismiss(conn, P8)
@@ -228,7 +228,7 @@ def ply_analysis(n: int, best: dict[int, str], shift: int = 0) -> str:
 
 
 def test_best_move_is_read_from_the_replay_game_at_the_aligned_ply(scout: psycopg.Connection[DictRow]) -> None:
-    """Test 7: the entry at index 6 whose `ply` is 6 gives the move; shifted by one it gives
+    """The entry at index 6 whose `ply` is 6 gives the move; shifted by one it gives
     nothing; a game outside the window (`ply_analysis` NULL) gives nothing."""
     conn = scout
     conn.execute("UPDATE chess_games SET ply_analysis = %s::jsonb WHERE id = 1", (ply_analysis(9, {6: "d3", 8: "d4"}),))
@@ -279,7 +279,7 @@ def config(**over: Any) -> Settings:
 
 
 def test_decision_nodes_are_colour_aligned_with_a_lead_in(clean: psycopg.Connection[DictRow]) -> None:
-    """Test 9: the opponent (black) chose Bc5 / Bb4 at NODE; the player reached it as white
+    """The opponent (black) chose Bc5 / Bb4 at NODE; the player reached it as white
     by Nc3 → a card with the lead-in. Reached by two different moves → no lead-in. Reached
     only in the opponent's seat (the player was black) → no card."""
     conn = clean
@@ -303,9 +303,14 @@ def test_decision_nodes_are_colour_aligned_with_a_lead_in(clean: psycopg.Connect
     capped = nodes.decision_nodes(conn, flt(), config(reply_cap=1))[0]
     assert capped["opp_replies"] == [{"move": "Bb4", "cnt": 2}] and capped["replies_more"] == 1
     assert nodes.decision_nodes(conn, flt(), config(branch_min=3)) == []
+    floored = nodes.decision_nodes(conn, flt(), config(reply_min_freq=2))
+    assert floored == []  # Bc5 ×1 is under the floor, leaving one reply: not a choice
     assert nodes.decision_nodes(conn, flt(min_freq=4), config()) == []
     blunders.dismiss(conn, NODE)
     assert nodes.decision_nodes(conn, flt(), config()) == []
+    assert [b["fen"] for b in blunders.dismissed(conn)] == [NODE]  # a node has no blunder row: only this list has it
+    blunders.restore(conn, NODE)
+    assert len(nodes.decision_nodes(conn, flt(), config())) == 1
 
 
 def test_decision_nodes_repertoire_coverage_and_960(clean: psycopg.Connection[DictRow]) -> None:
@@ -327,7 +332,7 @@ def test_decision_nodes_repertoire_coverage_and_960(clean: psycopg.Connection[Di
 
 
 def test_shrink_and_the_ranking(clean: psycopg.Connection[DictRow]) -> None:
-    """Test 10: k = 0 is the raw rate; at k = 10 a 1-game 100 % line ranks below a 10-game 80 % line."""
+    """k = 0 is the raw rate; at k = 10 a 1-game 100 % line ranks below a 10-game 80 % line."""
     lines = [
         {"family": "A", "variation": "A: one", "games": 1, "wins": 1, "draws": 0, "losses": 0, "eco": ""},
         {"family": "B", "variation": "B: ten", "games": 10, "wins": 8, "draws": 0, "losses": 2, "eco": ""},
@@ -373,10 +378,14 @@ def test_report_buckets_and_overall_over_result_bearing_views(clean: psycopg.Con
         report.line_games(conn, 1, family=" ", variation=None, opp_since=None)
     windowed = report.report(conn, 1, prior_strength=0, opp_since=positions.opp_since(conn, 1, 5))
     assert [m["family"] for m in windowed["most_played"]] == ["Italian Game"]
+    # `overall` is over the five result-bearing views (3 wins of 5), not the six games: at k = 5
+    # the Giuoco's rate is (3 + 5 * 0.6) / (4 + 5); counting the resultless game would give 0.5
+    shrunk = report.report(conn, 1, prior_strength=5, opp_since=None)["best_lines"][0]
+    assert shrunk["variation"] == "Italian Game: Giuoco" and shrunk["shrunk_rate"] == pytest.approx((3 + 5 * 0.6) / 9)
 
 
 def test_activity_counts(clean: psycopg.Connection[DictRow]) -> None:
-    """Test 12: 25 h ago is in 7 d, not 24 h; the player's Chess960 game counts; the
+    """25 h ago is in 7 d, not 24 h; the player's Chess960 game counts; the
     opponent's counts read the profile's views only."""
     conn = clean
     h.player(conn)
@@ -406,7 +415,7 @@ def compare(conn: psycopg.Connection[DictRow]) -> dict[str, Any]:
 
 
 def test_compare_scout_leg(clean: psycopg.Connection[DictRow]) -> None:
-    """Test 11: the opponent's games through the parent as the side to move produce the scout
+    """The opponent's games through the parent as the side to move produce the scout
     source; the same board in the repertoire keeps both; a game where the scouted account was
     on the other side produces nothing; the best move comes from the player's analysed game."""
     conn = clean

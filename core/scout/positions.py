@@ -286,11 +286,14 @@ def page_rows(conn: Connection[Any], f: ScoutFilters, page: int) -> tuple[list[R
 
 # --- details ------------------------------------------------------------------------------
 
-# The replay game per board: the player's most recent analysable game through it, with the
-# engine's best move at that ply from the same row. `ply_analysis` is a list of per-ply
-# entries whose `ply` is the 0-based index of the position they evaluate, the same index
-# `elem.ordinality - 1` gives the FEN; the entry is read only when the two agree, so a
-# shifted array yields no move rather than a wrong one.
+# The replay game per board: the player's most recent analysed game through it (the most recent
+# with moves when none is analysed), with the engine's best move at that ply from the same row,
+# so the replay and the arrow can never come from different games — and Compare's scout column
+# reads the engine's move at a board the same way. `ply_analysis` is a list of per-ply entries
+# whose `ply` is the 0-based index of the position they evaluate, the same index
+# `elem.ordinality - 1` gives the FEN; the entry is read only when the two agree, so a shifted
+# array yields no move rather than a wrong one. The GIN prefilter keeps the expansion to the
+# games that hold one of the boards.
 _REPLAY_SQL = """
 SELECT DISTINCT ON (elem.fen)
        elem.fen, cg.moves, cg.starting_fen, (elem.ordinality - 1)::int AS ply, cg.played_at,
@@ -299,8 +302,10 @@ SELECT DISTINCT ON (elem.fen)
 FROM   player_games pg
 JOIN   chess_games cg ON cg.id = pg.chess_game_id,
        jsonb_array_elements_text(cg.fen_sequence) WITH ORDINALITY AS elem(fen, ordinality)
-WHERE  pg.player_id = %(pid)s AND {analysable} AND elem.fen = ANY(%(fens)s) AND cg.moves IS NOT NULL
-ORDER  BY elem.fen, cg.played_at DESC NULLS LAST, cg.id DESC
+WHERE  pg.player_id = %(pid)s AND {analysable} AND cg.moves IS NOT NULL
+  AND  cg.position_keys && (SELECT array_agg(bq_position_key(f)) FROM unnest(%(fens)s::text[]) AS f)
+  AND  elem.fen = ANY(%(fens)s)
+ORDER  BY elem.fen, (cg.ply_analysis IS NOT NULL) DESC, cg.played_at DESC NULLS LAST, cg.id DESC
 """
 
 _MY_BLUNDER_GAMES_SQL = """

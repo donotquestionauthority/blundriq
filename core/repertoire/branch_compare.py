@@ -105,8 +105,8 @@ ORDER BY op.name, op.id, cg.id, k.ord
 """
 
 # The engine's best move at each of a set of boards, from the player's most recent analysed
-# game reaching it: the same alignment rule as core/scout/positions.py (the entry's `ply`
-# must equal the element's index, or no move is read).
+# game reaching it: the game and the alignment rule core/scout/positions.py's replay read uses
+# (the entry's `ply` must equal the element's index, or no move is read).
 _BEST_AT_BOARDS_SQL = """
 SELECT DISTINCT ON (bq_canonical_fen(elem.fen))
        bq_canonical_fen(elem.fen) AS board, elem.fen,

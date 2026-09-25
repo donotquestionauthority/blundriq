@@ -31,7 +31,7 @@ def list_profiles() -> dict[str, Any]:
 
 
 class ProfileBody(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
+    name: str = Field(max_length=100)
     chesscom_username: str | None = Field(default=None, max_length=50)
     lichess_username: str | None = Field(default=None, max_length=50)
 

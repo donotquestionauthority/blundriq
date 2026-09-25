@@ -131,6 +131,7 @@ def create(
     ).fetchone()
     if taken is not None:
         raise NameTaken(name)
+    conn.commit()  # no transaction is held across the platform round trips
     canonical = {p: verify_handle(p, h, client=client) for p, h in handles.items() if h}
     row = conn.execute(
         "INSERT INTO opponent_profiles (player_id, name, active, is_initialized) VALUES (%s, %s, TRUE, FALSE)"

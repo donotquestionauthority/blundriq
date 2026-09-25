@@ -59,7 +59,7 @@ from core.ingest.store import upsert_game
 class Summary:
     profiles: int = 0
     sources: int = 0
-    fetched: int = 0  # records that reached the store, eligible or not
+    fetched: int = 0  # eligible records that reached the store
     new: int = 0  # opponent_views rows inserted
     skipped: int = 0  # unparseable or not analysable: never stored, never a cursor candidate
     failed: int = 0  # records that failed to store, plus sources whose fetch raised
