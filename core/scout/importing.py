@@ -128,6 +128,16 @@ class _SourceRun:
     def full(self) -> bool:
         return self.cap is not None and self.eligible >= self.cap
 
+    def store_batch(self, records: list[GameRecord | None]) -> None:
+        """One transaction per batch, a savepoint per game, then commit: what is stored stays
+        stored whatever happens to the rest of the stream."""
+        with self.conn.transaction():
+            for record in records:
+                if self.full():
+                    break
+                self.store(record)
+        self.conn.commit()
+
     def store(self, record: GameRecord | None) -> None:
         """One record; a Chess960 or unparseable one is skipped and consumes no cap slot."""
         if record is None or not is_analysable(record.variant):
@@ -156,11 +166,7 @@ def _chesscom(conn: Connection[Any], client: httpx.Client, src: dict[str, Any], 
     else:
         batches = walk.chesscom_games(client, src["username"], cutoff=now - timedelta(days=30 * INITIAL_IMPORT_MONTHS))
     for records in batches:
-        for record in records:
-            if run.full():
-                break
-            run.store(record)
-        conn.commit()
+        run.store_batch(records)
         if run.full():
             break
     if run.newest_played_at is None:
@@ -184,18 +190,24 @@ def _lichess(conn: Connection[Any], client: httpx.Client, src: dict[str, Any], r
     cursor: datetime | None = src["last_fetched"]
     since_ms = int(cursor.timestamp() * 1000) if cursor is not None and src["is_initialized"] else 0
     stream: Iterator[dict[str, Any]] = lichess.stream_games(client, src["username"], since_ms)
-    pending = 0
+    batch: list[GameRecord | None] = []
+    eligible = 0
     for game in stream:
-        if run.full():
+        # The cap closes the stream as soon as it is met (leaving the `with` inside
+        # stream_games): the boundary never depends on what this stream happened to show.
+        if run.cap is not None and eligible >= run.cap:
             break
         if lichess.is_ongoing(game):
             continue
-        run.store(lichess.parse_game(game, src["username"]))
-        pending += 1
-        if pending >= LICHESS_BATCH:
-            conn.commit()
-            pending = 0
-    conn.commit()
+        record = lichess.parse_game(game, src["username"])
+        if record is not None and is_analysable(record.variant):
+            eligible += 1
+        batch.append(record)
+        if len(batch) >= LICHESS_BATCH:
+            run.store_batch(batch)
+            batch = []
+    if batch:
+        run.store_batch(batch)
     return boundary
 
 
