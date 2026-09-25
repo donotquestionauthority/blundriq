@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { Link, useLocation, useSearchParams } from "react-router";
 import { ArrowBoard, RefusalDialog, Toggle } from "../components/RepertoireBits";
 import { moveArrows, numbered } from "../utils/chess";
 import { getConflicts, refusalOf, setActive } from "../repertoire";
@@ -36,6 +36,7 @@ function LineRow({ line, busy, onFlip }: { line: ConflictLine; busy: boolean; on
 }
 
 function Position({ p, expanded, highlighted, busy, onToggleExpand, onFlip }: { p: ConflictPosition; expanded: boolean; highlighted: boolean; busy: Set<number>; onToggleExpand: () => void; onFlip: (line: ConflictLine, on: boolean, el: HTMLButtonElement) => void }) {
+  const boardId = useId().replace(/[^a-zA-Z0-9-]/g, ""); // the id ends up in url(#…) and a selector
   const arrows = moveArrows(
     p.fen,
     p.moves.map((g) => ({ move: g.move, inPlay: g.lines.some((l) => l.effective) })),
@@ -46,7 +47,7 @@ function Position({ p, expanded, highlighted, busy, onToggleExpand, onFlip }: { 
     <div data-fen={p.fen} className={`rounded border transition-colors ${p.contested ? "border-amber-400/60" : "border-zinc-200 dark:border-zinc-800"} ${highlighted ? "bg-amber-50 dark:bg-amber-950/30" : ""}`}>
       <div role="button" tabIndex={0} aria-expanded={expanded} className="flex cursor-pointer items-start gap-3 px-3 py-2" onClick={onToggleExpand} onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onToggleExpand())}>
         <span className="w-4 pt-1 text-zinc-400">{expanded ? "▾" : "▸"}</span>
-        <ArrowBoard id={`conflict-${p.fen}`} fen={p.fen} orientation={p.color} arrows={arrows} size={120} />
+        <ArrowBoard id={boardId} fen={p.fen} orientation={p.color} arrows={arrows} />
         <div className="min-w-0 flex-1 text-sm">
           <p>
             {p.moves.length} moves · {on} of {total} lines on
@@ -100,6 +101,7 @@ export default function RepertoireConflicts() {
   const [refusal, setRefusal] = useState<{ refusal: Refusal; orientation: "white" | "black"; from: HTMLButtonElement } | null>(null);
   const latest = useRef(0);
   const [searchParams] = useSearchParams();
+  const { key: navigation } = useLocation(); // a new key for every navigation, the same URL included
 
   const refetch = useCallback(() => {
     const req = ++latest.current;
@@ -121,11 +123,11 @@ export default function RepertoireConflicts() {
   // `?filter=all` opens on All; `?fen=` reveals its position once the data is in — expanded,
   // scrolled to, highlighted for a moment, and on the All filter when it is not contested.
   // Handled once per navigation (a navigation within the mounted page, the dialog's link,
-  // counts), never again on a refetch: state adjusted during render, keyed on the params
-  // object. An unknown FEN is ignored.
-  const [revealed, setRevealed] = useState<URLSearchParams | null>(null);
-  if (data && revealed !== searchParams) {
-    setRevealed(searchParams);
+  // counts, even to the URL already shown), never again on a refetch: state adjusted during
+  // render, keyed on the location key. An unknown FEN is ignored.
+  const [revealed, setRevealed] = useState<string | null>(null);
+  if (data && revealed !== navigation) {
+    setRevealed(navigation);
     if (searchParams.get("filter") === "all") setFilter("all");
     const target = searchParams.get("fen");
     const p = target ? data.positions.find((x) => x.fen === target) : undefined;

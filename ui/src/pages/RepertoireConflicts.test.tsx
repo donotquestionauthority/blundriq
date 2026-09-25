@@ -63,6 +63,9 @@ const renderPage = (initial = "/repertoire/conflicts") =>
     </MemoryRouter>,
   );
 
+const card = (fen: string) => document.querySelector(`[data-fen="${fen}"]`) as HTMLElement | null;
+const boardOf = (fen: string) => within(card(fen)!).getByTestId(/^board-/);
+
 const response = (over: Partial<ConflictsResponse> = {}): ConflictsResponse => ({ positions: [contested(), resolved()], duplicates: [duplicate()], contested: 1, ...over });
 
 afterEach(() => {
@@ -76,18 +79,19 @@ describe("Repertoire conflicts page", () => {
     renderPage();
     expect(await screen.findByRole("button", { name: "Contested (1)" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("link", { name: "← Repertoire" })).toHaveAttribute("href", "/repertoire");
-    const card = screen.getByTestId(`board-conflict-${AFTER_E5}`).closest("[data-fen]")!;
-    expect(card).toHaveTextContent("2 moves · 2 of 3 lines on");
-    expect(within(card as HTMLElement).getByText("Contested")).toBeInTheDocument();
-    expect(screen.getByTestId(`board-conflict-${AFTER_E5}`)).toHaveAttribute("data-arrows", "#E69F00,#009E73"); // both moves in play: solid
-    expect(screen.queryByTestId(`board-conflict-${AFTER_NC6}`)).not.toBeInTheDocument();
+    const contestedCard = card(AFTER_E5)!;
+    expect(contestedCard).toHaveTextContent("2 moves · 2 of 3 lines on");
+    expect(within(contestedCard).getByText("Contested")).toBeInTheDocument();
+    expect(boardOf(AFTER_E5)).toHaveAttribute("data-position", AFTER_E5);
+    expect(boardOf(AFTER_E5)).toHaveAttribute("data-arrows", "#E69F00,#009E73"); // both moves in play: solid
+    expect(card(AFTER_NC6)).toBeNull();
     // Expanding shows the move groups with a switch per line and why a line is not in play.
-    fireEvent.click(within(card as HTMLElement).getByRole("button", { expanded: false }));
+    fireEvent.click(within(contestedCard).getByRole("button", { expanded: false }));
     expect(screen.getByText("1 of 2 on")).toBeInTheDocument();
     expect(screen.getByText("(chapter off)")).toBeInTheDocument();
     expect(screen.getByRole("switch", { name: "Bishop active" })).toHaveAttribute("aria-checked", "true");
     fireEvent.click(screen.getByRole("button", { name: "All (2)" }));
-    expect(screen.getByTestId(`board-conflict-${AFTER_NC6}`)).toHaveAttribute("data-arrows", "#E69F00,#009E7366"); // the off line's move faded
+    expect(boardOf(AFTER_NC6)).toHaveAttribute("data-arrows", "#E69F00,#009E7366"); // the off line's move faded
     expect(screen.getByRole("switch", { name: "Bishop active" })).toBeInTheDocument(); // still expanded
     // Duplicate lines.
     expect(screen.getByText("1.e4 e5 2.Nf3")).toBeInTheDocument();
@@ -107,14 +111,13 @@ describe("Repertoire conflicts page", () => {
     stubFetch({ "/repertoire/conflicts": () => ({ status: 200, body: response({ positions: [resolved()], contested: 0 }) }) });
     const { unmount } = renderPage(`/repertoire/conflicts?fen=${encodeURIComponent(AFTER_NC6)}`);
     expect(await screen.findByRole("button", { name: "All (1)" })).toHaveAttribute("aria-pressed", "true");
-    const card = screen.getByTestId(`board-conflict-${AFTER_NC6}`).closest("[data-fen]") as HTMLElement;
-    expect(within(card).getByRole("button", { expanded: true })).toBeInTheDocument();
-    expect(card.className).toContain("bg-amber-50");
+    expect(within(card(AFTER_NC6)!).getByRole("button", { expanded: true })).toBeInTheDocument();
+    expect(card(AFTER_NC6)!.className).toContain("bg-amber-50");
     unmount();
     stubFetch({ "/repertoire/conflicts": () => ({ status: 200, body: response() }) });
     renderPage(`/repertoire/conflicts?fen=${encodeURIComponent(AFTER_E5)}`);
     expect(await screen.findByRole("button", { name: "Contested (1)" })).toHaveAttribute("aria-pressed", "true");
-    expect(within(screen.getByTestId(`board-conflict-${AFTER_E5}`).closest("[data-fen]") as HTMLElement).getByRole("button", { expanded: true })).toBeInTheDocument();
+    expect(within(card(AFTER_E5)!).getByRole("button", { expanded: true })).toBeInTheDocument();
   });
 
   it("an unknown FEN is ignored and ?filter=all opens on All", async () => {
@@ -134,15 +137,14 @@ describe("Repertoire conflicts page", () => {
       "/repertoire/lines/2": () => ({ status: 409, body: { detail: "activation_conflict", refusal: refusal() } }),
     });
     renderPage();
-    const card = (await screen.findByTestId(`board-conflict-${AFTER_E5}`)).closest("[data-fen]") as HTMLElement;
-    fireEvent.click(within(card).getByRole("button", { expanded: false }));
+    await screen.findByRole("button", { name: "Contested (1)" });
+    fireEvent.click(within(card(AFTER_E5)!).getByRole("button", { expanded: false }));
     fireEvent.click(screen.getByRole("switch", { name: "Knight active" }));
     expect(await screen.findByText("No contested positions.")).toBeInTheDocument();
     expect(calls.filter((c) => c.path === "/repertoire/conflicts")).toHaveLength(2);
     // The resolved position, under All; switching Spanish on is refused.
     fireEvent.click(screen.getByRole("button", { name: "All (1)" }));
-    const resolvedCard = screen.getByTestId(`board-conflict-${AFTER_NC6}`).closest("[data-fen]") as HTMLElement;
-    fireEvent.click(within(resolvedCard).getByRole("button", { expanded: false }));
+    fireEvent.click(within(card(AFTER_NC6)!).getByRole("button", { expanded: false }));
     const spanish = screen.getByRole("switch", { name: "Spanish active" });
     fireEvent.click(spanish);
     const dialog = await screen.findByRole("dialog", { name: "Can't switch Spanish on" });
@@ -153,6 +155,13 @@ describe("Repertoire conflicts page", () => {
     fireEvent.click(within(dialog).getByRole("link", { name: "Open in Conflicts" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "All (1)" })).toHaveAttribute("aria-pressed", "true");
-    expect((screen.getByTestId(`board-conflict-${AFTER_NC6}`).closest("[data-fen]") as HTMLElement).className).toContain("bg-amber-50");
+    expect(card(AFTER_NC6)!.className).toContain("bg-amber-50");
+    // Refused again, then collapsed, at the same URL: the link reveals it a second time.
+    fireEvent.click(screen.getByRole("switch", { name: "Spanish active" }));
+    const again = await screen.findByRole("dialog");
+    fireEvent.click(within(card(AFTER_NC6)!).getByRole("button", { expanded: true }));
+    expect(within(card(AFTER_NC6)!).getByRole("button", { expanded: false })).toBeInTheDocument();
+    fireEvent.click(within(again).getByRole("link", { name: "Open in Conflicts" }));
+    expect(within(card(AFTER_NC6)!).getByRole("button", { expanded: true })).toBeInTheDocument();
   });
 });

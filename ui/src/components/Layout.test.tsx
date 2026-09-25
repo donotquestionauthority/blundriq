@@ -76,6 +76,9 @@ describe("Layout navigation", () => {
     fireEvent.click(within(panel).getByRole("link", { name: "Practice" }));
     expect(screen.getByText("practice page")).toBeInTheDocument();
     expect(document.getElementById("nav-panel")).toBeNull();
+    fireEvent.click(burger);
+    fireEvent.mouseDown(screen.getByText("practice page"));
+    expect(document.getElementById("nav-panel")).toBeNull();
   });
 
   it("held state disables every link in the bar, the menu and the panel, and the menus still open", () => {

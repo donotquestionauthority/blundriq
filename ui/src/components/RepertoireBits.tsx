@@ -1,6 +1,6 @@
 /** The pieces the Repertoire page and the Conflicts page share: the on/off switch, a static
  *  board with one arrow per move, and the dialog for a line the server would not switch on. */
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import { Chessboard } from "react-chessboard";
 import { Link } from "react-router";
 import { conflictsPath } from "../repertoire";
@@ -32,6 +32,7 @@ export function ArrowBoard({ id, fen, orientation, arrows, size = 160 }: { id: s
  *  returns focus to the toggle that opened it. */
 export function RefusalDialog({ refusal, orientation, onClose }: { refusal: Refusal; orientation: "white" | "black"; onClose: () => void }) {
   const closeRef = useRef<HTMLButtonElement>(null);
+  const boardId = useId().replace(/[^a-zA-Z0-9-]/g, "");
   useEffect(() => {
     closeRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
@@ -52,7 +53,7 @@ export function RefusalDialog({ refusal, orientation, onClose }: { refusal: Refu
           Can't switch <span className="italic">{refusal.line_name}</span> on
         </h2>
         <div className="mt-3 flex flex-col gap-3 sm:flex-row">
-          <ArrowBoard id={`refusal-${refusal.line_id}`} fen={refusal.fen} orientation={orientation} arrows={arrows} />
+          <ArrowBoard id={boardId} fen={refusal.fen} orientation={orientation} arrows={arrows} />
           <div className="space-y-1 text-sm">
             <p>
               <span className="italic">{refusal.line_name}</span> plays <span className="font-mono font-medium">{refusal.move}</span> here

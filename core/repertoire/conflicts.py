@@ -174,7 +174,7 @@ def duplicates(conn: Connection[Any]) -> list[Row]:
         for ln in g["lines"]:
             del ln["move"]
     out = list(groups.values())
-    out.sort(key=lambda g: (-sum(1 for ln in g["lines"] if ln["effective"]), g["color"] != "white", g["moves"]))
+    out.sort(key=lambda g: (-sum(1 for ln in g["lines"] if ln["effective"]), g["moves"]))
     return out
 
 
@@ -255,17 +255,21 @@ def gate(conn: Connection[Any], kind: Kind, id: int, *, batch: list[importing.Pr
     verdicts = importing.decide(existing, dirty, batch)
     meta = _metas(conn, [p.line_id for p in batch if p.line_id is not None])
     out: list[Refusal] = []
+    accepted = {p.line_id for p, v in zip(batch, verdicts, strict=True) if v.active}
     for p, v in zip(batch, verdicts, strict=True):
         if v.active:
             continue
         assert v.fen is not None and v.move is not None and v.reason is not None and p.line_id is not None
         if v.reason == "cohort":
+            # The fellow candidates that carried the winning move and are coming on. A winner
+            # refused at another position still voted (the import's rule, kept on purpose) but
+            # does not hold the position, so it is not named.
             winner = v.rival
             assert winner is not None
             rivals = [
                 {**meta[q.line_id], "move": winner}
                 for q in batch
-                if q.line_id is not None and (v.fen, winner) in q.signatures
+                if q.line_id is not None and q.line_id in accepted and (v.fen, winner) in q.signatures
             ]
         else:
             rivals = _holders(conn, v.fen, v.move)

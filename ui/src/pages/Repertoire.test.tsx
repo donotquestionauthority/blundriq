@@ -209,7 +209,7 @@ describe("Repertoire page: conflicts", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(dialog).toHaveTextContent("Alt plays Bb5 here;");
     expect(dialog).toHaveTextContent("Main (Course: The Italian / 1) Giuoco) plays Bc4.");
-    expect(within(dialog).getByTestId("board-refusal-2")).toHaveAttribute("data-position", AFTER_NC6);
+    expect(within(dialog).getByTestId(/^board-/)).toHaveAttribute("data-position", AFTER_NC6);
     expect(within(dialog).getByRole("link", { name: "Open in Conflicts" })).toHaveAttribute("href", `/repertoire/conflicts?fen=${encodeURIComponent(AFTER_NC6).replace(/%20/g, "+")}`);
     expect(within(dialog).getByRole("button", { name: "Keep off" })).toHaveFocus();
     fireEvent.keyDown(window, { key: "Escape" });

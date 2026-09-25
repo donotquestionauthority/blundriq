@@ -53,6 +53,7 @@ export default function Layout({ onLoggedOut }: { onLoggedOut: () => void }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
   const underMore = MORE.some((n) => pathname === n.to || pathname.startsWith(`${n.to}/`));
 
   // Both close on a route change (state adjusted during render), Escape, and a click outside.
@@ -72,6 +73,7 @@ export default function Layout({ onLoggedOut }: { onLoggedOut: () => void }) {
     };
     const onClick = (e: MouseEvent) => {
       if (moreOpen && moreRef.current && !moreRef.current.contains(e.target as Node)) setMoreOpen(false);
+      if (panelOpen && headerRef.current && !headerRef.current.contains(e.target as Node)) setPanelOpen(false);
     };
     window.addEventListener("keydown", onKey);
     document.addEventListener("mousedown", onClick);
@@ -105,7 +107,7 @@ export default function Layout({ onLoggedOut }: { onLoggedOut: () => void }) {
 
   return (
     <div className="min-h-screen">
-      <header className="border-b border-zinc-200 dark:border-zinc-800">
+      <header ref={headerRef} className="border-b border-zinc-200 dark:border-zinc-800">
         <nav className="mx-auto flex max-w-5xl items-center gap-4 px-4 py-3">
           <span className="font-semibold tracking-tight">BlundrIQ</span>
           <div className="hidden items-center gap-4 sm:flex">
