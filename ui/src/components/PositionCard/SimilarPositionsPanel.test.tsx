@@ -73,9 +73,41 @@ describe("SimilarPositionsPanel", () => {
     expect(header()).toHaveTextContent("1 position");
     fireEvent.click(header());
     expect(screen.queryByText("this position")).toBeNull();
+    expect(header()).toHaveTextContent("1 position"); // a known count stays on the collapsed header
     fireEvent.click(header());
     await screen.findByText("this position");
     expect(calls).toHaveLength(1);
+  });
+
+  it("stepping to another board and back leaves the panel collapsed, with nothing asked for the board in between", async () => {
+    const calls = stubFetch(() => ({ status: 200, body: response([neighbour()]) }));
+    const { rerender } = render(<SimilarPositionsPanel fen={FEN} orientation="white" />);
+    fireEvent.click(header());
+    await screen.findByText("this position");
+    rerender(<SimilarPositionsPanel fen={OTHER} orientation="white" />);
+    expect(header()).toHaveAttribute("aria-expanded", "false");
+    rerender(<SimilarPositionsPanel fen={FEN} orientation="white" />);
+    expect(header()).toHaveAttribute("aria-expanded", "false");
+    expect(header()).toHaveTextContent("1 position");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("re-expanding after a failure searches afresh: no stale alert, no spinner on the collapsed header", async () => {
+    let n = 0;
+    const calls = stubFetch(() => {
+      n += 1;
+      if (n === 1) return { status: 500, body: { detail: "boom" } };
+      return new Promise(() => {});
+    });
+    render(<SimilarPositionsPanel fen={FEN} orientation="white" />);
+    fireEvent.click(header());
+    await screen.findByRole("alert");
+    fireEvent.click(header());
+    expect(header().querySelector(".animate-spin")).toBeNull();
+    fireEvent.click(header());
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText(/Searching your repertoire/)).toBeInTheDocument();
   });
 
   it("a different queried move at the same board is a different request; a new board collapses the panel", async () => {

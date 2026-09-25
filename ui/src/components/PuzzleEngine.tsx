@@ -16,6 +16,7 @@ import { Chessboard } from "react-chessboard";
 import { BranchCompareView } from "./BranchCompareView";
 import { LineReaderPanel } from "./PositionCard/LineReaderPanel";
 import { SolverSimilarModal } from "./PositionCard/SolverSimilarModal";
+import { useSimilarPositions } from "../hooks/useSimilarPositions";
 import { HIGHLIGHT, SQUARES } from "../utils/board";
 import { branchCompareTarget, mapKey, moveUci, sanResolvesToMove, similarTarget, uciToMove } from "../utils/chess";
 import type { AcceptanceMap } from "../practice";
@@ -115,10 +116,19 @@ export function PuzzleEngine({
   // Similar positions in the repertoire: the board at the latest player decision and the line's move
   // there. Its own target, not Compare's — no parent is needed, so the first decision and a one-move
   // puzzle have one. Ungated like Compare; the view's neighbours name the book move, so opening it
-  // before answering spoils one's own puzzle in the same way. Closed on every puzzle change.
+  // before answering spoils one's own puzzle in the same way. Closed on every puzzle change. The
+  // search is owned here, enabled while the view is open: reopening on the same board shows the
+  // remembered answer, and a target change while open (the reply auto-playing) asks about the new one.
   const [similarOpen, setSimilarOpen] = useState(false);
   useEffect(() => setSimilarOpen(false), [fen]);
   const similarAt = useMemo(() => (mapMode ? null : similarTarget(finishLineMode ? finishLineFen : fen, activeSolutionLine, moveIndex, color)), [mapMode, finishLineMode, finishLineFen, fen, activeSolutionLine, moveIndex, color]);
+  const similarSearch = useSimilarPositions(similarAt?.fen ?? "", similarAt?.move ?? null, similarOpen && similarAt !== null);
+  // A view whose target has gone (Play On into a reply, a line change) is closed, not left open to
+  // reappear on its own when the next target arrives.
+  useEffect(() => {
+    if (!compareTarget) setBranchCompareOpen(false);
+    if (!similarAt) setSimilarOpen(false);
+  }, [compareTarget, similarAt]);
   // Where the wrong move was played from; Try Again restores here, not the puzzle start.
   const checkpointFen = useRef(fen);
   const checkpointMoveIndex = useRef(0);
@@ -492,7 +502,7 @@ export function PuzzleEngine({
         <LineReaderPanel fen={game.fen()} repertoireLineId={repertoireLineId} />
       </div>
       {branchCompareOpen && compareTarget && <BranchCompareView fen={compareTarget.fen} preFen={compareTarget.preFen} orientation={boardOrientation} onClose={() => setBranchCompareOpen(false)} />}
-      {similarOpen && similarAt && <SolverSimilarModal fen={similarAt.fen} move={similarAt.move} orientation={boardOrientation} onClose={() => setSimilarOpen(false)} />}
+      {similarOpen && similarAt && <SolverSimilarModal fen={similarAt.fen} move={similarAt.move} search={similarSearch} orientation={boardOrientation} onClose={() => setSimilarOpen(false)} />}
     </div>
   );
 }

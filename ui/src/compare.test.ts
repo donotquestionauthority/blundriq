@@ -139,7 +139,7 @@ describe("similarTarget", () => {
   it("Play On applies the same rule to the finish-line board and its remaining moves", () => {
     const g = similarTarget(AFTER_BC5, ["c3", "Nf6", "d4", "exd4", "cxd4"], 0, "w");
     expect(g).toEqual({ fen: AFTER_BC5, move: "c3" });
-    // The remainder from the board after c3 Nf6: black to move first, so index 0 is the opponent's.
+    // The remainder from the board after c3 Nf6: White (the player) to move, so index 0 is the first decision.
     const rest = similarTarget("r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/2P2N2/PP1P1PPP/RNBQK2R w KQkq - 1 5", ["d4", "exd4", "cxd4"], 0, "w");
     expect(rest?.move).toBe("d4");
   });

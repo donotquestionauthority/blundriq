@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PrepGroup, SimilarNeighbour, SimilarPositionsResponse } from "../../repertoire";
 import { ARROWS } from "../../utils/board";
 import { PuzzleEngine } from "../PuzzleEngine";
+import { useSimilarPositions } from "../../hooks/useSimilarPositions";
 import { SolverSimilarModal } from "./SolverSimilarModal";
 
 vi.mock("react-chessboard", () => ({
@@ -58,6 +59,12 @@ afterEach(() => vi.unstubAllGlobals());
 const launch = () => screen.getByTestId("similar-launch");
 const view = () => screen.queryByTestId("similar-compare-view");
 
+/** The modal as the solver hosts it: the search owned above it, enabled while it is open. */
+function Host({ fen, move, open = true }: { fen: string; move: string; open?: boolean }) {
+  const search = useSimilarPositions(fen, move, open);
+  return open ? <SolverSimilarModal fen={fen} move={move} search={search} orientation="white" onClose={() => {}} /> : null;
+}
+
 describe("the Similar-positions launcher in PuzzleEngine", () => {
   it("has a target at the first decision of a player-first puzzle where Compare has none, and asks about that board and move", async () => {
     const calls = stubFetch(() => ({ status: 200, body: response([neighbour()]) }));
@@ -88,15 +95,28 @@ describe("the Similar-positions launcher in PuzzleEngine", () => {
     await screen.findByText(/No similar positions within 6 squares/);
   });
 
-  it("is closed by a puzzle change and is disabled in map mode", async () => {
+  it("is closed by a puzzle change even when the new puzzle has a target of its own, and is disabled in map mode", async () => {
     stubFetch(() => ({ status: 200, body: response([]) }));
     const { rerender } = render(<PuzzleEngine fen={FEN} solutionLine={["c3", "Nf6", "d4"]} color="w" />);
     fireEvent.click(launch());
     await screen.findByTestId("similar-compare-view");
-    rerender(<PuzzleEngine fen={PRE} solutionLine={["Bc5", "c3"]} color="w" />);
+    rerender(<PuzzleEngine fen={AFTER_C3_NF6} solutionLine={["d4"]} color="w" />);
     expect(view()).toBeNull();
+    expect(launch()).toBeEnabled();
     rerender(<PuzzleEngine fen={FEN} solutionLine={["c3"]} color="w" acceptanceMap={{ v: 1, n: 1, p: {}, d: {} }} />);
     expect(launch()).toBeDisabled();
+  });
+
+  it("closing and reopening on the same board shows the remembered answer without a second request", async () => {
+    const calls = stubFetch(() => ({ status: 200, body: response([neighbour()]) }));
+    render(<PuzzleEngine fen={FEN} solutionLine={["c3"]} color="w" />);
+    fireEvent.click(launch());
+    await screen.findByText("1 similar position");
+    fireEvent.click(screen.getByRole("button", { name: "← Back" }));
+    expect(view()).toBeNull();
+    fireEvent.click(launch());
+    expect(screen.getByText("1 similar position")).toBeInTheDocument();
+    expect(calls).toHaveLength(1);
   });
 
   it("Escape closes the modal and is consumed before the page's bubble listeners; the launcher's Retry refetches after a failure", async () => {
@@ -132,10 +152,10 @@ describe("SolverSimilarModal on its own", () => {
       if (n === 1) return new Promise((resolve) => (resolveFirst = resolve));
       return { status: 200, body: response([neighbour(), neighbour({ fen: PRE })], "d4") };
     });
-    const { rerender } = render(<SolverSimilarModal fen={FEN} move="c3" orientation="white" onClose={() => {}} />);
+    const { rerender } = render(<Host fen={FEN} move="c3" />);
     await waitFor(() => expect(calls).toHaveLength(1));
     expect(screen.getByText(/Searching your repertoire/)).toBeInTheDocument();
-    rerender(<SolverSimilarModal fen={AFTER_C3_NF6} move="d4" orientation="white" onClose={() => {}} />);
+    rerender(<Host fen={AFTER_C3_NF6} move="d4" />);
     expect(calls[0].signal?.aborted).toBe(true);
     await waitFor(() => expect(calls).toHaveLength(2));
     expect(calls[1].query.get("fen")).toBe(AFTER_C3_NF6);
@@ -148,11 +168,31 @@ describe("SolverSimilarModal on its own", () => {
     expect(screen.getByText("2 similar positions")).toBeInTheDocument();
   });
 
-  it("unmounting aborts the request in flight", async () => {
+  it("a loaded answer for the old target is never shown under the new one while its search is out", async () => {
+    let n = 0;
+    const calls = stubFetch(() => {
+      n += 1;
+      if (n === 1) return { status: 200, body: response([neighbour()]) };
+      return new Promise(() => {});
+    });
+    const { rerender } = render(<Host fen={FEN} move="c3" />);
+    await screen.findByText("1 similar position");
+    rerender(<Host fen={AFTER_C3_NF6} move="d4" />);
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(screen.getByText(/Searching your repertoire/)).toBeInTheDocument();
+    expect(screen.queryByText("1 similar position")).toBeNull();
+    expect(within(screen.getByTestId("pinned-board")).getByTestId("board")).toHaveAttribute("data-position", AFTER_C3_NF6);
+  });
+
+  it("closing and unmounting abort the request in flight", async () => {
     const calls = stubFetch(() => new Promise(() => {}));
-    const { unmount } = render(<SolverSimilarModal fen={FEN} move="c3" orientation="white" onClose={() => {}} />);
+    const { rerender, unmount } = render(<Host fen={FEN} move="c3" />);
     await waitFor(() => expect(calls).toHaveLength(1));
-    unmount();
+    rerender(<Host fen={FEN} move="c3" open={false} />);
     expect(calls[0].signal?.aborted).toBe(true);
+    rerender(<Host fen={FEN} move="c3" />);
+    await waitFor(() => expect(calls).toHaveLength(2));
+    unmount();
+    expect(calls[1].signal?.aborted).toBe(true);
   });
 });

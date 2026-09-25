@@ -3,7 +3,8 @@
  * collapsible panel. It fetches only when expanded — the count is an output of the search, so a
  * collapsed header shows none. The fetch, its cache and its abort rules are `useSimilarPositions`,
  * shared with the solver's modal; the panel's expanded state is what enables it, so collapsing
- * aborts. A change of identity collapses the panel and closes the compare view.
+ * aborts. A change of identity collapses the panel (derived in the same render, so the fetcher is
+ * never enabled for a board the user has not asked about) and closes the compare view.
  *
  * The response is server-final: one entry per board with all of its groups. The only chess done
  * here is turning a server SAN into arrow squares.
@@ -73,14 +74,14 @@ export function SimilarPositionsPanel({
   onCompareOpenChange?: (open: boolean) => void;
 }) {
   const requestKey = similarRequestKey(fen, queriedMove);
-  // Expanded FOR an identity: a new identity is collapsed by derivation, in the same render, so
-  // the fetcher is never enabled for a board the user has not asked about.
+  // Expanded FOR an identity, so a new one is collapsed in the render that brings it.
   const [expandedFor, setExpandedFor] = useState<string | null>(null);
   const expanded = expandedFor === requestKey;
   const [openRow, setOpenRow] = useState<string | null>(null);
   const { status, data, retry } = useSimilarPositions(fen, queriedMove, expanded);
 
   useEffect(() => {
+    setExpandedFor(null);
     setOpenRow(null);
     onCompareOpenChange?.(false);
     // The setter is stable; the effect keys on the request identity alone.
