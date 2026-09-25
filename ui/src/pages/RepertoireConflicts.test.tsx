@@ -8,6 +8,7 @@ vi.mock("react-chessboard", () => ({
   Chessboard: ({ options }: { options: { id?: string; position?: string; arrows?: { color: string }[] } }) => <div data-testid={`board-${options.id}`} data-position={options.position} data-arrows={(options.arrows ?? []).map((a) => a.color).join(",")} />,
 }));
 
+const START = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const AFTER_E5 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2";
 const AFTER_NC6 = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3";
 
@@ -32,7 +33,7 @@ const contested = (): ConflictPosition => ({
     { move: "Bc4", lines: [{ ...line({ line_id: 4, line_name: "Bishop", chapter_id: 3, chapter_title: "Off", chapter_active: false, effective: false }), move: "Bc4" }, { ...line({ line_id: 5, line_name: "Bishop too" }), move: "Bc4" }] },
   ],
 });
-const duplicate = (): DuplicateGroup => ({ color: "white", moves: ["e4", "e5", "Nf3"], lines: [line({ line_id: 6, line_name: "Intro copy", chapter_id: 2, chapter_title: "Intro" }), line({ line_id: 7, line_name: "Chapter copy" })] });
+const duplicate = (): DuplicateGroup => ({ color: "white", root: START, moves: ["e4", "e5", "Nf3"], lines: [line({ line_id: 6, line_name: "Intro copy", chapter_id: 2, chapter_title: "Intro" }), line({ line_id: 7, line_name: "Chapter copy" })] });
 const refusal = (): Refusal => ({ line_id: 2, line_name: "Spanish", chapter_title: "Intro", fen: AFTER_NC6, move: "Bb5", reason: "anchor", rivals: [{ line_id: 1, line_name: "Main", chapter_id: 1, chapter_title: "Giuoco", book_id: 1, book_title: "Italian", move: "Bc4" }] });
 
 type Reply = { status: number; body: unknown };
@@ -163,5 +164,28 @@ describe("Repertoire conflicts page", () => {
     expect(within(card(AFTER_NC6)!).getByRole("button", { expanded: false })).toBeInTheDocument();
     fireEvent.click(within(again).getByRole("link", { name: "Open in Conflicts" }));
     expect(within(card(AFTER_NC6)!).getByRole("button", { expanded: true })).toBeInTheDocument();
+  });
+
+  it("duplicate groups with equal moves from different starts keep their own rows when a toggle reorders them", async () => {
+    // A: two e4 e5 lines from the start, both on. B: d4 d5, one on. C: two e4 e5 lines from
+    // another start, both off. Switching A1 off drops A below B; every line must still appear
+    // once, with the state the server acknowledged.
+    const other = "rnbqkbnr/1ppppppp/p7/8/8/P7/1PPPPPPP/RNBQKBNR w KQkq - 0 2";
+    const group = (root: string, moves: string[], lines: [number, string, boolean][]): DuplicateGroup => ({ color: "white", root, moves, lines: lines.map(([id, name, on]) => line({ line_id: id, line_name: name, chapter_id: 10 + id, chapter_title: `Ch ${id}`, line_active: on, effective: on})) });
+    const before = [group(START, ["e4", "e5"], [[1, "A1", true], [2, "A2", true]]), group(START, ["d4", "d5"], [[3, "B1", true], [4, "B2", false]]), group(other, ["e4", "e5"], [[5, "C1", false], [6, "C2", false]])];
+    const after = [before[1], group(START, ["e4", "e5"], [[1, "A1", false], [2, "A2", true]]), before[2]];
+    let served = response({ positions: [], contested: 0, duplicates: before });
+    stubFetch({
+      "/repertoire/conflicts": () => ({ status: 200, body: served }),
+      "/repertoire/lines/1": () => ((served = response({ positions: [], contested: 0, duplicates: after })), { status: 200, body: { detail: "updated", rematch: {}, held_back: [] } }),
+    });
+    renderPage();
+    expect(await screen.findByRole("switch", { name: "A1 active" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getAllByRole("switch")).toHaveLength(6);
+    fireEvent.click(screen.getByRole("switch", { name: "A1 active" }));
+    await vi.waitFor(() => expect(screen.getByRole("switch", { name: "A1 active" })).toHaveAttribute("aria-checked", "false"));
+    const switches = screen.getAllByRole("switch");
+    expect(switches).toHaveLength(6);
+    expect(switches.map((s) => `${s.getAttribute("aria-label")}=${s.getAttribute("aria-checked")}`)).toEqual(["B1 active=true", "B2 active=false", "A1 active=false", "A2 active=true", "C1 active=false", "C2 active=false"]);
   });
 });

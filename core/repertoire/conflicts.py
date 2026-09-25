@@ -130,7 +130,9 @@ def listing(conn: Connection[Any]) -> list[Row]:
 def duplicates(conn: Connection[Any]) -> list[Row]:
     """Groups of two or more lines with the same book colour, the same first position and
     the same move list, in different chapters: identical lines that never diverge, so they
-    never reach `listing`. Ordered by effective lines descending, then by moves."""
+    never reach `listing`. Each group carries its `root` (the first position), which with the
+    colour and the moves is its identity: the same moves from two starts are two groups.
+    Ordered by effective lines descending, then by moves."""
     rows = conn.execute(
         """
         WITH keys AS (
@@ -160,7 +162,7 @@ def duplicates(conn: Connection[Any]) -> list[Row]:
     for r in rows:
         moves = annotations.strings(r["moves"])
         key = (str(r["color"]), r["root"], " ".join(moves))
-        g = groups.setdefault(key, {"color": r["color"], "moves": moves, "lines": []})
+        g = groups.setdefault(key, {"color": r["color"], "root": r["root"], "moves": moves, "lines": []})
         g["lines"].append(
             {
                 **_line_row({**r, "move": None}),

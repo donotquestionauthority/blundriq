@@ -204,9 +204,11 @@ export interface ConflictPosition {
   moves: { move: string; lines: (ConflictLine & { move: string })[] }[];
 }
 
-/** Identical lines (same colour, same start, same moves) in different chapters. */
+/** Identical lines (same colour, same start, same moves) in different chapters. The group's
+ *  identity is (color, root, moves): the same moves from two starting positions are two groups. */
 export interface DuplicateGroup {
   color: "white" | "black";
+  root: string;
   moves: string[];
   lines: ConflictLine[];
 }

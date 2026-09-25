@@ -235,7 +235,7 @@ export default function RepertoireConflicts() {
             {data.duplicates.length === 0 && <p className="py-4 text-center text-sm text-zinc-500">No duplicate lines.</p>}
             <div className="space-y-2">
               {data.duplicates.map((g) => (
-                <Duplicate key={`${g.color}:${g.moves.join(" ")}`} g={g} busy={busy} onFlip={flip} />
+                <Duplicate key={`${g.color}:${g.root}:${g.moves.join(" ")}`} g={g} busy={busy} onFlip={flip} />
               ))}
             </div>
           </section>

@@ -147,8 +147,36 @@ def test_duplicates_are_identical_lines_in_different_chapters(db: psycopg.Connec
     h.line(db, 7, 2, "y again", ["e4", "c5"], active=False)
     groups = conflicts.duplicates(db)
     assert [g["moves"] for g in groups] == [["e4", "e5", "Nf3"], ["e4", "c5"]]  # effective lines first
-    assert groups[0]["color"] == "white"
+    assert groups[0]["color"] == "white" and groups[0]["root"] == h.START
     assert [(ln["line_id"], ln["effective"]) for ln in groups[0]["lines"]] == [(1, True), (2, False)]
+    # The same moves from another start are another group.
+    root = h.spine(None, ["a3", "a6"])[2]
+    h.chapter(db, 4, 1, "Set A")
+    h.chapter(db, 5, 1, "Set B")
+    h.line(
+        db,
+        8,
+        4,
+        "from a set position",
+        ["e4", "e5", "Nf3"],
+        fens=importing.spine(root, ["e4", "e5", "Nf3"]),
+        active=False,
+    )
+    h.line(
+        db,
+        9,
+        5,
+        "from a set position too",
+        ["e4", "e5", "Nf3"],
+        fens=importing.spine(root, ["e4", "e5", "Nf3"]),
+        active=False,
+    )
+    groups = conflicts.duplicates(db)
+    assert [(g["moves"], g["root"]) for g in groups] == [
+        (["e4", "e5", "Nf3"], h.START),
+        (["e4", "c5"], h.START),
+        (["e4", "e5", "Nf3"], root),
+    ]
     assert groups[0]["lines"][1]["chapter_active"] is False and "move" not in groups[0]["lines"][1]
     assert conflicts.listing(db) == []  # identical lines never disagree
 
