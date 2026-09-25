@@ -129,8 +129,10 @@ def parse_arriving(parent_fen: str | None, san: str | None) -> Row | None:
     try:
         parent = chess.Board(parent_fen)
         move = parent.parse_san(san)
-    except (ValueError, IndexError):
+    except ValueError:
         return None
+    if not move:
+        return None  # python-chess parses '--' / 'Z0' / '0000' as the null move: not an arriving move
     return {
         "san": parent.san(move),
         "from": chess.square_name(move.from_square),
@@ -141,8 +143,13 @@ def parse_arriving(parent_fen: str | None, san: str | None) -> Row | None:
     }
 
 
-def _strings(v: Any) -> list[str] | None:
-    return [str(x) for x in cast(list[Any], v)] if isinstance(v, list) else None
+def _tokens(v: Any) -> list[str | None] | None:
+    """A stored JSON array as tokens; a null element stays None (a terminal, not a token)."""
+    return [None if x is None else str(x) for x in cast(list[Any], v)] if isinstance(v, list) else None
+
+
+class NoSignature(ValueError):
+    """The query FEN has no material signature (an unreadable side-to-move field)."""
 
 
 # --- SQL: prefilter and signature, one authority ------------------------------------------
@@ -171,7 +178,7 @@ def query_material(conn: Connection[Any], fen: str) -> tuple[str, int]:
         cur.execute(_QUERY_SIG_SQL, {"fen": fen})
         row = cur.fetchone()
     if row is None or row["sig"] is None or row["key"] is None:
-        raise ValueError("query FEN has no material signature")
+        raise NoSignature("query FEN has no material signature")
     return str(row["sig"]), int(row["key"])
 
 
@@ -186,8 +193,8 @@ def expand_and_verify(rows: list[Row], query_fen: str, query_sig: str, max_dista
     query_placement = expand_placement(query_fen)
     carriers: list[Row] = []
     for r in rows:
-        moves = _strings(r["moves"])
-        fens = _strings(r["fen_sequence"])
+        moves = _tokens(r["moves"])
+        fens = _tokens(r["fen_sequence"])
         sigs = cast(list[str | None] | None, r["material_sigs"])
         if not moves or not fens or sigs is None:
             continue
@@ -197,6 +204,8 @@ def expand_and_verify(rows: list[Row], query_fen: str, query_sig: str, max_dista
             if sigs[i] != query_sig:
                 continue
             fen = fens[i]
+            if fen is None:
+                continue
             try:
                 if side_to_move(fen) != query_stm:
                     continue

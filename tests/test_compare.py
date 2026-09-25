@@ -536,8 +536,8 @@ def test_similar_route_validates_and_reserialises(client: TestClient) -> None:
     r = client.get("/repertoire/similar", params={"fen": fen_after(ITALIAN[:6]), "move": "c2c3"})
     assert r.status_code == 200 and r.json()["query"]["move"] == "c3" and r.json()["query"]["max_distance"] == 4
     assert r.json()["neighbours"][0]["distance"] == 0
-    # A client FEN with a phantom en-passant square (chess.js after a double push) still finds the stored
-    # occurrence: the route hands the search python-chess's own serialisation.
+    # A client FEN with a phantom en-passant square (chess.js after a double push) is handed to the search
+    # as python-chess's own serialisation (the branch-compare test below is where the field matters).
     after_c3_d5 = fen_after(ITALIAN[:7] + ["Nf6", "d4"])
     assert " - " in after_c3_d5 and after_c3_d5.split(" ")[1] == "b"
     h_line = client.get("/repertoire/similar", params={"fen": after_c3_d5}).json()
@@ -621,3 +621,174 @@ def test_settings_ceiling_matches_the_module() -> None:
 def test_json_round_trip_of_a_response(rep: psycopg.Connection[DictRow]) -> None:
     json.dumps(similar(rep, fen_after(ITALIAN[:6])))
     json.dumps(compare(rep))
+
+
+# --- what an independent read said the suite would not catch ------------------------------
+
+
+def test_null_moves_are_not_moves_anywhere() -> None:
+    # python-chess parses '--', 'Z0' and '0000' as the null move without complaint.
+    assert nb.parse_arriving(chess.STARTING_FEN, "--") is None and nb.parse_arriving(chess.STARTING_FEN, "Z0") is None
+    assert bc._reply_squares(chess.STARTING_FEN, "0000") == (None, None)
+    from core.repertoire.read import canonicalise
+
+    with pytest.raises(ValueError):
+        canonicalise(chess.STARTING_FEN, [{"expected_move": "--"}])
+    fen = fen_after(["e4", "e5"])
+    base = {
+        "book": "B",
+        "chapter": "C",
+        "line_name": "L",
+        "fen": fen,
+        "arriving": {},
+        "is_alternative": False,
+        "line_ply": 2,
+    }
+    groups, divergent = nb.prep_groups(
+        fen, [{**base, "line_id": 1, "expected_move": "--"}, {**base, "line_id": 2, "expected_move": "Nf3"}]
+    )
+    assert [(g["prep_status"], g["prep_move"], g["prep_raw_token"]) for g in groups] == [
+        ("move", "Nf3", None),
+        ("unreadable", None, "--"),
+    ]
+    assert not divergent
+
+
+def test_null_move_routes_are_400(client: TestClient) -> None:
+    for move in ("--", "Z0", "0000"):
+        assert (
+            client.get("/repertoire/similar", params={"fen": fen_after(ITALIAN[:6]), "move": move}).status_code == 400
+        )
+
+
+def test_short_fens_and_bad_castling_are_400(client: TestClient) -> None:
+    placement_only = fen_after(ITALIAN[:6]).split(" ")[0]
+    assert client.get("/repertoire/similar", params={"fen": placement_only}).status_code == 400
+    assert client.get("/repertoire/similar", params={"fen": placement_only + " w"}).status_code == 400
+    assert (
+        client.get("/repertoire/branch-compare", params={"fen": placement_only, "pre_fen": PARENT}).status_code == 400
+    )
+    # A Chess960 start with its X-FEN castling string: python-chess would strip the rights and carry on.
+    assert (
+        client.get(
+            "/repertoire/similar", params={"fen": "bbqnnrkr/pppppppp/8/8/8/8/PPPPPPPP/BBQNNRKR w GCgc - 0 1"}
+        ).status_code
+        == 400
+    )
+    # Rights the placement cannot support are a malformed FEN too.
+    assert (
+        client.get(
+            "/repertoire/similar", params={"fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQ1BNR w KQkq - 0 1"}
+        ).status_code
+        == 400
+    )
+
+
+def test_ply_0_is_never_a_node_even_when_it_would_parse() -> None:
+    # The start position is the query, White to move, distance 0, signature equal; and the row is built so
+    # that the wrap-around parse of moves[-1] against fens[-1] succeeds. Only the range keeps ply 0 out.
+    query = chess.STARTING_FEN
+    fens = spine(None, ["e4", "e5", "Nf3", "Nc6"])
+    row = _row(["e4", "e5", "Nf3", "Nc6"], ["SIG"] * 5)
+    row["fen_sequence"] = [fens[0], fens[1], fens[2], fens[3], fens[3]]
+    assert nb.parse_arriving(fens[3], "Nc6") is not None
+    carriers = nb.expand_and_verify([row], query, "SIG", 8)
+    assert 0 not in {c["line_ply"] for c in carriers}
+
+
+def test_a_null_element_in_moves_is_a_terminal_not_a_token() -> None:
+    query = fen_after(["e4", "e5"])
+    row = _row(["e4", "e5"], ["SIG", "SIG", "SIG"])
+    row["moves"] = ["e4", "e5"]
+    row["fen_sequence"] = spine(None, ["e4", "e5"])
+    row["moves"] = ["e4", "e5", None][:2]
+    carriers = nb.expand_and_verify([row], query, "SIG", 8)
+    assert carriers[0]["expected_move"] is None
+    row3 = _row(["e4", "e5", "Nf3"], ["SIG", "SIG", "SIG", "SIG"])
+    row3["moves"] = ["e4", "e5", None]
+    carriers = nb.expand_and_verify([row3], query, "SIG", 8)
+    assert [c["expected_move"] for c in carriers if c["line_ply"] == 2] == [None]
+
+
+def test_line_counts_are_distinct_lines_not_occurrences(rep: psycopg.Connection[DictRow]) -> None:
+    # One line reaching the same board twice (a repetition) is one line in every count, and its two
+    # occurrences at a board are not a disagreement.
+    rep_moves = ITALIAN[:6] + ["Nc3", "Nf6", "Nb1", "Ng8", "Nc3", "Nf6"]
+    h.line(rep, 9, 1, "Repeats", rep_moves)  # White's book: the board after 3...Bc5 at plies 6 and 10
+    h.line(rep, 10, 3, "Repeats as Black", rep_moves)  # Black's book: the board after 4.Nc3 at plies 7 and 11
+    board = similar(rep, fen_after(ITALIAN[:6]))["neighbours"][0]
+    nc3 = next(g for g in board["groups"] if g["prep_move"] == "Nc3")
+    assert nc3["carried_by_line_count"] == 1 and board["board_prep_divergent"]  # c3 (line 1) vs Nc3 (line 9)
+    pre = fen_after(rep_moves[:6])
+    child = fen_after(rep_moves[:7])
+    cur = compare(rep, child, pre, san="Nc3", book_color="black")["current"]["sources"]["repertoire"]
+    assert cur["line_count"] == 1 and cur["reply_san"] == "Nf6" and not cur["board_prep_divergent"]
+    assert cur["groups"][0]["carried_by_line_count"] == 1
+    rep.rollback()
+
+
+def test_the_board_representative_is_the_tie_break_minimum(rep: psycopg.Connection[DictRow]) -> None:
+    # Two lines reach the same board with different counters; the representative (and so the wire FEN) is
+    # the tie-break minimum: book, chapter, line name.
+    fens = spine(None, ITALIAN[:6])
+    other = [*fens[:6], fens[6].replace(" 4 4", " 0 9")]
+    h.line(rep, 9, 1, "A first", ITALIAN[:6], fens=other)
+    board = similar(rep, fen_after(ITALIAN[:6]))["neighbours"][0]
+    assert board["fen"].endswith(" 0 9") and board["groups"][-1]["line_name"] == "A first"
+    # Among boards at one distance the order is the representative's tie-break too.
+    h.line(rep, 10, 2, "Scotch-ish", ITALIAN[:5] + ["Nf6", "d3"])  # book "Scotch" sorts after "Italian"
+    r = similar(rep, fen_after(ITALIAN[:6]))
+    at4 = [n for n in r["neighbours"] if n["distance"] == 4]
+    reps = [n["groups"][0]["book_title"] for n in at4]
+    assert reps == sorted(reps)
+    rep.rollback()
+
+
+def test_leg_b_verifies_the_child_too(rep: psycopg.Connection[DictRow]) -> None:
+    h6 = ITALIAN[:5] + ["h6"]
+    fens = h.game(rep, 1, h6 + ["Nxe5"])
+    # A blunder row whose own FEN is not the game's position at its ply (a corrupt row): the parent half of the
+    # verify alone would admit it.
+    blunder(rep, 1, 6, fens[5], "Nxe5", "d3", 200)
+    assert [b["opponent_move"]["san"] for b in compare(rep)["branches"]] == ["Nf6"]
+    rep.execute("DELETE FROM blunders")
+    blunder(rep, 1, 6, fens[6], "Nxe5", "d3", 200)
+    assert [b["opponent_move"]["san"] for b in compare(rep)["branches"]] == ["Nf6", "h6"]
+    rep.rollback()
+
+
+def test_leg_b_null_loss_sorts_last_and_games_are_distinct(rep: psycopg.Connection[DictRow]) -> None:
+    # A game can reach the same (parent, child) pair twice by repetition; two rows, one game. The parent
+    # here (after 3...h6 4.Nc3) is outside the repertoire so the blunder source survives the merge.
+    walk = ITALIAN[:5] + ["h6", "Nc3", "Nf6", "Nb1", "Ng8", "Nc3", "Nf6", "Nxe5"]
+    fens = h.game(rep, 1, walk)
+    blunder(rep, 1, 8, fens[8], "Nb1", "d3", 30)
+    blunder(rep, 1, 12, fens[12], "Nxe5", "d3", 100)
+    fens2 = h.game(rep, 2, walk[:8] + ["Nxe5"])
+    blunder(rep, 2, 8, fens2[8], "Nxe5", None, None)
+    pre, child = fens[7], fens[8]
+    r = compare(rep, child, pre, san="Nf6", book_color="white")
+    blu = r["current"]["sources"]["blunders"]
+    assert r["current"]["sources"]["repertoire"] is None and blu is not None
+    assert blu["games"] == 2 and blu["worst"]["centipawn_loss"] == 100 and blu["worst"]["move_played_san"] == "Nxe5"
+    rep.rollback()
+
+
+def test_branch_line_ply_is_the_childs_and_current_is_the_query_fen(rep: psycopg.Connection[DictRow]) -> None:
+    r = compare(rep)
+    assert r["current"]["sources"]["repertoire"]["groups"][0]["line_ply"] == 6
+    # A query FEN with other counters than the stored occurrence: the pinned board is the query as given.
+    odd = CURRENT.replace(" 4 4", " 0 9")
+    r = compare(rep, odd)
+    assert r["current"]["child_fen"] == odd and r["current"]["sources"]["repertoire"]["reply_san"] == "c3"
+
+
+def test_end_of_line_is_only_when_no_move_group(rep: psycopg.Connection[DictRow]) -> None:
+    h.line(rep, 5, 1, "Short", ITALIAN[:6])
+    cur = compare(rep)["current"]["sources"]["repertoire"]
+    assert (
+        not cur["end_of_line"]
+        and cur["reply_san"] == "c3"
+        and [g["prep_status"] for g in cur["groups"]] == ["move", "end_of_line"]
+    )
+    rep.rollback()

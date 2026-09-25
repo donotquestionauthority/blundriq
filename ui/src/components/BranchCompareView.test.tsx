@@ -140,3 +140,43 @@ describe("the Compare launcher in PuzzleEngine", () => {
     expect(screen.getByTestId("branch-compare-launch")).toBeDisabled();
   });
 });
+
+describe("what an independent read said the suite would not catch", () => {
+  it("a pair change while mounted shows loading, aborts the old request, and a late old answer never lands", async () => {
+    let resolveFirst: (v: { status: number; body: unknown }) => void = () => {};
+    let n = 0;
+    const calls = stubFetch(() => {
+      n += 1;
+      if (n === 1) return new Promise((resolve) => (resolveFirst = resolve));
+      return { status: 200, body: response([bluBranch(true)]) };
+    });
+    const { rerender } = render(<BranchCompareView fen={FEN} preFen={PRE} orientation="white" onClose={() => {}} />);
+    await waitFor(() => expect(calls).toHaveLength(1));
+    rerender(<BranchCompareView fen={NF6} preFen={PRE} orientation="white" onClose={() => {}} />);
+    expect(calls[0].signal?.aborted).toBe(true);
+    expect(screen.getAllByText(/Computing/).length).toBeGreaterThan(0);
+    await screen.findByText("1 alternative");
+    resolveFirst({ status: 200, body: response([]) });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.getByText("1 alternative")).toBeInTheDocument();
+  });
+
+  it("a new puzzle closes an open view even when the new puzzle has a target of its own", async () => {
+    stubFetch(() => ({ status: 200, body: response([]) }));
+    const { rerender } = render(<PuzzleEngine fen={PRE} solutionLine={["Bc5", "c3"]} color="w" />);
+    await waitFor(() => expect(screen.getByTestId("branch-compare-launch")).toBeEnabled());
+    fireEvent.click(screen.getByTestId("branch-compare-launch"));
+    await screen.findByTestId("branch-compare-view");
+    rerender(<PuzzleEngine fen={"r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"} solutionLine={["Bc4", "Bc5", "c3"]} color="b" />);
+    await waitFor(() => expect(screen.getByTestId("branch-compare-launch")).toBeEnabled());
+    expect(screen.queryByTestId("branch-compare-view")).toBeNull();
+  });
+
+  it("map mode has no target even once the opponent has replied", async () => {
+    stubFetch(() => ({ status: 200, body: response([]) }));
+    const acceptanceMap = { v: 1, n: 1, p: {}, d: { [PRE.split(" ").slice(0, 4).join(" ")]: "f8c5" } };
+    render(<PuzzleEngine fen={PRE} solutionLine={["Bc5", "c3"]} color="w" acceptanceMap={acceptanceMap} />);
+    await new Promise((r) => setTimeout(r, 600));
+    expect(screen.getByTestId("branch-compare-launch")).toBeDisabled();
+  });
+});

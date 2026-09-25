@@ -27,10 +27,17 @@ router = APIRouter(prefix="/repertoire", tags=["repertoire"], dependencies=[auth
 
 
 def _board_or_400(fen: str) -> chess.Board:
+    """At least four fields (python-chess would fill a bare placement in as White to move, no
+    castling), parseable, and castling rights the placement supports (a Chess960 X-FEN string on
+    a 960 start is silently stripped otherwise)."""
     try:
-        return chess.Board(fen)
+        annotations.normalize_fen(fen)
+        board = chess.Board(fen)
     except ValueError as exc:
         raise HTTPException(400, "Not a position") from exc
+    if board.status() & chess.STATUS_BAD_CASTLING_RIGHTS:
+        raise HTTPException(400, "Not a position")
+    return board
 
 
 @router.get("/similar")
@@ -46,9 +53,12 @@ def similar(
     canonical_move: str | None = None
     if move and move.strip():
         try:
-            canonical_move = board.san(board.parse_san(move.strip()))
+            parsed = board.parse_san(move.strip())
         except ValueError as exc:
             raise HTTPException(400, "move is not legal in fen") from exc
+        if not parsed:
+            raise HTTPException(400, "move is not legal in fen")  # the null move parses; it is not a move
+        canonical_move = board.san(parsed)
     with db.transaction() as conn:
         s = settings.load(conn)
         distance = s.similar_max_distance
@@ -60,7 +70,7 @@ def similar(
             return neighbourhood.similar_positions(
                 conn, board.fen(), canonical_move, max_distance=distance, max_positions=s.similar_max_positions
             )
-        except ValueError as exc:
+        except neighbourhood.NoSignature as exc:
             raise HTTPException(400, "Not a position") from exc
 
 

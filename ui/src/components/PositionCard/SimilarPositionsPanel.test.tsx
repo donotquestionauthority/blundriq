@@ -257,3 +257,78 @@ describe("SimilarCompareView in the Overlay", () => {
     expect(header()).toHaveAttribute("aria-expanded", "false");
   });
 });
+
+// --- what an independent read said the suite would not catch ------------------------------
+
+describe("the two layers, each on its own", () => {
+  it("the view consumes Escape, arrows and a qualifying swipe before any bubble listener, and passes a tap through", async () => {
+    await openCompare();
+    const bubble = vi.fn();
+    window.addEventListener("keydown", bubble);
+    window.addEventListener("touchend", bubble);
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    swipe(300, 100);
+    expect(bubble).not.toHaveBeenCalled();
+    swipe(300, 290); // a tap: not consumed
+    expect(bubble).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(bubble).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("similar-compare-view")).toBeNull();
+    window.removeEventListener("keydown", bubble);
+    window.removeEventListener("touchend", bubble);
+  });
+
+  it("the Overlay registers no listeners of its own while the view is open (the gate, apart from consumption)", async () => {
+    stubFetch(() => ({ status: 200, body: response([neighbour({ fen: OTHER, distance: 4 })]) }));
+    render(<Overlay items={[card(FEN), card(OTHER)]} initialIndex={0} onClose={() => {}} />);
+    fireEvent.click(header());
+    await screen.findByText("Compare side by side");
+    const spy = vi.spyOn(window, "addEventListener");
+    fireEvent.click(screen.getByText("Compare side by side"));
+    await screen.findByTestId("similar-compare-view");
+    const bubbleAdds = (calls: unknown[][]) => calls.filter(([type, , opts]) => (type === "keydown" || type === "touchstart" || type === "touchend") && opts !== true);
+    expect(bubbleAdds(spy.mock.calls)).toHaveLength(0); // only the view's capture-phase listeners were added
+    spy.mockClear();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(bubbleAdds(spy.mock.calls)).toHaveLength(3); // closed: the Overlay attaches its three again
+    spy.mockRestore();
+  });
+});
+
+describe("panel identity and cache", () => {
+  it("A → B → A serves the cached answer without a request; the compare view closes when the identity changes", async () => {
+    const calls = stubFetch((q) => ({ status: 200, body: response([neighbour({ fen: q.get("fen") === FEN ? OTHER : FEN, distance: 4 })]) }));
+    const onCompare = vi.fn();
+    const { rerender } = render(<SimilarPositionsPanel fen={FEN} orientation="white" onCompareOpenChange={onCompare} />);
+    fireEvent.click(header());
+    await screen.findByText("4 squares (~2 pieces)");
+    rerender(<SimilarPositionsPanel fen={OTHER} orientation="white" onCompareOpenChange={onCompare} />);
+    expect(onCompare).toHaveBeenLastCalledWith(false);
+    fireEvent.click(header());
+    await screen.findByText("4 squares (~2 pieces)");
+    rerender(<SimilarPositionsPanel fen={FEN} orientation="white" onCompareOpenChange={onCompare} />);
+    fireEvent.click(header());
+    await screen.findByText("4 squares (~2 pieces)");
+    expect(calls.map((c) => c.query.get("fen"))).toEqual([FEN, OTHER]);
+  });
+
+  it("the list shrinking under an open view closes it (no step happens; the panel's identity change does)", async () => {
+    stubFetch(() => ({ status: 200, body: response([neighbour({ fen: OTHER, distance: 4 })]) }));
+    const { rerender } = render(<Overlay items={[card(FEN), card(OTHER)]} initialIndex={1} onClose={() => {}} />);
+    fireEvent.click(header());
+    await screen.findByText("Compare side by side");
+    fireEvent.click(screen.getByText("Compare side by side"));
+    await screen.findByTestId("similar-compare-view");
+    rerender(<Overlay items={[card(FEN)]} initialIndex={1} onClose={() => {}} />);
+    expect(screen.queryByTestId("similar-compare-view")).toBeNull();
+  });
+
+  it("a deviation card asks about its most common played move", async () => {
+    const calls = stubFetch(() => ({ status: 200, body: response([]) }));
+    render(<Overlay items={[card(FEN, { movePlayed: null, mostCommonPlayed: "d3" })]} initialIndex={0} onClose={() => {}} />);
+    fireEvent.click(header());
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0].query.get("move")).toBe("d3");
+  });
+});

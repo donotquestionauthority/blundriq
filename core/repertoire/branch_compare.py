@@ -89,8 +89,10 @@ def _reply_squares(child_fen: str | None, san: str | None) -> tuple[str | None, 
     try:
         board = chess.Board(child_fen)
         move = board.parse_san(san)
-    except (ValueError, IndexError):
+    except ValueError:
         return None, None
+    if not move:
+        return None, None  # the null move
     return board.san(move), {"from": chess.square_name(move.from_square), "to": chess.square_name(move.to_square)}
 
 

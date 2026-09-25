@@ -10,8 +10,8 @@ Inputs: every blunder board of the sample games and a seeded slice of all blunde
 played as the queried move), a seeded slice of repertoire nodes; for branch compare the
 (position, parent) pair of every such blunder and repertoire node. Both caps are raised to 50 so
 the scout leg — phase 6 here, so `sources.scout` is stripped and scout-only branches are dropped
-from the old output — cannot move the cap. A blunder in a Chess960 game is a known difference:
-the old legs did not filter variants; here they count for nothing.
+from the old output — cannot move the cap. Chess960 games are left out of the inputs: the old
+legs did not filter variants, here their blunders count for nothing (a known difference).
 
     python tools/oracle/diff_compare.py --old-src /path/to/old-src   (the extracted archive)
 """
@@ -72,7 +72,7 @@ def queries(old: Any) -> tuple[list[tuple[str, str | None]], list[tuple[str, str
     with old.cursor() as cur:
         cur.execute(
             "SELECT b.fen, b.move_played, b.ply, cg.fen_sequence FROM blunders b JOIN chess_games cg ON cg.id = b.chess_game_id"
-            " WHERE b.player_id = %s AND cg.fen_sequence IS NOT NULL ORDER BY b.id",
+            " WHERE b.player_id = %s AND cg.fen_sequence IS NOT NULL AND cg.variant = 'standard' ORDER BY b.id",
             (PLAYER_ID,),
         )
         blunders = [dict(r) for r in cur.fetchall()]
