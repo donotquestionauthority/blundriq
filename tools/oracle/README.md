@@ -28,6 +28,10 @@ disposable and is modified.
     python tools/oracle/diff_compare.py --old-src DIR
                                                  # Similar positions and branch compare against the old
                                                  # modules executed from the archive, on the same queries
+    python tools/oracle/diff_conflicts.py --old-src DIR
+                                                 # the Conflicts page's listing and the activation gate on
+                                                 # every line not in play, against the old functions lifted
+                                                 # from the archive and run over its rows
 
 `diff_puzzles.py --generation` deletes the generated puzzles before remaking them, and
 deleting a puzzle cascades its SRS row away, so it refuses to run unless the database name

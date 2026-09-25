@@ -3,7 +3,7 @@ import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Repertoire from "./Repertoire";
 import { provenanceLabel } from "../repertoire";
-import type { LineReaderLine, RepertoireBook, RepertoireSection } from "../repertoire";
+import type { LineReaderLine, Refusal, RepertoireBook, RepertoireSection } from "../repertoire";
 
 vi.mock("react-chessboard", () => ({
   Chessboard: ({ options }: { options: { id?: string; position?: string; squareStyles?: Record<string, unknown> } }) => <div data-testid={`board-${options.id}`} data-position={options.position} data-highlights={Object.keys(options.squareStyles ?? {}).join(",")} />,
@@ -74,8 +74,9 @@ describe("Repertoire page", () => {
     const calls = stubFetch({
       "/repertoire": () => ({ status: 200, body: { books: [book()] } }),
       "/repertoire/1/sections": () => ({ status: 200, body: { sections: sections() } }),
-      "/repertoire/lines/2": () => ({ status: 200, body: { detail: "updated", rematch: {} } }),
-      "/repertoire/books/1": () => ({ status: 200, body: { detail: "updated", rematch: {} } }),
+      "/repertoire/conflicts": () => ({ status: 200, body: { positions: [], duplicates: [], contested: 0 } }),
+      "/repertoire/lines/2": () => toggled(),
+      "/repertoire/books/1": () => toggled(),
     });
     renderPage();
     expect(await screen.findByText("Course: The Italian")).toBeInTheDocument();
@@ -159,5 +160,93 @@ describe("Repertoire page", () => {
     expect(await within(dialog).findByText("Black replies e5")).toBeInTheDocument();
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "Line" })).not.toBeInTheDocument();
+  });
+});
+
+const AFTER_NC6 = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3";
+const refusal = (): Refusal => ({
+  line_id: 2,
+  line_name: "Alt",
+  chapter_title: "2) Sidelines",
+  fen: AFTER_NC6,
+  move: "Bb5",
+  reason: "anchor",
+  rivals: [{ line_id: 1, line_name: "Main", chapter_id: 1, chapter_title: "1) Giuoco", book_id: 1, book_title: "Course: The Italian", move: "Bc4" }],
+});
+const toggled = (held_back: Refusal[] = []) => ({ status: 200, body: { detail: "updated", rematch: { candidates: 0, matched: 0, no_match: 0, lines: 0 }, held_back } });
+
+describe("Repertoire page: conflicts", () => {
+  it("shows the contested count and fetches it again after every successful toggle", async () => {
+    let contested = 2;
+    const calls = stubFetch({
+      "/repertoire": () => ({ status: 200, body: { books: [book()] } }),
+      "/repertoire/conflicts": () => ({ status: 200, body: { positions: [], duplicates: [], contested } }),
+      "/repertoire/1/sections": () => ({ status: 200, body: { sections: sections() } }),
+      "/repertoire/lines/1": () => ((contested = 0), toggled()),
+    });
+    renderPage();
+    const link = await screen.findByRole("link", { name: "Conflicts: 2 contested →" });
+    expect(link).toHaveAttribute("href", "/repertoire/conflicts");
+    fireEvent.click(screen.getByRole("button", { name: /Course: The Italian/ }));
+    fireEvent.click(await screen.findByRole("switch", { name: "Main active" }));
+    expect(await screen.findByRole("link", { name: "Conflicts: no contested positions →" })).toBeInTheDocument();
+    expect(calls.filter((c) => c.path === "/repertoire/conflicts")).toHaveLength(2);
+  });
+
+  it("reverts a refused line, explains it in a dialog, and hands focus back to the switch", async () => {
+    stubFetch({
+      "/repertoire": () => ({ status: 200, body: { books: [book()] } }),
+      "/repertoire/conflicts": () => ({ status: 200, body: { positions: [], duplicates: [], contested: 0 } }),
+      "/repertoire/1/sections": () => ({ status: 200, body: { sections: sections() } }),
+      "/repertoire/lines/2": () => ({ status: 409, body: { detail: "activation_conflict", refusal: refusal() } }),
+    });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /Course: The Italian/ }));
+    const alt = await screen.findByRole("switch", { name: "Alt active" });
+    fireEvent.click(alt);
+    const dialog = await screen.findByRole("dialog", { name: "Can't switch Alt on" });
+    expect(alt).toHaveAttribute("aria-checked", "false");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(dialog).toHaveTextContent("Alt plays Bb5 here;");
+    expect(dialog).toHaveTextContent("Main (Course: The Italian / 1) Giuoco) plays Bc4.");
+    expect(within(dialog).getByTestId(/^board-/)).toHaveAttribute("data-position", AFTER_NC6);
+    expect(within(dialog).getByRole("link", { name: "Open in Conflicts" })).toHaveAttribute("href", `/repertoire/conflicts?fen=${encodeURIComponent(AFTER_NC6).replace(/%20/g, "+")}`);
+    expect(within(dialog).getByRole("button", { name: "Keep off" })).toHaveFocus();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(alt).toHaveFocus();
+  });
+
+  it("applies held-back lines when the sections arrive, drops an older sections response, and names them in a notice", async () => {
+    let releaseSections: (() => void) | null = null;
+    let sectionsCalls = 0;
+    const calls = stubFetch({
+      "/repertoire": () => ({ status: 200, body: { books: [book({ active: false })] } }),
+      "/repertoire/conflicts": () => ({ status: 200, body: { positions: [], duplicates: [], contested: 0 } }),
+      "/repertoire/1/sections": () => {
+        sectionsCalls++;
+        if (sectionsCalls === 1) return new Promise<Reply>((resolve) => (releaseSections = () => resolve({ status: 200, body: { sections: sections().map((c) => ({ ...c, lines: c.lines.map((l) => ({ ...l, active: true })) })) } })));
+        return { status: 200, body: { sections: sections().map((c) => ({ ...c, lines: c.lines.map((l) => ({ ...l, active: true })) })) } };
+      },
+      "/repertoire/books/1": () => toggled([refusal()]),
+    });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /Course: The Italian/ }));
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
+    // The book comes on before its sections have loaded; the server holds Alt back.
+    fireEvent.click(screen.getByRole("switch", { name: "Course: The Italian active" }));
+    const notice = await screen.findByRole("status");
+    expect(notice).toHaveTextContent("Switched on; 1 line held back because another active line disagrees with it: Alt. View all →");
+    expect(within(notice).getByRole("link", { name: "Alt" })).toHaveAttribute("href", `/repertoire/conflicts?fen=${encodeURIComponent(AFTER_NC6).replace(/%20/g, "+")}`);
+    expect(within(notice).getByRole("link", { name: "View all →" })).toHaveAttribute("href", "/repertoire/conflicts?filter=all");
+    // The response that was in flight when the toggle answered says Alt is on; it is dropped.
+    await vi.waitFor(() => expect(sectionsCalls).toBe(2));
+    releaseSections!();
+    expect(await screen.findByRole("switch", { name: "Alt active" })).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("switch", { name: "Main active" })).toHaveAttribute("aria-checked", "true");
+    expect(calls.filter((c) => c.path === "/repertoire/1/sections")).toHaveLength(2);
+    // The notice clears on the next action.
+    fireEvent.click(screen.getByRole("switch", { name: "Course: The Italian active" }));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 });

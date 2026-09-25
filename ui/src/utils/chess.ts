@@ -157,3 +157,23 @@ export function numberedLine(startingFen: string, moves: string[]): string[] {
     return token;
   });
 }
+
+/** "1.e4 e5 2.Nf3" from a move list, or "—" for none. */
+export function numbered(moves: string[]): string {
+  return moves.map((m, i) => (i % 2 === 0 ? `${i / 2 + 1}.${m}` : m)).join(" ") || "—";
+}
+
+/** One colour per distinct move, in a fixed order, so the same board reads the same twice. */
+const MOVE_COLOURS = [ARROWS.book, ARROWS.engine, ARROWS.played, ARROWS.opponent];
+
+/** Arrows for the moves prescribed at `fen`, in the order given, each in its own colour unless
+ *  one is named; a move that is not in play is drawn faded. A move that is not legal on the
+ *  board draws nothing. */
+export function moveArrows(fen: string, moves: { move: string; inPlay: boolean; color?: string }[]): BoardArrow[] {
+  const out: BoardArrow[] = [];
+  moves.forEach((m, i) => {
+    const sq = sanToSquares(fen, m.move);
+    if (sq) out.push({ startSquare: sq[0], endSquare: sq[1], color: `${m.color ?? MOVE_COLOURS[i % MOVE_COLOURS.length]}${m.inPlay ? "" : "66"}` });
+  });
+  return out;
+}

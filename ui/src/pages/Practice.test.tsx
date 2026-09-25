@@ -327,7 +327,7 @@ describe("Practice page", () => {
         <Routes>
           <Route element={<Layout onLoggedOut={() => {}} />}>
             <Route path="/practice" element={<Practice />} />
-            <Route path="/games" element={<p>games page</p>} />
+            <Route path="/blunders" element={<p>blunders page</p>} />
           </Route>
         </Routes>
       </MemoryRouter>,
@@ -336,10 +336,10 @@ describe("Practice page", () => {
     fireEvent.click(screen.getByText("drop"));
     expect(await screen.findByText(/Couldn't save your attempt/)).toBeInTheDocument();
     // The header no longer offers a way out; the unsaved attempt is the reason.
-    const games = screen.getByText("Games");
-    expect(games.tagName).toBe("SPAN");
-    fireEvent.click(games);
-    expect(screen.queryByText("games page")).not.toBeInTheDocument();
+    const blunders = screen.getByText("Blunders");
+    expect(blunders.tagName).toBe("SPAN");
+    fireEvent.click(blunders);
+    expect(screen.queryByText("blunders page")).not.toBeInTheDocument();
     expect(screen.getByText("#11")).toBeInTheDocument();
     expect(screen.getByText("Log out")).toBeDisabled();
 
@@ -356,7 +356,7 @@ describe("Practice page", () => {
       </MemoryRouter>,
     );
     expect(await screen.findByText(/attempt on puzzle #11 has not been saved/)).toBeInTheDocument();
-    expect(screen.getByText("Games").tagName).toBe("SPAN");
+    expect(screen.getByText("Blunders").tagName).toBe("SPAN");
     // Nothing else is offered until it is saved: no board, no Skip, no queue.
     await flush();
     expect(screen.queryByText("drop")).not.toBeInTheDocument();
@@ -364,7 +364,7 @@ describe("Practice page", () => {
     expect(screen.queryByText("#11")).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("Retry"));
     await vi.waitFor(() => expect(screen.queryByText(/has not been saved/)).not.toBeInTheDocument());
-    expect(screen.getByText("Games").tagName).toBe("A");
+    expect(screen.getByText("Blunders").tagName).toBe("A");
     // ... and the queue comes back once it is.
     expect(await screen.findByText("#11")).toBeInTheDocument();
     const attempts = calls.filter((c) => c.path === "/practice/puzzles/11/attempt");
@@ -403,7 +403,7 @@ describe("Practice page", () => {
     expect(attempts()).toHaveLength(1);
     const first = attempts()[0].body!;
     expect(getUnsavedAttempt()?.attempt_id).toBe(first.attempt_id);
-    expect(screen.getByText("Games").tagName).toBe("SPAN");
+    expect(screen.getByText("Blunders").tagName).toBe("SPAN");
     expect(screen.getByText("Log out")).toBeDisabled();
 
     // Leave through history regardless and come back while it is still pending: no board,
@@ -853,9 +853,9 @@ describe("Practice page", () => {
     fireEvent.click(await screen.findByText("Remove puzzle"));
     fireEvent.click(screen.getByText("Yes, remove"));
     expect(await screen.findByText("Removing…")).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Games" })).not.toBeInTheDocument(); // a disabled span instead
+    expect(screen.queryByRole("link", { name: "Blunders" })).not.toBeInTheDocument(); // a disabled span instead
     finishDelete!();
-    expect(await screen.findByRole("link", { name: "Games" })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "Blunders" })).toBeInTheDocument();
     expect(screen.queryByText("#21")).not.toBeInTheDocument();
   });
 
