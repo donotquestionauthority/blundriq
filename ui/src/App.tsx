@@ -10,6 +10,7 @@ import Login from "./pages/Login";
 import Practice from "./pages/Practice";
 import Preferences from "./pages/Preferences";
 import Repertoire from "./pages/Repertoire";
+import RepertoireConflicts from "./pages/RepertoireConflicts";
 
 type AuthState = "checking" | "in" | "out";
 
@@ -35,6 +36,7 @@ export default function App() {
         <Route path="/blunders" element={<Blunders />} />
         <Route path="/deviations" element={<Deviations />} />
         <Route path="/repertoire" element={<Repertoire />} />
+        <Route path="/repertoire/conflicts" element={<RepertoireConflicts />} />
         <Route path="/games" element={<Games />} />
         <Route path="/practice" element={<Practice />} />
         <Route path="/preferences" element={<Preferences />} />

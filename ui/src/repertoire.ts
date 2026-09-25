@@ -1,6 +1,6 @@
 /** Types and calls for the repertoire read side: books, sections, toggles, notes, the walk-through,
- *  and the two compare surfaces. */
-import { api } from "./api";
+ *  the two compare surfaces, and the Conflicts page. */
+import { api, ApiError } from "./api";
 
 export interface RepertoireBook {
   book_id: number;
@@ -178,9 +178,83 @@ export interface BranchCompareResponse {
 export const getSimilarPositions = (fen: string, move: string | null, signal?: AbortSignal) => api.get<SimilarPositionsResponse>(`/repertoire/similar?fen=${encodeURIComponent(fen)}${move ? `&move=${encodeURIComponent(move)}` : ""}`, signal);
 export const getBranchCompare = (fen: string, preFen: string, signal?: AbortSignal) => api.get<BranchCompareResponse>(`/repertoire/branch-compare?fen=${encodeURIComponent(fen)}&pre_fen=${encodeURIComponent(preFen)}`, signal);
 
+// --- Conflicts ------------------------------------------------------------------------------
+
+/** One line's say at a position: who it is and whether it is in play. */
+export interface ConflictLine {
+  line_id: number;
+  line_name: string;
+  chapter_id: number;
+  chapter_title: string;
+  book_id: number;
+  book_title: string;
+  line_active: boolean;
+  chapter_active: boolean;
+  book_active: boolean;
+  effective: boolean;
+}
+
+/** A position where two or more lines, in any state, prescribe different moves. `contested`
+ *  when two of them are in play (the cards and puzzles then show no repertoire move there). */
+export interface ConflictPosition {
+  fen: string;
+  color: "white" | "black";
+  contested: boolean;
+  active_moves: number;
+  moves: { move: string; lines: (ConflictLine & { move: string })[] }[];
+}
+
+/** Identical lines (same colour, same start, same moves) in different chapters. */
+export interface DuplicateGroup {
+  color: "white" | "black";
+  moves: string[];
+  lines: ConflictLine[];
+}
+
+export interface ConflictsResponse {
+  positions: ConflictPosition[];
+  duplicates: DuplicateGroup[];
+  contested: number;
+}
+
+/** Why a line could not come on: the first position that blocked it, its move there, and the
+ *  lines holding the position against it (their moves included). */
+export interface Refusal {
+  line_id: number;
+  line_name: string;
+  chapter_title: string;
+  fen: string;
+  move: string;
+  reason: "anchor" | "dirty" | "cohort";
+  rivals: { line_id: number; line_name: string; chapter_id: number; chapter_title: string; book_id: number; book_title: string; move: string }[];
+}
+
+export interface ToggleResponse {
+  detail: string;
+  rematch: { candidates: number; matched: number; no_match: number; lines: number };
+  /** Lines a chapter or book could not bring on with it; empty for a line and for switching off. */
+  held_back: Refusal[];
+}
+
 export const getBooks = () => api.get<{ books: RepertoireBook[] }>("/repertoire");
 export const getSections = (bookId: number) => api.get<{ sections: RepertoireSection[] }>(`/repertoire/${bookId}/sections`);
-export const setActive = (kind: "books" | "chapters" | "lines", id: number, active: boolean) => api.patch<{ detail: string }>(`/repertoire/${kind}/${id}`, { active });
+export const setActive = (kind: "books" | "chapters" | "lines", id: number, active: boolean) => api.patch<ToggleResponse>(`/repertoire/${kind}/${id}`, { active });
+export const getConflicts = () => api.get<ConflictsResponse>("/repertoire/conflicts");
+
+/** The refusal carried by a 409 on a line toggle, or null for any other error. */
+export function refusalOf(err: unknown): Refusal | null {
+  if (!(err instanceof ApiError) || err.status !== 409) return null;
+  const body = err.body as { detail?: unknown; refusal?: Refusal } | undefined;
+  return body?.detail === "activation_conflict" && body.refusal ? body.refusal : null;
+}
+
+export const conflictsPath = (opts: { fen?: string; filter?: "all" } = {}) => {
+  const q = new URLSearchParams();
+  if (opts.fen) q.set("fen", opts.fen);
+  if (opts.filter) q.set("filter", opts.filter);
+  const s = q.toString();
+  return `/repertoire/conflicts${s ? `?${s}` : ""}`;
+};
 
 export const getAnnotation = (fen: string) => api.get<Annotation | null>(`/repertoire/annotation?fen=${encodeURIComponent(fen)}`);
 export const putAnnotation = (fen: string, text: string, lineId: number | null) => api.put<Annotation | { detail: string; line_id: number }>("/repertoire/annotation", { fen, text, line_id: lineId });
