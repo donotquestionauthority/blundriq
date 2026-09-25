@@ -110,6 +110,17 @@ describe("Practice page", () => {
     expect(screen.getByText("← Previous")).toBeDisabled();
   });
 
+  it("the Filters panel hangs from its button's left edge and never exceeds the viewport (a phone's Filters button sits near the left edge)", async () => {
+    stubFetch({ "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1)], 1, 1) }) });
+    renderPage();
+    expect(await screen.findByText("#11")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Filters/ }));
+    const panel = screen.getByRole("dialog", { name: "Practice filters" });
+    expect(panel.className).toMatch(/\bleft-0\b/);
+    expect(panel.className).not.toMatch(/\bright-0\b/);
+    expect(panel.className).toContain("max-w-[calc(100vw-2rem)]");
+  });
+
   it("appends a new batch keyed by play_batch_id without resetting the cursor, prefetching at remainingAhead+1 <= threshold", async () => {
     let serveCount = 0;
     const calls = stubFetch({

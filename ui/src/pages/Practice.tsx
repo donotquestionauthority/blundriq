@@ -785,7 +785,7 @@ function FiltersPopover({
         Filters{activeCount > 0 ? ` (${activeCount})` : ""}
       </button>
       {open && (
-        <div role="dialog" aria-label="Practice filters" className="absolute right-0 z-30 mt-2 flex w-72 flex-col gap-3 rounded border border-zinc-200 bg-white p-3 shadow-lg dark:border-zinc-800 dark:bg-zinc-950">
+        <div role="dialog" aria-label="Practice filters" className="absolute left-0 z-30 mt-2 flex w-72 max-w-[calc(100vw-2rem)] flex-col gap-3 rounded border border-zinc-200 bg-white p-3 shadow-lg dark:border-zinc-800 dark:bg-zinc-950">
           {subtypeOptions.length > 0 && (
             <label className="flex flex-col gap-1 text-xs text-zinc-500">
               Subtype
