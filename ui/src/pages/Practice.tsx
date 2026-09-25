@@ -771,8 +771,12 @@ function FiltersPopover({
 
   const activeCount = (subtype ? 1 : 0) + (srsFilter !== "due" ? 1 : 0) + (lastNGames !== 0 ? 1 : 0);
 
+  // The panel is positioned by the toolbar (the nearest `relative` ancestor), never by its button:
+  // spanning the toolbar's edges keeps it inside a phone's viewport wherever the button wraps to —
+  // hung from the button's edge, 288 px ran past the screen — and hangs 288 px from the toolbar's
+  // right edge, where the button sits, from `sm` up.
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef}>
       <button
         type="button"
         disabled={disabled}
@@ -785,7 +789,7 @@ function FiltersPopover({
         Filters{activeCount > 0 ? ` (${activeCount})` : ""}
       </button>
       {open && (
-        <div role="dialog" aria-label="Practice filters" className="absolute left-0 z-30 mt-2 flex w-72 max-w-[calc(100vw-2rem)] flex-col gap-3 rounded border border-zinc-200 bg-white p-3 shadow-lg dark:border-zinc-800 dark:bg-zinc-950">
+        <div role="dialog" aria-label="Practice filters" className="absolute left-0 right-0 top-full z-30 mt-2 flex flex-col gap-3 rounded border border-zinc-200 bg-white p-3 shadow-lg sm:left-auto sm:w-72 dark:border-zinc-800 dark:bg-zinc-950">
           {subtypeOptions.length > 0 && (
             <label className="flex flex-col gap-1 text-xs text-zinc-500">
               Subtype
@@ -925,7 +929,8 @@ export default function Practice() {
 
   return (
     <div>
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      {/* `relative`: the Filters panel hangs from this whole toolbar, not from its button. */}
+      <div className="relative flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-xl font-semibold tracking-tight">Practice</h1>
           <div className="flex flex-wrap gap-1" role="tablist" aria-label="Practice type">
