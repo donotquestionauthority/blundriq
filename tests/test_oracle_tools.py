@@ -238,7 +238,7 @@ def test_the_ranking_oracle_reports_a_wrong_port_of_the_weights(
 
 
 def test_the_review_oracle_separates_exact_parity_from_positions_the_old_detector_priced_over_the_board(
-    clean: psycopg.Connection[DictRow], monkeypatch: pytest.MonkeyPatch, capsys: Any
+    clean: psycopg.Connection[DictRow], fresh_db_url: str, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:
     """Same database as both sides: the old rows are the new rows, so the check passes; a game
     that reaches a four-man castling-free position is reported apart, never as a defect; a
@@ -249,8 +249,8 @@ def test_the_review_oracle_separates_exact_parity_from_positions_the_old_detecto
     from tests.review.helpers import analysed_game, plant_event
     from tests.review.test_detect import KQKR_FEN, KQKR_MOVES, make_ctx, qh_ctx
 
-    monkeypatch.setenv("DATABASE_URL", clean.info.dsn)
-    monkeypatch.setenv("ORACLE_DATABASE_URL", clean.info.dsn)
+    monkeypatch.setenv("DATABASE_URL", fresh_db_url)  # never conn.info.dsn: it strips the password
+    monkeypatch.setenv("ORACLE_DATABASE_URL", fresh_db_url)
     ctx = qh_ctx()
     analysed_game(clean, 1, ctx, days_ago=1)
     small = make_ctx(KQKR_MOVES, [900, 0, 0, 0, 0], starting_fen=KQKR_FEN, variant="chess960")
@@ -270,8 +270,8 @@ def test_the_review_oracle_separates_exact_parity_from_positions_the_old_detecto
     assert diff_review.main() == 1  # a standard game's rows on one side only
     assert "1: has events only in old" in capsys.readouterr().out
     monkeypatch.undo()
-    monkeypatch.setenv("DATABASE_URL", clean.info.dsn)
-    monkeypatch.setenv("ORACLE_DATABASE_URL", clean.info.dsn)
+    monkeypatch.setenv("DATABASE_URL", fresh_db_url)
+    monkeypatch.setenv("ORACLE_DATABASE_URL", fresh_db_url)
     # a fact changed on the small-position game is listed apart and does not fail the check ...
     real = q.review_events
 

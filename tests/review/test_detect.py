@@ -411,3 +411,49 @@ def test_gaps_in_the_evals_are_forward_filled_and_no_evals_price_flat() -> None:
     ctx["ply_analysis"][5] = None  # the position after Nxh5 carries ply 4's eval forward: no drop, pruned
     assert tag_review_events(ctx, KNOBS) == ([], 0)
     assert tag_review_events(qh_ctx(cps=[None] * 9), KNOBS) == ([], 0)
+
+
+# --- the internals the oracle would otherwise be the only check of ---------------------------
+
+FORCED_FEN = "rnb1kb1r/pppp1ppp/5n2/4p2Q/4P3/8/PPPP1PPP/RNB1KBNR w KQkq - 2 3"  # after e4 e5 Qh5 Nf6
+
+
+def test_a_leading_eval_gap_takes_the_first_known_value_not_fifty() -> None:
+    """The player's first move has no eval: the position before it is priced like the one after,
+    so no drop is charged to it. Filled with 50 it would be a 46-point cliff whose PV proves the
+    queen lost — a forced event out of nothing."""
+    ctx = make_ctx(["a3"], [None, -900], starting_fen=FORCED_FEN, variant="chess960", best_lines={1: "Nxh5 g3 Nf6"})
+    assert tag_review_events(ctx, KNOBS) == ([], 0)
+
+
+def test_the_cliff_threshold_is_twenty_points() -> None:
+    lines = {5: "Nxh5 g3 Nf6"}
+    over = make_ctx(QH_MOVES[:5], [20, 20, 30, 30, 50, -200], best_lines=lines)  # 54.6 → 32.4
+    assert only(tag_review_events(over, KNOBS))["cost"] == 22.21
+    under = make_ctx(QH_MOVES[:5], [20, 20, 30, 30, 50, -150], best_lines=lines)  # 54.6 → 36.5
+    assert tag_review_events(under, KNOBS) == ([], 0)
+
+
+def test_mate_in_zero_is_not_a_mate() -> None:
+    """`mate_in_moves` 0 carries no sign: the position is priced by the sigmoid."""
+    ctx = make_ctx(
+        MM_MOVES,
+        list(MM_CPS),
+        result="win",
+        mates={2: 0},
+        motif_missed=[{"ply": 2, "metric_type": "mate", "theme": "mate", "mate_in_moves": 2}],
+    )
+    ev = only(tag_review_events(ctx, KNOBS))
+    assert ev["evidence"]["es_authority_before"] == "sigmoid" and ev["cost"] == 0.0
+
+
+def test_a_rook_for_a_minor_is_the_exchange() -> None:
+    ctx = make_ctx(
+        ["Rxd7", "Kxd7"],
+        [300, -100, -100],
+        starting_fen="4k3/3n4/8/8/8/8/P6P/3RK3 w - - 0 1",
+        variant="chess960",
+        best_lines={2: "Kd2"},
+    )
+    ev = only(tag_review_events(ctx, KNOBS))
+    assert ev["piece_label"] == "exchange" and ev["evidence"]["detectors"][0]["settled_deficit"] >= 2

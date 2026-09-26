@@ -196,9 +196,18 @@ def test_the_lock_order_is_review_then_repertoire_on_every_path(url: str, monkey
         real(conn)
 
     monkeypatch.setattr(matching, "lock", spy)
+    real_load = review.settings_module.load
+    under_locks: list[bool] = []
+
+    def load_spy(conn: Any) -> Any:
+        under_locks.append(held(conn, LOCK_REVIEW) and held(conn, LOCK_REPERTOIRE))
+        return real_load(conn)
+
+    monkeypatch.setattr(review.settings_module, "load", load_spy)
     with connect(url) as c:
         h.player(c)
         review.run(c)
         c.commit()
         assert not held(c, LOCK_REVIEW) and not held(c, LOCK_REPERTOIRE)  # both fell with the commit
     assert seen == [(True, False)]  # the review lock was already held when the repertoire lock was taken
+    assert under_locks == [True]  # the settings row is read under both, like every other read

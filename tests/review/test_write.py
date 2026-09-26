@@ -115,14 +115,15 @@ def test_a_game_that_cannot_be_tagged_keeps_its_rows_and_fails_the_run(clean: ps
     analysed_game(conn, 2, qh_ctx(), days_ago=2)
     conn.commit()
     run(conn)
+    before = events_of(conn, 1)[0]["cost"]
     # game 2's stored analysis loses an entry: the detector fails closed on it
     conn.execute("UPDATE chess_games SET ply_analysis = ply_analysis - 8 WHERE id = 2")
     conn.execute("UPDATE chess_games SET ply_analysis = jsonb_set(ply_analysis, '{5,eval}', '-600') WHERE id = 1")
     conn.commit()
     out = run(conn)
-    assert out["failed"] == 1 and out["games"] == 2 and out["failures"] == ["2: untaggable"]
+    assert out["failed"] == 1 and out["games"] == 2 and out["events"] == 1 and out["failures"] == ["2: untaggable"]
     assert len(events_of(conn, 2)) == 1  # the prior generation stays
-    assert events_of(conn, 1)[0]["cost"] != 51.03  # the other game was still replaced
+    assert events_of(conn, 1)[0]["cost"] != before  # the other game was still replaced (not all-or-nothing)
     # a detector that raises is a failed game too, reported by its class chain only
     analysed_game(conn, 3, qh_ctx(), days_ago=0.5)
     conn.commit()
@@ -156,11 +157,17 @@ def test_games_leaving_the_window_lose_their_rows(clean: psycopg.Connection[Dict
         analysed_game(conn, gid, qh_ctx(), days_ago=gid)
     conn.commit()
     assert run(conn)["events"] == 50
+    first = state(conn)
     analysed_game(conn, 51, qh_ctx(), days_ago=0.5)  # a newer game pushes the oldest out
+    analysed_game(conn, 52, qh_ctx(), days_ago=0.4)
+    conn.execute("UPDATE chess_games SET ply_analysis = jsonb_set(ply_analysis, '{6,best_line}', 'null') WHERE id = 52")
     conn.commit()
     out = run(conn)
-    assert (out["games"], out["events"], out["deleted"]) == (50, 50, 1)
-    assert len(events_of(conn, 51)) == 1 and events_of(conn, 50) == []
+    assert (out["games"], out["events"], out["deleted"], out["unknown"]) == (50, 49, 2, 1)
+    assert len(events_of(conn, 51)) == 1 and events_of(conn, 50) == [] and events_of(conn, 49) == []
+    second = state(conn)
+    assert first and second and second["computed_at"] > first["computed_at"]  # the state row is refreshed
+    assert (first["unknown_candidates"], second["unknown_candidates"]) == (0, 1)
 
 
 def test_a_chess960_game_is_never_in_the_window_and_planted_rows_go(clean: psycopg.Connection[DictRow]) -> None:
@@ -205,10 +212,10 @@ def test_the_run_is_a_fixed_number_of_statements_whatever_the_window_holds(
     from psycopg.rows import dict_row
 
     class Counting(psycopg.Connection[DictRow]):
-        statements = 0
+        statements: list[str] = []
 
         def execute(self, *args: Any, **kwargs: Any) -> Any:
-            Counting.statements += 1
+            Counting.statements.append(str(args[0]))
             return super().execute(*args, **kwargs)
 
     conn = clean
@@ -220,8 +227,11 @@ def test_the_run_is_a_fixed_number_of_statements_whatever_the_window_holds(
         have = n
         conn.commit()
         with Counting.connect(fresh_db_url, row_factory=dict_row) as c:
-            Counting.statements = 0
+            Counting.statements = []
             assert review.run(c)["games"] == n
             c.commit()
-            counts.append(Counting.statements)
+            counts.append(len(Counting.statements))
     assert counts[0] == counts[1] <= 10
+    # and the two locks come before any statement of the run's own
+    first, second = Counting.statements[:2]
+    assert "pg_advisory_xact_lock" in first and "pg_advisory_xact_lock" in second

@@ -121,7 +121,7 @@ def main() -> int:
         for k in sorted(old_keys & new_keys):
             bucket += compare_event(f"{g} ply{k[1]}", old_by[k], new_by[k])
 
-    checked = len(old_by | new_by)
+    checked = len([k for k in old_by | new_by if k[0] not in small_games])
     print(f"old: {len(old_rows)} events over {len(old_games)} games; new: {len(new_rows)} over {len(new_games)}")
     print(f"old state: {old_state}; new state: {new_state}")
     print(f"games reaching a 3–5-man castling-free position: {len(small_games)}")
