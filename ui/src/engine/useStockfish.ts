@@ -77,6 +77,7 @@ export function toWhitePovCp(kind: "cp" | "mate", value: number, side: "w" | "b"
 }
 
 export function clampDepth(raw: number): number {
+  if (!Number.isFinite(raw)) return DEFAULT_DEPTH;
   return Math.max(MIN_DEPTH, Math.min(MAX_DEPTH, Math.round(raw)));
 }
 

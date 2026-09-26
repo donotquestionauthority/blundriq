@@ -200,6 +200,7 @@ describe("queue", () => {
   it("clamps the depth at both bounds and takes the per-call depth over the hook's", () => {
     expect(clampDepth(2)).toBe(6);
     expect(clampDepth(99)).toBe(30);
+    expect(clampDepth(Number.NaN)).toBe(16);
     const { result } = renderHook(() => useStockfish({ enabled: true, depth: 22 }));
     handshake();
     act(() => result.current.analyze(START));
@@ -251,6 +252,31 @@ describe("reset", () => {
     expect(positions(worker())).toEqual([]);
     expect(worker().posted.filter((c) => c === "stop")).toHaveLength(0);
     expect(result.current.evalState).toBeNull();
+  });
+
+  it("clears a request waiting behind a running search: the drained bestmove dispatches nothing", () => {
+    const { result } = renderHook(() => useStockfish({ enabled: true }));
+    handshake();
+    act(() => result.current.analyze(START));
+    tick();
+    act(() => result.current.analyze(FEN_B)); // queued behind the running search
+    act(() => result.current.reset()); // a mating move within the debounce
+    tick();
+    act(() => worker().emit("bestmove e2e4"));
+    expect(positions(worker())).toEqual([START]);
+    expect(result.current.evalState).toBeNull();
+  });
+
+  it("stop() alone: the drained bestmove is not applied to the evaluation it interrupted", () => {
+    const { result } = renderHook(() => useStockfish({ enabled: true }));
+    handshake();
+    act(() => result.current.analyze(START));
+    tick();
+    act(() => worker().emit("info depth 8 score cp 12 pv e2e4"));
+    act(() => result.current.stop());
+    act(() => worker().emit("bestmove a2a3"));
+    expect(result.current.evalState).toMatchObject({ fen: START, bestMoveUci: "e2e4", thinking: true });
+    expect(positions(worker())).toEqual([START]);
   });
 
   it("an analyze arriving while a reset's stop drains keeps its request until the stale bestmove", () => {

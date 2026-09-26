@@ -39,20 +39,21 @@ const AFTER_E4 = (() => {
 const MATED = "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3";
 
 let settings: Record<string, unknown> | null = { explore_engine_depth: 16 };
-let resolveSettings: (() => void) | null = null;
+// When `hold` is set the settings answer waits until the test calls `release()`.
+let hold = false;
+let release: () => void = () => {};
 beforeEach(() => {
   analyze.mockClear();
   reset.mockClear();
   stop.mockClear();
   nextDrop = { from: "e2", to: "e4" };
   settings = { explore_engine_depth: 16 };
-  resolveSettings = null;
+  hold = false;
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string) => {
       if (!url.endsWith("/settings")) return { ok: false, status: 404, statusText: "Not Found", json: async () => ({}) };
-      // Held until the test releases it, when a `resolveSettings` is wanted; immediate otherwise.
-      if (resolveSettings === undefined) await new Promise<void>((r) => (resolveSettings = r));
+      if (hold) await new Promise<void>((r) => (release = r));
       if (settings === null) return { ok: false, status: 500, statusText: "boom", json: async () => ({ detail: "boom" }) };
       return { ok: true, status: 200, statusText: "OK", json: async () => settings };
     }),
@@ -109,6 +110,18 @@ describe("ExploreLayer", () => {
     expect(Array.from(sel.options).map((o) => o.value)).toEqual(["12", "14", "16", "18", "20", "24"]);
   });
 
+  it("a late settings answer never overrides a depth the player has already picked", async () => {
+    hold = true;
+    settings = { explore_engine_depth: 12 };
+    render(<ExploreLayer fen={START} orientation="white" onClose={() => {}} />);
+    await settled();
+    fireEvent.change(screen.getByLabelText("Engine depth"), { target: { value: "24" } });
+    expect(analyze).toHaveBeenLastCalledWith(START, 24);
+    await act(async () => release());
+    expect((screen.getByLabelText("Engine depth") as HTMLSelectElement).value).toBe("24");
+    expect(analyze).toHaveBeenCalledTimes(2);
+  });
+
   it("a failed settings call leaves the default and one search", async () => {
     settings = null;
     render(<ExploreLayer fen={START} orientation="white" onClose={() => {}} />);
@@ -127,11 +140,28 @@ describe("ExploreLayer", () => {
     expect(analyze).toHaveBeenCalledTimes(3);
   });
 
+  it("names the best move from the bestmove token, which the arrow also draws, not from the line's head", () => {
+    render(<ExploreLayer fen={START} orientation="white" onClose={() => {}} />);
+    act(() => push?.({ ready: true, evalState: ev(START, { bestMoveUci: "d2d4", pvUci: ["e2e4", "e7e5"] }) }));
+    expect(screen.getByText("d4")).toBeInTheDocument();
+    expect(screen.getByText("e4 e5")).toBeInTheDocument();
+    expect(arrows()).toEqual([{ startSquare: "d2", endSquare: "d4", color: "#009E73" }]);
+    act(() => push?.({ ready: true, evalState: ev(START, { bestMoveUci: "e2e4", pvUci: [], thinking: true }) }));
+    expect(screen.getByText("e4")).toBeInTheDocument(); // SAN, never the raw token
+    expect(screen.queryByText("e2e4")).not.toBeInTheDocument();
+    expect(screen.getByText(/thinking…/)).toBeInTheDocument();
+  });
+
   it("a finished board shows Checkmate and asks for nothing — not at mount, not on the settings response, not on a depth change", async () => {
     settings = { explore_engine_depth: 20 };
     render(<ExploreLayer fen={MATED} orientation="white" onClose={() => {}} />);
     act(() => push?.({ ready: true, evalState: null }));
-    expect(screen.getAllByText("Checkmate").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Checkmate")).toHaveLength(1);
+    expect(screen.getAllByText("–")).toHaveLength(2); // the bar and the eval slot
+    // Belt and braces: an evaluation for the mated board, should the engine ever answer, draws nothing.
+    act(() => push?.({ ready: true, evalState: ev(MATED, { bestMoveUci: "e1e2" }) }));
+    expect(arrows()).toEqual([]);
+    expect(screen.getAllByText("–")).toHaveLength(2);
     await waitFor(() => expect((screen.getByLabelText("Engine depth") as HTMLSelectElement).value).toBe("20"));
     fireEvent.change(screen.getByLabelText("Engine depth"), { target: { value: "24" } });
     expect(analyze).not.toHaveBeenCalled();
@@ -155,6 +185,18 @@ describe("ExploreLayer", () => {
     fireEvent.keyDown(window, { key: "ArrowRight" });
     expect(screen.getByText("1 move in")).toBeInTheDocument();
     fireEvent.keyDown(window, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("the depth selector keeps its arrow keys; Escape closes from it all the same", async () => {
+    const onClose = vi.fn();
+    render(<ExploreLayer fen={START} orientation="white" onClose={onClose} />);
+    await settled();
+    fireEvent.click(screen.getByText("play"));
+    const sel = screen.getByLabelText("Engine depth");
+    fireEvent.keyDown(sel, { key: "ArrowLeft" });
+    expect(screen.getByText("1 move in")).toBeInTheDocument();
+    fireEvent.keyDown(sel, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 

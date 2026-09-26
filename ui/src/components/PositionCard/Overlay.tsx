@@ -44,14 +44,14 @@ function CopyBlock({ label, text }: { label: string; text: string }) {
  * cannot also move the list underneath. Detaching is the point: a flag checked inside a handler
  * would still record the start of a swipe that the dialog owns.
  *
- * Explore is seeded with the FEN captured at the click, not `d.fen`: the list can shrink under an
- * open overlay (a dismissal refetches it) and the clamped index would otherwise re-seed an open
- * layer with another card's board.
+ * Explore is seeded with the FEN and colour captured at the click, not `d`'s: the list can shrink
+ * under an open overlay (a dismissal refetches it) and the clamped index would otherwise re-seed an
+ * open layer with another card's board, or flip it.
  */
 export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, suspended = false }: { items: PositionCardData[]; initialIndex: number; onClose: () => void; onIndexChange?: (i: number) => void; actions?: React.ReactNode; suspended?: boolean }) {
   const [index, setIndex] = useState(initialIndex);
   const [compareOpen, setCompareOpen] = useState(false);
-  const [exploreSeed, setExploreSeed] = useState<string | null>(null);
+  const [exploreSeed, setExploreSeed] = useState<{ fen: string; orientation: "white" | "black" } | null>(null);
   const closeExplore = useCallback(() => setExploreSeed(null), []);
   // The list can shrink underneath an open overlay (a dismissal refetches it).
   const at = Math.min(index, items.length - 1);
@@ -224,7 +224,7 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
           </div>
         )}
 
-        <button type="button" data-testid="explore-launch" onClick={() => canExplore && setExploreSeed(d.fen)} disabled={!canExplore} title={canExplore ? undefined : "This position cannot be explored"} className="w-full rounded border border-sky-300 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-800 disabled:opacity-40 dark:border-sky-800 dark:bg-sky-900/30 dark:text-sky-300">
+        <button type="button" data-testid="explore-launch" onClick={() => canExplore && setExploreSeed({ fen: d.fen, orientation: d.color })} disabled={!canExplore} title={canExplore ? undefined : "This position cannot be explored"} className="w-full rounded border border-sky-300 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-800 disabled:opacity-40 dark:border-sky-800 dark:bg-sky-900/30 dark:text-sky-300">
           Explore from here
         </button>
 
@@ -252,7 +252,7 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
 
         <p className="pb-4 text-center text-xs text-zinc-500">Swipe or use ‹ › to move through the list</p>
       </div>
-      {exploreSeed && <ExploreLayer fen={exploreSeed} orientation={d.color} onClose={closeExplore} />}
+      {exploreSeed && <ExploreLayer fen={exploreSeed.fen} orientation={exploreSeed.orientation} onClose={closeExplore} />}
     </div>
   );
 }

@@ -10,7 +10,7 @@
  * never has a search alive behind it, and `reanalyse()` is the only way a host asks for a search:
  * on a finished board it is a reset, so a depth change or a late settings response keeps quiet.
  */
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import { Chess } from "chess.js";
 import type { Move, Square } from "chess.js";
 
@@ -54,9 +54,10 @@ function lastOf(c: Chess): [Square, Square] | null {
 }
 
 export function useExploreLine({ engine, seed }: { engine: ExploreEngine; seed: string }): ExploreLine {
-  const ref = useRef<Chess>(new Chess(seed));
-  const [fen, setFen] = useState(() => new Chess(seed).fen());
-  const [terminal, setTerminal] = useState<Terminal>(() => terminalOf(new Chess(seed)));
+  // One instance for the hook's life, mutated in place; `reset()` reloads the seed into it.
+  const [c] = useState(() => new Chess(seed));
+  const [fen, setFen] = useState(() => c.fen());
+  const [terminal, setTerminal] = useState<Terminal>(() => terminalOf(c));
   const [selected, setSelected] = useState<Square | null>(null);
   const [targets, setTargets] = useState<{ to: Square; capture: boolean }[]>([]);
   const [last, setLast] = useState<[Square, Square] | null>(null);
@@ -64,35 +65,37 @@ export function useExploreLine({ engine, seed }: { engine: ExploreEngine; seed: 
   const [redo, setRedo] = useState<Move[]>([]);
   const { analyze, reset: resetEngine } = engine;
 
+  // `keepSelection`: a re-search of the same board (a depth change, the settings response) must not
+  // undo a click-to-move in progress; a board change always does.
   const settle = useCallback(
-    (depth?: number) => {
-      const c = ref.current;
+    (depth?: number, keepSelection = false) => {
       const f = c.fen();
       const t = terminalOf(c);
       setFen(f);
       setLast(lastOf(c));
       setSan(c.history());
       setTerminal(t);
-      setSelected(null);
-      setTargets([]);
+      if (!keepSelection) {
+        setSelected(null);
+        setTargets([]);
+      }
       if (t === null) analyze(f, depth);
       else resetEngine();
     },
-    [analyze, resetEngine],
+    [c, analyze, resetEngine],
   );
 
   // The seeding path, and the only one: the host calls it from a plain effect keyed on `reset`
   // (which changes only with `seed`), so it runs once in production and re-runs under StrictMode
   // after the worker effect has torn down and recreated the engine.
   const reset = useCallback(() => {
-    ref.current = new Chess(seed);
+    c.load(seed);
     setRedo([]);
     settle();
-  }, [seed, settle]);
+  }, [c, seed, settle]);
 
   const move = useCallback(
     (from: Square, to: Square): boolean => {
-      const c = ref.current;
       let res: Move | null;
       try {
         res = c.move({ from, to, promotion: "q" });
@@ -104,12 +107,11 @@ export function useExploreLine({ engine, seed }: { engine: ExploreEngine; seed: 
       settle();
       return true;
     },
-    [settle],
+    [c, settle],
   );
 
   const squareClick = useCallback(
     (square: Square) => {
-      const c = ref.current;
       const own = (sq: Square) => {
         const p = c.get(sq);
         return !!p && p.color === c.turn();
@@ -124,31 +126,31 @@ export function useExploreLine({ engine, seed }: { engine: ExploreEngine; seed: 
         select(square);
       }
     },
-    [selected, move],
+    [c, selected, move],
   );
 
   const back = useCallback(() => {
-    const undone = ref.current.undo();
+    const undone = c.undo();
     if (!undone) return;
     setRedo((prev) => [...prev, undone]);
     settle();
-  }, [settle]);
+  }, [c, settle]);
 
   const forward = useCallback(() => {
     if (redo.length === 0) return;
     const mv = redo[redo.length - 1];
     let res: Move | null;
     try {
-      res = ref.current.move({ from: mv.from, to: mv.to, promotion: mv.promotion });
+      res = c.move({ from: mv.from, to: mv.to, promotion: mv.promotion });
     } catch {
       return;
     }
     if (!res) return;
     setRedo((prev) => prev.slice(0, -1));
     settle();
-  }, [redo, settle]);
+  }, [c, redo, settle]);
 
-  const reanalyse = useCallback((depth?: number) => settle(depth), [settle]);
+  const reanalyse = useCallback((depth?: number) => settle(depth, true), [settle]);
 
   return { fen, terminal, selected, last, san, canBack: san.length > 0, canForward: redo.length > 0, targets, move, squareClick, back, forward, reset, reanalyse };
 }

@@ -95,6 +95,7 @@ def test_pinned_archive_carries_exactly_the_two_upstream_attribution_findings(tm
         )
         for f in raw
     )
-    # Multiplicity included: an address added beside an existing one is a third finding.
-    assert len(raw) == len(EXPECTED)
-    assert found == EXPECTED
+    # Multiplicity included: an address added beside an existing one is a third finding. Only the
+    # digests are compared, so a failure message never echoes an address into a public CI log.
+    assert len(found) == len(EXPECTED), f"{len(found)} findings, {len(EXPECTED)} expected"
+    assert found == EXPECTED, "the pinned archive's findings are not the recorded ones"

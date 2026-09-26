@@ -172,9 +172,11 @@ describe("terminal positions", () => {
     expect(engine.analyze).not.toHaveBeenCalled();
     expect(engine.reset).toHaveBeenCalledTimes(2);
     const open = seeded(START);
+    act(() => open.result.current.squareClick("e2"));
     act(() => open.result.current.reanalyse(20));
     expect(engine.analyze).toHaveBeenLastCalledWith(START, 20);
     expect(open.result.current.fen).toBe(START);
+    expect(open.result.current.selected).toBe("e2"); // a re-search of the same board keeps a click-to-move in progress
   });
 });
 

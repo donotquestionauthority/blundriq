@@ -439,6 +439,7 @@ describe("Blunders page", () => {
     await vi.waitFor(() => expect(within(dialog).getByText("1 / 1")).toBeInTheDocument());
     expect(within(dialog).getByText(/as black/)).toBeInTheDocument();
     expect(screen.getByTestId("explore-layer").dataset.fen).toBe(FORK);
+    expect(screen.getByTestId("explore-layer").dataset.orientation).toBe("white"); // not the surviving card's black
     fireEvent.click(screen.getByText("close explore"));
     expect(screen.queryByTestId("explore-layer")).not.toBeInTheDocument();
     fireEvent.keyDown(window, { key: "Escape" });

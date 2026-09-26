@@ -138,6 +138,7 @@ export function PuzzleEngine({
   const [exploreSeed, setExploreSeed] = useState<string | null>(null);
   useEffect(() => setExploreSeed(null), [fen]);
   const closeExplore = useCallback(() => setExploreSeed(null), []);
+  const canExplore = parsesAsFen(game.fen()); // always, on a board chess.js itself produced
   // Where the wrong move was played from; Try Again restores here, not the puzzle start.
   const checkpointFen = useRef(fen);
   const checkpointMoveIndex = useRef(0);
@@ -505,7 +506,7 @@ export function PuzzleEngine({
         <button type="button" data-testid="similar-launch" onClick={() => similarAt && setSimilarOpen(true)} disabled={!similarAt} className={`${launcher} ${similarAt ? launcherOn : launcherOff}`}>
           Similar positions in your repertoire
         </button>
-        <button type="button" data-testid="explore-launch" onClick={() => parsesAsFen(game.fen()) && setExploreSeed(game.fen())} className={`${launcher} ${launcherOn}`}>
+        <button type="button" data-testid="explore-launch" onClick={() => canExplore && setExploreSeed(game.fen())} disabled={!canExplore} title={canExplore ? undefined : "This position cannot be explored"} className={`${launcher} ${launcherOn}`}>
           Explore from here
         </button>
       </div>

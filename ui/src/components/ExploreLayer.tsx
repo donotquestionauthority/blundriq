@@ -39,15 +39,17 @@ export function ExploreLayer({ fen, orientation, onClose }: { fen: string; orien
   // ran-once guard would leave with nothing to analyse.
   useEffect(() => reset(), [reset]);
 
-  // The saved default, read once. It re-analyses only when it differs from the depth in use.
+  // The saved default, read once. It re-analyses only when it differs from the depth in use, and
+  // a late answer never overrides a depth the player has already picked from the selector.
   const depthInUse = useRef(DEFAULT_DEPTH);
+  const picked = useRef(false);
   useEffect(() => {
     let alive = true;
     api
       .get<{ explore_engine_depth?: unknown }>("/settings")
       .then((s) => {
         const v = s.explore_engine_depth;
-        if (alive && typeof v === "number" && Number.isFinite(v)) setDepth(v);
+        if (alive && !picked.current && typeof v === "number" && Number.isFinite(v)) setDepth(v);
       })
       .catch(() => {
         /* the hook's own default stands */
@@ -65,14 +67,18 @@ export function ExploreLayer({ fen, orientation, onClose }: { fen: string; orien
     reanalyse(depth);
   }, [depth, reanalyse]);
 
+  // Escape closes from anywhere; the arrows undo and redo unless the key is meant for a control
+  // that uses them (the depth selector, or an input still focused in the host underneath).
   const { back, forward, move } = line;
   useEffect(() => {
+    const editable = (t: EventTarget | null) => t instanceof HTMLSelectElement || t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || (t instanceof HTMLElement && t.isContentEditable);
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.altKey || e.ctrlKey) return;
-      if (e.target instanceof HTMLSelectElement) return;
       if (e.key === "Escape") {
         e.stopPropagation();
         onClose();
+      } else if (editable(e.target)) {
+        return;
       } else if (e.key === "ArrowLeft") {
         e.stopPropagation();
         back();
@@ -100,10 +106,12 @@ export function ExploreLayer({ fen, orientation, onClose }: { fen: string; orien
   // Only a search for the board on show may draw on it: the state is the latest dispatched
   // search's, and a debounce window is long enough for the board to have moved on.
   const ev = engine.evalState && engine.evalState.fen === line.fen && line.terminal === null ? engine.evalState : null;
+  // The arrow and the "Best" label are one move: the best move, which can differ from the head
+  // of the last principal variation once the search has finalised.
   const bm = ev?.bestMoveUci;
   const arrows: BoardArrow[] = bm ? [{ startSquare: bm.slice(0, 2), endSquare: bm.slice(2, 4), color: ARROWS.engine }] : [];
   const pvSan = ev && ev.pvUci.length ? uciPvToSan(line.fen, ev.pvUci) : "";
-  const bestSan = pvSan ? pvSan.split(" ")[0] : bm ?? null;
+  const bestSan = bm ? uciPvToSan(line.fen, [bm]) || null : null;
   const steps = DEPTH_STEPS.includes(depth) ? DEPTH_STEPS : [...DEPTH_STEPS, depth].sort((a, b) => a - b);
   const n = line.san.length;
   const finished = line.terminal === "checkmate" ? "Checkmate" : line.terminal === "stalemate" ? "Stalemate" : line.terminal === "draw" ? "Draw" : null;
@@ -176,7 +184,15 @@ export function ExploreLayer({ fen, orientation, onClose }: { fen: string; orien
               <label htmlFor={`${boardId}-depth`} className="text-sm font-semibold">
                 Engine depth
               </label>
-              <select id={`${boardId}-depth`} className={select} value={depth} onChange={(e) => setDepth(Number(e.target.value))}>
+              <select
+                id={`${boardId}-depth`}
+                className={select}
+                value={depth}
+                onChange={(e) => {
+                  picked.current = true;
+                  setDepth(Number(e.target.value));
+                }}
+              >
                 {steps.map((s) => (
                   <option key={s} value={s}>
                     {s}
@@ -188,7 +204,7 @@ export function ExploreLayer({ fen, orientation, onClose }: { fen: string; orien
             <div className="space-y-2 rounded border border-zinc-200 p-3 dark:border-zinc-800" data-testid="engine-panel">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-semibold">Engine</span>
-                <span className="font-mono text-xs text-zinc-500">{finished ?? fmtCp(ev?.evalCp ?? null)}</span>
+                <span className="font-mono text-xs text-zinc-500">{fmtCp(ev?.evalCp ?? null)}</span>
               </div>
               {finished ? (
                 <p className="text-sm text-zinc-500">{finished}</p>
