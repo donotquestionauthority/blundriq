@@ -21,6 +21,17 @@ vi.mock("react-chessboard", () => ({
   ),
 }));
 
+// Explore is a layer of its own (ExploreLayer.test.tsx); here only what the host hands it matters.
+vi.mock("../components/ExploreLayer", () => ({
+  ExploreLayer: ({ fen, orientation, onClose }: { fen: string; orientation: string; onClose: () => void }) => (
+    <div role="dialog" aria-label="Explore" data-testid="explore-layer" data-fen={fen} data-orientation={orientation}>
+      <button type="button" onClick={onClose}>
+        close explore
+      </button>
+    </div>
+  ),
+}));
+
 const FORK = "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4";
 const MOVES = ["e4", "e5", "Nf3", "Nc6", "Bc4", "h6", "d3"];
 
@@ -400,6 +411,50 @@ describe("Blunders page", () => {
     fireEvent.click(within(modal).getByRole("button", { name: "Create puzzle" }));
     expect(await within(modal).findByText("You already have a puzzle for this position")).toBeInTheDocument();
     expect(within(modal).getByRole("button", { name: "Create puzzle" })).toBeEnabled();
+  });
+
+  it("Explore from here opens the layer on the card's board; while it is open the arrow keys do not move the card and a shrinking list does not re-seed it", async () => {
+    let dismissed = false;
+    stubFetch({
+      "/settings": () => ({ status: 200, body: SETTINGS }),
+      "/blunders": () => ({ status: 200, body: page(dismissed ? [position({ fen: OTHER, color: "black" })] : [position(), position({ fen: OTHER, color: "black" })]) }),
+      "/blunders/prompts": () => ({ status: 200, body: { prompts: [] } }),
+      "/blunders/dismiss": () => ((dismissed = true), { status: 200, body: { detail: "dismissed" } }),
+    });
+    renderPage();
+    fireEvent.click((await screen.findAllByTestId("position-card"))[0]);
+    const dialog = await screen.findByRole("dialog", { name: "Position" });
+    expect(screen.queryByTestId("explore-layer")).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByTestId("explore-launch"));
+    const layer = screen.getByTestId("explore-layer");
+    expect(layer.dataset.fen).toBe(FORK);
+    expect(layer.dataset.orientation).toBe("white");
+    // The overlay listens to nothing while Explore is open.
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(within(dialog).getByText("1 / 2")).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "Position" })).toBeInTheDocument();
+    // A dismissal from under it shrinks the list to the other card; the layer keeps its seed.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Dismiss" }));
+    await vi.waitFor(() => expect(within(dialog).getByText("1 / 1")).toBeInTheDocument());
+    expect(within(dialog).getByText(/as black/)).toBeInTheDocument();
+    expect(screen.getByTestId("explore-layer").dataset.fen).toBe(FORK);
+    fireEvent.click(screen.getByText("close explore"));
+    expect(screen.queryByTestId("explore-layer")).not.toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("the launcher is disabled for a board chess.js cannot seed", async () => {
+    stubFetch({ "/settings": () => ({ status: 200, body: SETTINGS }), "/blunders": () => ({ status: 200, body: page([position({ fen: "not a board" })]) }), "/blunders/prompts": () => ({ status: 200, body: { prompts: [] } }) });
+    renderPage();
+    fireEvent.click((await screen.findAllByTestId("position-card"))[0]);
+    const dialog = await screen.findByRole("dialog", { name: "Position" });
+    const launch = within(dialog).getByTestId("explore-launch");
+    expect(launch).toBeDisabled();
+    expect(launch).toHaveAttribute("title", "This position cannot be explored");
+    fireEvent.click(launch);
+    expect(screen.queryByTestId("explore-layer")).not.toBeInTheDocument();
   });
 
   it("steps back a page when a dismissal empties the last one", async () => {

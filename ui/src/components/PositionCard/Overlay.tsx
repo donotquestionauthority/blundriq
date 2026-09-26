@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Chessboard } from "react-chessboard";
 import { daysAgo } from "../../blunders";
 import { SQUARES } from "../../utils/board";
-import { buildArrows, buildPgn, decisionNodeArrows, sanToSquares } from "../../utils/chess";
+import { buildArrows, buildPgn, decisionNodeArrows, parsesAsFen, sanToSquares } from "../../utils/chess";
+import { ExploreLayer } from "../ExploreLayer";
 import { AiExplanationPanel } from "./AiExplanationPanel";
 import { ClassBadge, RepliesLine } from "./CardInner";
 import { GamesTable } from "./GamesTable";
@@ -38,14 +39,20 @@ function CopyBlock({ label, text }: { label: string; text: string }) {
 /**
  * The full-screen view of one card, with ‹ › through the list: arrows, Escape, and swipes.
  *
- * While `suspended` (the page has a dialog open above it) or the similar-positions compare view is
- * open, the overlay listens to nothing, so a key or a swipe meant for the dialog cannot also move
- * the list underneath. Detaching is the point: a flag checked inside a handler would still record
- * the start of a swipe that the dialog owns.
+ * While `suspended` (the page has a dialog open above it), the similar-positions compare view is
+ * open, or Explore is, the overlay listens to nothing, so a key or a swipe meant for the dialog
+ * cannot also move the list underneath. Detaching is the point: a flag checked inside a handler
+ * would still record the start of a swipe that the dialog owns.
+ *
+ * Explore is seeded with the FEN captured at the click, not `d.fen`: the list can shrink under an
+ * open overlay (a dismissal refetches it) and the clamped index would otherwise re-seed an open
+ * layer with another card's board.
  */
 export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, suspended = false }: { items: PositionCardData[]; initialIndex: number; onClose: () => void; onIndexChange?: (i: number) => void; actions?: React.ReactNode; suspended?: boolean }) {
   const [index, setIndex] = useState(initialIndex);
   const [compareOpen, setCompareOpen] = useState(false);
+  const [exploreSeed, setExploreSeed] = useState<string | null>(null);
+  const closeExplore = useCallback(() => setExploreSeed(null), []);
   // The list can shrink underneath an open overlay (a dismissal refetches it).
   const at = Math.min(index, items.length - 1);
   const d = items[at];
@@ -66,7 +73,7 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
   }, []);
 
   useEffect(() => {
-    if (suspended || compareOpen) return;
+    if (suspended || compareOpen || exploreSeed) return;
     const go = (i: number) => {
       setIndex(i);
       onIndexChange?.(i);
@@ -98,11 +105,17 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
       window.removeEventListener("touchstart", onTouchStart);
       window.removeEventListener("touchend", onTouchEnd);
     };
-  }, [at, hasPrev, hasNext, onClose, onIndexChange, suspended, compareOpen]);
+  }, [at, hasPrev, hasNext, onClose, onIndexChange, suspended, compareOpen, exploreSeed]);
+
+  // Expected always to parse: card lists go through `core.chess.eligibility`. Kept because a
+  // disabled button is cheaper than a layer that mounts and throws.
+  const fenHere = d?.fen ?? "";
+  const canExplore = useMemo(() => parsesAsFen(fenHere), [fenHere]);
 
   if (!d) return null;
   const step = (i: number) => {
     setCompareOpen(false);
+    setExploreSeed(null);
     setIndex(i);
     onIndexChange?.(i);
   };
@@ -211,6 +224,10 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
           </div>
         )}
 
+        <button type="button" data-testid="explore-launch" onClick={() => canExplore && setExploreSeed(d.fen)} disabled={!canExplore} title={canExplore ? undefined : "This position cannot be explored"} className="w-full rounded border border-sky-300 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-800 disabled:opacity-40 dark:border-sky-800 dark:bg-sky-900/30 dark:text-sky-300">
+          Explore from here
+        </button>
+
         {d.record && (
           <p className="text-sm text-zinc-500">
             <span className="text-emerald-600 dark:text-emerald-400">{d.record.wins}W</span> · <span className="text-red-600 dark:text-red-400">{d.record.losses}L</span> · {d.record.draws}D · {d.record.win_pct}% won
@@ -235,6 +252,7 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
 
         <p className="pb-4 text-center text-xs text-zinc-500">Swipe or use ‹ › to move through the list</p>
       </div>
+      {exploreSeed && <ExploreLayer fen={exploreSeed} orientation={d.color} onClose={closeExplore} />}
     </div>
   );
 }
