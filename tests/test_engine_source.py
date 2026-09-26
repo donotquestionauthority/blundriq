@@ -5,8 +5,10 @@ browser runs. Its SHA-256 is pinned by `ui/src/engine/engineAssets.test.ts`; tha
 (a byte changed anywhere inside is a different archive and fails CI). This file is what the pin
 stands for: expanded, the archive carries exactly two `email-address` findings under the project's
 scanner rules, both upstream attribution (the `author` field of `nmrugg-stockfish.js/package.json`
-and the MIT header of the bundled `examples/js/chess.min.js`), the one exception CLAUDE.md rule 2
-admits. A new archive is a new content review and a new pin — never a re-run that happens to pass.
+and the MIT header of the bundled `examples/js/chess.min.js`). That is the invariant this file and
+the hash pin enforce together: the byte-pinned archive is the only tracked file that carries those
+two reviewed upstream addresses, and no other tracked file carries any. A new archive is a new
+content review and a new pin — never a re-run that happens to pass.
 
 Findings are asserted by exact identity — count, path, rule, and a digest of each matched text —
 so nothing here has to spell an address out. Skips when gitleaks is not installed (CI installs
