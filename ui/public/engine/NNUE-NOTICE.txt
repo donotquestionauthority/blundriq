@@ -1,0 +1,38 @@
+Stockfish NNUE Evaluation Networks — Attribution & License
+==========================================================
+
+The in-browser engine BlundrIQ ships (Stockfish 18 Lite, single-threaded
+WebAssembly) embeds an efficiently-updatable neural network (NNUE) for
+position evaluation.
+
+This is the LITE flavor. nmrugg/stockfish.js pins the Lite build's network in
+the wrapper source file src/lite_nets.h (NOT in src/evaluate.h):
+
+    EvalFileDefaultNameBig   = "nn-9067e33176e8.nnue"
+    EvalFileDefaultNameSmall = ""
+
+So the single network embedded in the shipped binary is:
+
+    nn-9067e33176e8.nnue
+    SHA-256 9067e33176e8c5edb7aa8db6a3aedd012f84a1f39872e86357c6c2d0993f314d
+
+The Lite small-net slot is empty (a 1-byte placeholder is embedded). The names
+in src/evaluate.h (Big nn-c288c895ea92.nnue, Small nn-37f18f62d772.nnue) belong
+to the STANDARD (non-Lite) build and are NOT embedded by this binary.
+
+The NNUE networks are part of Stockfish and are distributed under the GNU
+General Public License v3 (the same license as the engine) — they carry no
+separate or additional licensing obligation beyond GPLv3. The network identity
+is fixed by the SHA hash embedded in each filename above (the file name is the
+first 12 hex characters of the network's SHA-256).
+
+The complete corresponding source for the shipped binary — including the
+Stockfish 18 source, the nmrugg/stockfish.js wrapper with src/lite_nets.h that
+selects this network, and the Emscripten build configuration — is provided in
+stockfish-source.tar.gz alongside this notice, and is linked from the BlundrIQ
+Explore view's footer. The embedded network file itself, nn-9067e33176e8.nnue, is
+physically included in that archive under networks/ — not merely referenced by
+name — so the corresponding source is complete without any network download.
+
+Full license text: see Copying.txt (GNU GPL v3).
+Author / contributors: see AUTHORS.
