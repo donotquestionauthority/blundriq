@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from typing import Any, cast
 
 import chess
@@ -246,24 +247,29 @@ def _best_gaining_capture(board: chess.Board) -> chess.Move | None:
 
 Settled = tuple[str, chess.Board | None, int, int]
 
+# A move number in a PV ("12." / "12..."), the one digit-led token that is skipped. `0000` is
+# not one: it reaches the legality guard and ends the PV like the other null spellings.
+_MOVE_NUMBER = re.compile(r"^\d+\.+$")
+
 
 def _replay_pv_settled(board: chess.Board, pv_san: Any, quiesce_max: int) -> Settled:
     """Replay the stored SAN PV from `board` to a settled endpoint. The game's own
     continuation is never consulted.
 
     Returns (state, end_board, pv_plies, extension_plies), state one of settled_terminal |
-    settled_quiet | unknown, end_board None when unknown. Move-number tokens are skipped; a
-    token that is not a legal move in SAN or UCI — a null move included — ends the replayable
-    PV and the extension runs from there. Zero replayable plies is unknown. The extension is bounded: after
-    `quiesce_max` plies the endpoint is settled only if the side to move has no gaining
-    capture, else unknown (compensation beyond the bound is never confirmed)."""
+    settled_quiet | unknown, end_board None when unknown. Move-number tokens ("12.", "12...")
+    are skipped; any other token that is not a legal move in SAN or UCI — a null move in every
+    spelling included — ends the replayable PV and the extension runs from there. Zero
+    replayable plies is unknown. The extension is bounded: after `quiesce_max` plies the
+    endpoint is settled only if the side to move has no gaining capture, else unknown
+    (compensation beyond the bound is never confirmed)."""
     if not pv_san:
         return "unknown", None, 0, 0
     b = board.copy(stack=False)
     played = 0
     for tok in str(pv_san).split():
         tok = tok.strip()
-        if not tok or tok[0].isdigit():
+        if not tok or _MOVE_NUMBER.match(tok):
             continue
         if b.is_game_over():
             break

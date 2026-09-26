@@ -469,10 +469,22 @@ def test_a_null_move_in_the_pv_is_never_proof(token: str) -> None:
     not a legal move, and the extension runs from the last real position."""
     lines = {**QH_LINES, 6: token}
     assert tag_review_events(qh_ctx(best_lines=lines), KNOBS) == ([], 1)
-    prefixed = {**QH_LINES, 6: f"d4 {token} Qxd8"}
+    # a pass first, then a legal move: skipped, the move would replay; stopped at, it is UNKNOWN
+    assert tag_review_events(qh_ctx(best_lines={**QH_LINES, 6: f"{token} d4"}), KNOBS) == ([], 1)
+    # a pass in the middle: the replay stops there, and d5 (legal after d4) is never played
+    prefixed = {**QH_LINES, 6: f"d4 {token} d5"}
     ev = only(tag_review_events(qh_ctx(best_lines=prefixed), KNOBS))
     assert ev["evidence"]["detectors"][0]["pv_plies"] == 1 and ev["evidence"]["proof_state"] == "settled_quiet"
     assert ev["cost"] == only(tag_review_events(qh_ctx(), KNOBS))["cost"]
+    two = only(tag_review_events(qh_ctx(best_lines={**QH_LINES, 6: "d4 d5"}), KNOBS))
+    assert two["evidence"]["detectors"][0]["pv_plies"] == 2  # the control: without the pass both replay
+
+
+def test_move_numbers_in_a_pv_are_skipped_and_nothing_else_digit_led_is() -> None:
+    numbered = {**QH_LINES, 6: "4. d4 4... d5"}
+    assert only(tag_review_events(qh_ctx(best_lines=numbered), KNOBS))["evidence"]["detectors"][0]["pv_plies"] == 2
+    bare = {**QH_LINES, 6: "4 d4"}  # a bare number is not a move number: it ends the PV
+    assert tag_review_events(qh_ctx(best_lines=bare), KNOBS) == ([], 1)
 
 
 @pytest.mark.parametrize("token", NULL_SPELLINGS)
