@@ -1,10 +1,10 @@
-"""The per-game replace of review events, and the run's bookkeeping rows.
+"""The replace of review events, game by game in one statement, and the run's bookkeeping rows.
 
 Timestamps are the old writer's: `first_detected_at` survives a recompute (discovery time
 is kept); `meaning_changed_at` is stamped only when a stored, filter-independent fact —
 the route, the opening-candidate flag, the pool key — changed, so a repriced event does not
 resurface; a removed event is gone, and its later return is a fresh discovery. The delete
-and the insert are one statement, so no reader ever aggregates two generations of a game.
+and the insert are one statement, so no reader ever aggregates two generations.
 `config_version` is a lineage stamp, never an identity: the replace is unconditional.
 
 Runs inside the caller's transaction (the run's, under both locks); nothing here commits.
@@ -22,51 +22,61 @@ from core.review.detect import REVIEW_CONFIG_VERSION
 
 _REPLACE = """
     WITH old AS (
-        DELETE FROM review_events WHERE player_id = %(pid)s AND chess_game_id = %(gid)s
-        RETURNING anchor_ply, base_route, opening_candidate, pool_key, first_detected_at, meaning_changed_at
+        DELETE FROM review_events WHERE player_id = %(pid)s AND chess_game_id = ANY(%(gids)s::bigint[])
+        RETURNING chess_game_id, anchor_ply, base_route, opening_candidate, pool_key, first_detected_at,
+                  meaning_changed_at
     )
     INSERT INTO review_events
         (player_id, chess_game_id, anchor_ply, config_version, base_route, opening_candidate, pool_key,
          evidence, cost, phase, piece_label, book_relation, board_key, first_detected_at, meaning_changed_at)
-    SELECT %(pid)s, %(gid)s, new.anchor_ply, %(cv)s, new.base_route, new.opening_candidate, new.pool_key,
+    SELECT %(pid)s, new.chess_game_id, new.anchor_ply, %(cv)s, new.base_route, new.opening_candidate, new.pool_key,
            new.evidence, new.cost, new.phase, new.piece_label, new.book_relation, bq_position_key(new.anchor_fen),
            COALESCE(old.first_detected_at, now()),
-           CASE WHEN old.anchor_ply IS NOT NULL
+           CASE WHEN old.chess_game_id IS NOT NULL
                  AND (old.base_route, old.opening_candidate, COALESCE(old.pool_key, ''))
                      IS DISTINCT FROM (new.base_route, new.opening_candidate, COALESCE(new.pool_key, ''))
                 THEN now() ELSE old.meaning_changed_at END
-    FROM unnest(%(plies)s::int[], %(routes)s::text[], %(cands)s::boolean[], %(pkeys)s::text[], %(evs)s::jsonb[],
-                %(costs)s::numeric[], %(phases)s::text[], %(pieces)s::text[], %(brels)s::text[], %(fens)s::text[])
-         AS new(anchor_ply, base_route, opening_candidate, pool_key, evidence, cost, phase, piece_label,
-                book_relation, anchor_fen)
-    LEFT JOIN old ON old.anchor_ply = new.anchor_ply
+    FROM unnest(%(egids)s::bigint[], %(plies)s::int[], %(routes)s::text[], %(cands)s::boolean[], %(pkeys)s::text[],
+                %(evs)s::jsonb[], %(costs)s::numeric[], %(phases)s::text[], %(pieces)s::text[], %(brels)s::text[],
+                %(fens)s::text[])
+         AS new(chess_game_id, anchor_ply, base_route, opening_candidate, pool_key, evidence, cost, phase,
+                piece_label, book_relation, anchor_fen)
+    LEFT JOIN old ON old.chess_game_id = new.chess_game_id AND old.anchor_ply = new.anchor_ply
 """
 
 
-def replace_game(conn: Connection[Any], game_id: int, events: list[dict[str, Any]]) -> int:
-    """Replace one game's rows with `events` (possibly none). Returns the rows written."""
-    if not events:
+def replace_games(conn: Connection[Any], tagged: dict[int, list[dict[str, Any]]]) -> int:
+    """Replace the rows of every game in `tagged` (its events, possibly none) in one statement:
+    one round trip for the whole generation, not one per game, since the run holds two locks
+    for as long as this takes. A game absent from `tagged` (one the detector could not tag)
+    is not touched. Returns the rows written."""
+    if not tagged:
+        return 0
+    gids = sorted(tagged)
+    ordered = [(gid, e) for gid in gids for e in tagged[gid]]
+    if not ordered:
         conn.execute(
-            "DELETE FROM review_events WHERE player_id = %(pid)s AND chess_game_id = %(gid)s",
-            {"pid": PLAYER_ID, "gid": game_id},
+            "DELETE FROM review_events WHERE player_id = %(pid)s AND chess_game_id = ANY(%(gids)s::bigint[])",
+            {"pid": PLAYER_ID, "gids": gids},
         )
         return 0
     cur = conn.execute(
         _REPLACE,
         {
             "pid": PLAYER_ID,
-            "gid": game_id,
+            "gids": gids,
             "cv": REVIEW_CONFIG_VERSION,
-            "plies": [int(e["anchor_ply"]) for e in events],
-            "routes": [e["base_route"] for e in events],
-            "cands": [bool(e["opening_candidate"]) for e in events],
-            "pkeys": [e["pool_key"] for e in events],
-            "evs": [json.dumps(e["evidence"]) for e in events],
-            "costs": [e["cost"] for e in events],
-            "phases": [e["phase"] for e in events],
-            "pieces": [e["piece_label"] for e in events],
-            "brels": [e["book_relation"] for e in events],
-            "fens": [e["anchor_fen"] for e in events],
+            "egids": [gid for gid, _ in ordered],
+            "plies": [int(e["anchor_ply"]) for _, e in ordered],
+            "routes": [e["base_route"] for _, e in ordered],
+            "cands": [bool(e["opening_candidate"]) for _, e in ordered],
+            "pkeys": [e["pool_key"] for _, e in ordered],
+            "evs": [json.dumps(e["evidence"]) for _, e in ordered],
+            "costs": [e["cost"] for _, e in ordered],
+            "phases": [e["phase"] for _, e in ordered],
+            "pieces": [e["piece_label"] for _, e in ordered],
+            "brels": [e["book_relation"] for _, e in ordered],
+            "fens": [e["anchor_fen"] for _, e in ordered],
         },
     )
     return cur.rowcount

@@ -82,14 +82,15 @@ def run(conn: Connection[Any], *, workers: int = 1, after_read: Any = None) -> d
         results = tag_all(games, knobs, workers)
         summary: dict[str, Any] = {"games": len(games), "events": 0, "unknown": 0, "failed": 0, "deleted": 0}
         failures: list[str] = []
+        tagged: dict[int, list[dict[str, Any]]] = {}
         for gid, answer, label in results:
             if answer is None:
                 summary["failed"] += 1
                 failures.append(f"{gid}: {label or 'untaggable'}")
                 continue
-            events, unknown = answer
-            summary["events"] += write.replace_game(conn, gid, events)
+            tagged[gid], unknown = answer
             summary["unknown"] += unknown
+        summary["events"] = write.replace_games(conn, tagged)
         summary["deleted"] = write.delete_outside(conn, ids)
         write.record_state(conn, summary["unknown"], len(games))
         if failures:

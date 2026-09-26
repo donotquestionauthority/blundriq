@@ -195,3 +195,33 @@ def test_workers_give_the_same_generation(clean: psycopg.Connection[DictRow]) ->
     parallel = run(conn, workers=2)
     assert parallel["events"] == serial["events"] == 4
     assert [events_of(conn, g) for g in range(1, 5)] == rows
+
+
+def test_the_run_is_a_fixed_number_of_statements_whatever_the_window_holds(
+    clean: psycopg.Connection[DictRow], fresh_db_url: str
+) -> None:
+    """The locks are held for as long as the run takes, and Supabase is a network away: the
+    generation is published in one statement, not one per game."""
+    from psycopg.rows import dict_row
+
+    class Counting(psycopg.Connection[DictRow]):
+        statements = 0
+
+        def execute(self, *args: Any, **kwargs: Any) -> Any:
+            Counting.statements += 1
+            return super().execute(*args, **kwargs)
+
+    conn = clean
+    counts: list[int] = []
+    have = 0
+    for n in (1, 40):
+        for gid in range(have + 1, n + 1):
+            analysed_game(conn, gid, qh_ctx(), days_ago=gid)
+        have = n
+        conn.commit()
+        with Counting.connect(fresh_db_url, row_factory=dict_row) as c:
+            Counting.statements = 0
+            assert review.run(c)["games"] == n
+            c.commit()
+            counts.append(Counting.statements)
+    assert counts[0] == counts[1] <= 10
