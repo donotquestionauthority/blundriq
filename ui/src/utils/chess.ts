@@ -67,16 +67,26 @@ export function uciToMove(uci: string): { from: string; to: string; promotion?: 
 }
 
 /**
- * Play `san` on `g` and return the move, or null when it is not a legal move there. chess.js
- * accepts the null move `--` (a "move" from a square to itself that passes the turn) and returns it
- * as if legal; python-chess does the same, and the server refuses it — so nothing here may take
- * `g.move()`'s truthiness as legality. An unparseable token throws in chess.js; the caller's own
- * try/catch decides what that means for it.
+ * Play `move` — a SAN token or a `{from, to, promotion?}` object — on `g` and return the move, or
+ * null when it is not a legal move there. chess.js accepts the null move `--` (a "move" from a
+ * square to itself that passes the turn) and returns it as if legal; python-chess does the same,
+ * and the server refuses it — so nothing here may take `g.move()`'s truthiness as legality. An
+ * unparseable token throws in chess.js; the caller's own try/catch decides what that means for it.
  */
-function legalMove(g: Chess, san: string): Move | null {
-  const move = g.move(san);
-  if (!move || move.san === "--" || move.from === move.to) return null;
-  return move;
+export function legalMove(g: Chess, move: string | { from: string; to: string; promotion?: string }): Move | null {
+  const played = g.move(move);
+  if (!played || played.san === "--" || played.from === played.to) return null;
+  return played;
+}
+
+/** True when chess.js can seed a board from `fen`: the launchers' only gate on Explore. */
+export function parsesAsFen(fen: string): boolean {
+  try {
+    new Chess(fen);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** `[from, to]` of a SAN move in a position, or null if it is not legal there. */
