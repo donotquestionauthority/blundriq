@@ -26,25 +26,34 @@ def analysed_game(
     termination: str = "checkmate",
 ) -> None:
     """A game row carrying the context a detector fixture built: moves, FEN sequence and
-    ply analysis as the analyser stores them, analysed at `depth` (None: not analysed)."""
+    ply analysis as the analyser stores them, analysed at `depth` (None: not analysed). A
+    fixture that starts from an arbitrary position is stored as a Chess960 game, which is
+    the one variant whose start position is a stored FEN."""
     h.player(conn)
-    h.game(conn, gid, list(ctx["moves"]), color=ctx["player_color"], days_ago=days_ago, variant=variant)
     conn.execute(
-        "UPDATE chess_games SET fen_sequence = %s::jsonb, ply_analysis = %s::jsonb, ply_analysis_depth = %s,"
-        " termination = %s, opening_eco = %s, starting_fen = %s WHERE id = %s",
+        "INSERT INTO chess_games (id, platform, platform_game_id, url, played_at, variant, time_class, moves,"
+        " fen_sequence, starting_fen, ply_analysis, ply_analysis_depth, termination, opening_eco)"
+        " VALUES (%s, 'lichess', %s, %s, now() - make_interval(secs => %s), %s, 'rapid', %s::jsonb, %s::jsonb, %s,"
+        " %s::jsonb, %s, %s, %s)",
         (
+            gid,
+            f"g{gid}",
+            f"https://example.test/{gid}",
+            days_ago * 86400,
+            variant,
+            json.dumps(ctx["moves"]),
             json.dumps(ctx["fen_sequence"]),
+            ctx["fen_sequence"][0] if variant == "chess960" else None,
             json.dumps(ctx["ply_analysis"]) if ctx["ply_analysis"] is not None else None,
             depth,
             termination,
             ctx.get("opening_eco"),
-            ctx["fen_sequence"][0] if variant == "chess960" else None,
-            gid,
         ),
     )
     conn.execute(
-        "UPDATE player_games SET analyzed_at_depth = %s, result = %s WHERE chess_game_id = %s AND player_id = %s",
-        (depth, ctx["result"], gid, PLAYER_ID),
+        "INSERT INTO player_games (player_id, chess_game_id, player_color, source, result, player_rating,"
+        " analyzed_at_depth) VALUES (%s, %s, %s, 'lichess', %s, 1500, %s)",
+        (PLAYER_ID, gid, ctx["player_color"], ctx["result"], depth),
     )
 
 

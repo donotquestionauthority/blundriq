@@ -232,3 +232,60 @@ def test_the_ranking_oracle_reports_a_wrong_port_of_the_weights(
     monkeypatch.setattr(blunders, "_WEIGHT_CASE", blunders._WEIGHT_CASE.replace("THEN 4", "THEN 400"))
     diffs = diff_blunders.compare("mutated", old_rows, diff_blunders.new_cards(clean, classes, 2, 0))
     assert diffs and "score: old 12 new 408" in diffs[0]
+
+
+# --- the review oracle -------------------------------------------------------------------------
+
+
+def test_the_review_oracle_separates_exact_parity_from_positions_the_old_detector_priced_over_the_board(
+    clean: psycopg.Connection[DictRow], monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """Same database as both sides: the old rows are the new rows, so the check passes; a game
+    that reaches a four-man castling-free position is reported apart, never as a defect; a
+    changed fact in the exact bucket fails the check; a Chess960 game's rows are listed for the
+    record and fail nothing, a standard game's on one side only do."""
+    import diff_review  # pyright: ignore[reportMissingImports]
+
+    from tests.review.helpers import analysed_game, plant_event
+    from tests.review.test_detect import KQKR_FEN, KQKR_MOVES, make_ctx, qh_ctx
+
+    monkeypatch.setenv("DATABASE_URL", clean.info.dsn)
+    monkeypatch.setenv("ORACLE_DATABASE_URL", clean.info.dsn)
+    ctx = qh_ctx()
+    analysed_game(clean, 1, ctx, days_ago=1)
+    small = make_ctx(KQKR_MOVES, [900, 0, 0, 0, 0], starting_fen=KQKR_FEN, variant="chess960")
+    analysed_game(clean, 2, small, days_ago=2)  # a standard game row starting from a small position
+    clean.execute("UPDATE chess_games SET variant = 'standard' WHERE id = 2")
+    analysed_game(clean, 3, ctx, days_ago=3, variant="chess960")
+    plant_event(clean, 1, 4, ctx["fen_sequence"][4])
+    plant_event(clean, 2, 0, small["fen_sequence"][0])
+    plant_event(clean, 3, 4, ctx["fen_sequence"][4])
+    clean.commit()
+    assert diff_review.reaches_small_castling_free(small["fen_sequence"]) == 0
+    assert diff_review.reaches_small_castling_free(ctx["fen_sequence"]) is None
+    assert diff_review.main() == 0  # the Chess960 game's rows are on the old side only, by rule
+    out = capsys.readouterr().out
+    assert "3: only in old — chess960" in out and "exact parity" in out and "0 field differences" in out
+    monkeypatch.setattr(q, "review_events", lambda conn: [])
+    assert diff_review.main() == 1  # a standard game's rows on one side only
+    assert "1: has events only in old" in capsys.readouterr().out
+    monkeypatch.undo()
+    monkeypatch.setenv("DATABASE_URL", clean.info.dsn)
+    monkeypatch.setenv("ORACLE_DATABASE_URL", clean.info.dsn)
+    # a fact changed on the small-position game is listed apart and does not fail the check ...
+    real = q.review_events
+
+    def mutated(conn: Any) -> list[dict[str, Any]]:
+        rows = real(conn)
+        for r in rows:
+            if r["chess_game_id"] == 2:
+                r["cost"] = 7
+        return rows
+
+    monkeypatch.setattr(q, "review_events", mutated)
+    assert diff_review.main() == 0
+    assert "2 ply0 cost: old 1 new 7" in capsys.readouterr().out
+    # ... the same change on the other game is a defect
+    monkeypatch.setattr(q, "review_events", lambda conn: [dict(r, cost=7) for r in real(conn)])
+    assert diff_review.main() == 1
+    assert "1 ply4 cost: old 1 new 7" in capsys.readouterr().out
