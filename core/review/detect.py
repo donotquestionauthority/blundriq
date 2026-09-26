@@ -190,18 +190,28 @@ def _material_balance(board: chess.Board, me: chess.Color) -> int:
 Replay = tuple[list[chess.Board], list[chess.PieceType | None], list[str | None], list[str]]
 
 
+def _legal_move(board: chess.Board, token: str, *, uci: bool = False) -> chess.Move | None:
+    """The legal move `token` names on `board`, or None. python-chess parses `--`, `Z0`, `0000`
+    and `@@@@` as the null move without complaint; a pass is never a move here, in a game or
+    in a PV."""
+    try:
+        move = board.parse_uci(token) if uci else board.parse_san(token)
+    except Exception:
+        return None
+    return move if move and move in board.legal_moves else None
+
+
 def _replay_moves(moves: list[str], board: chess.Board) -> Replay | None:
     """Replay the game's SAN on `board` (mutated). Per-position snapshots plus a 1-based
     capture log (`caps[k]` = the piece type move k-1 captured; `capturer[k]` = 'w'/'b') and
-    the mover per ply — or None when a move does not parse (fail closed)."""
+    the mover per ply — or None when a move does not parse or is a pass (fail closed)."""
     boards = [board.copy(stack=False)]
     caps: list[chess.PieceType | None] = [None]
     capturer: list[str | None] = [None]
     mover: list[str] = []
     for san in moves:
-        try:
-            mv = board.parse_san(san)
-        except Exception:
+        mv = _legal_move(board, san)
+        if mv is None:
             return None
         captured: chess.PieceType | None = None
         if board.is_capture(mv):
@@ -243,8 +253,8 @@ def _replay_pv_settled(board: chess.Board, pv_san: Any, quiesce_max: int) -> Set
 
     Returns (state, end_board, pv_plies, extension_plies), state one of settled_terminal |
     settled_quiet | unknown, end_board None when unknown. Move-number tokens are skipped; a
-    token that parses as neither SAN nor UCI ends the replayable PV and the extension runs
-    from there. Zero replayable plies is unknown. The extension is bounded: after
+    token that is not a legal move in SAN or UCI — a null move included — ends the replayable
+    PV and the extension runs from there. Zero replayable plies is unknown. The extension is bounded: after
     `quiesce_max` plies the endpoint is settled only if the side to move has no gaining
     capture, else unknown (compensation beyond the bound is never confirmed)."""
     if not pv_san:
@@ -257,13 +267,10 @@ def _replay_pv_settled(board: chess.Board, pv_san: Any, quiesce_max: int) -> Set
             continue
         if b.is_game_over():
             break
-        try:
-            b.push_san(tok)
-        except Exception:
-            try:
-                b.push_uci(tok)
-            except Exception:
-                break
+        mv = _legal_move(b, tok) or _legal_move(b, tok, uci=True)
+        if mv is None:
+            break
+        b.push(mv)
         played += 1
     if played == 0:
         return "unknown", None, 0, 0

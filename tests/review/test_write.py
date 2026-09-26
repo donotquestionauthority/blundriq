@@ -235,3 +235,17 @@ def test_the_run_is_a_fixed_number_of_statements_whatever_the_window_holds(
     # and the two locks come before any statement of the run's own
     first, second = Counting.statements[:2]
     assert "pg_advisory_xact_lock" in first and "pg_advisory_xact_lock" in second
+
+
+def test_a_game_record_with_a_null_move_is_a_failed_game_not_a_zero(clean: psycopg.Connection[DictRow]) -> None:
+    """A pass in the stored move list makes the game untaggable: its prior rows stand and the
+    run is red, rather than the game reading as clean and its rows being cleared."""
+    conn = clean
+    ctx = qh_ctx()
+    analysed_game(conn, 1, ctx)
+    conn.commit()
+    run(conn)
+    conn.execute("""UPDATE chess_games SET moves = jsonb_set(moves, '{6}', '"--"') WHERE id = 1""")
+    conn.commit()
+    out = run(conn)
+    assert out["failed"] == 1 and out["failures"] == ["1: untaggable"] and len(events_of(conn, 1)) == 1

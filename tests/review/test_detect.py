@@ -457,3 +457,29 @@ def test_a_rook_for_a_minor_is_the_exchange() -> None:
     )
     ev = only(tag_review_events(ctx, KNOBS))
     assert ev["piece_label"] == "exchange" and ev["evidence"]["detectors"][0]["settled_deficit"] >= 2
+
+
+NULL_SPELLINGS = ("--", "Z0", "0000", "@@@@")
+
+
+@pytest.mark.parametrize("token", NULL_SPELLINGS)
+def test_a_null_move_in_the_pv_is_never_proof(token: str) -> None:
+    """python-chess parses each spelling as a pass. A PV that is only a pass is no PV at all
+    (UNKNOWN, counted); a pass after a real move ends the replay there, like any token that is
+    not a legal move, and the extension runs from the last real position."""
+    lines = {**QH_LINES, 6: token}
+    assert tag_review_events(qh_ctx(best_lines=lines), KNOBS) == ([], 1)
+    prefixed = {**QH_LINES, 6: f"d4 {token} Qxd8"}
+    ev = only(tag_review_events(qh_ctx(best_lines=prefixed), KNOBS))
+    assert ev["evidence"]["detectors"][0]["pv_plies"] == 1 and ev["evidence"]["proof_state"] == "settled_quiet"
+    assert ev["cost"] == only(tag_review_events(qh_ctx(), KNOBS))["cost"]
+
+
+@pytest.mark.parametrize("token", NULL_SPELLINGS)
+def test_a_null_move_in_the_game_fails_closed(token: str) -> None:
+    ctx = qh_ctx()
+    ctx["moves"][6] = token  # the game record itself carries a pass: untaggable, never a zero
+    assert tag_review_events(ctx, KNOBS) is None
+    one = make_ctx(["e4"], [20, 20])
+    one["moves"] = [token]
+    assert tag_review_events(one, KNOBS) is None

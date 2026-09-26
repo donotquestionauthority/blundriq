@@ -246,6 +246,7 @@ def test_the_review_oracle_separates_exact_parity_from_positions_the_old_detecto
     record and fail nothing, a standard game's on one side only do."""
     import diff_review  # pyright: ignore[reportMissingImports]
 
+    from core.review import write
     from tests.review.helpers import analysed_game, plant_event
     from tests.review.test_detect import KQKR_FEN, KQKR_MOVES, make_ctx, qh_ctx
 
@@ -260,7 +261,17 @@ def test_the_review_oracle_separates_exact_parity_from_positions_the_old_detecto
     plant_event(clean, 1, 4, ctx["fen_sequence"][4])
     plant_event(clean, 2, 0, small["fen_sequence"][0])
     plant_event(clean, 3, 4, ctx["fen_sequence"][4])
+    write.record_state(clean, 0, 2)  # the new side's state: two analysable games in the window
     clean.commit()
+    real_state = q.old_review_state
+    reads: list[int] = []
+
+    def state_of(conn: Any) -> Any:  # the first read is the archive's: its window held game 3 too
+        reads.append(1)
+        row = real_state(conn)
+        return dict(row, window_games=3) if row and len(reads) % 2 == 1 else row
+
+    monkeypatch.setattr(q, "old_review_state", state_of)
     assert diff_review.reaches_small_castling_free(small["fen_sequence"]) == 0
     assert diff_review.reaches_small_castling_free(ctx["fen_sequence"]) is None
     assert diff_review.main() == 0  # the Chess960 game's rows are on the old side only, by rule
@@ -272,6 +283,8 @@ def test_the_review_oracle_separates_exact_parity_from_positions_the_old_detecto
     monkeypatch.undo()
     monkeypatch.setenv("DATABASE_URL", fresh_db_url)
     monkeypatch.setenv("ORACLE_DATABASE_URL", fresh_db_url)
+    reads.clear()
+    monkeypatch.setattr(q, "old_review_state", state_of)
     # a fact changed on the small-position game is listed apart and does not fail the check ...
     real = q.review_events
 
@@ -289,3 +302,55 @@ def test_the_review_oracle_separates_exact_parity_from_positions_the_old_detecto
     monkeypatch.setattr(q, "review_events", lambda conn: [dict(r, cost=7) for r in real(conn)])
     assert diff_review.main() == 1
     assert "1 ply4 cost: old 1 new 7" in capsys.readouterr().out
+
+
+def test_the_review_oracle_fails_on_a_missing_game_a_wrong_unknown_total_or_a_missing_state_row(
+    clean: psycopg.Connection[DictRow], fresh_db_url: str, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """The archive says which games are checked: a standard game whose row is gone from the
+    scratch database is a failure, not an exemption; the UNKNOWN total and the state row are
+    part of the result, not a printout."""
+    import diff_review  # pyright: ignore[reportMissingImports]
+
+    from core.review import write
+    from tests.review.helpers import analysed_game, plant_event, qh_ctx
+
+    monkeypatch.setenv("DATABASE_URL", fresh_db_url)
+    monkeypatch.setenv("ORACLE_DATABASE_URL", fresh_db_url)
+    ctx = qh_ctx()
+    analysed_game(clean, 1, ctx)
+    plant_event(clean, 1, 4, ctx["fen_sequence"][4])
+    write.record_state(clean, 33, 1)
+    clean.commit()
+    assert diff_review.main() == 0
+    # the second read of a query is the scratch side: same rows, the game itself missing
+    real_fens = q.game_fens
+    calls: list[int] = []
+
+    def fens_missing_in_scratch(conn: Any, ids: list[int]) -> Any:
+        calls.append(1)
+        return real_fens(conn, ids) if len(calls) == 1 else {}
+
+    monkeypatch.setattr(q, "game_fens", fens_missing_in_scratch)
+    monkeypatch.setattr(q, "review_events", lambda conn: [])
+    assert diff_review.main() == 1
+    assert "1: has events in old and is missing from the scratch database" in capsys.readouterr().out
+    monkeypatch.setattr(q, "game_fens", real_fens)
+    monkeypatch.setattr(q, "review_events", q.old_review_events)
+    real_state = q.old_review_state
+    reads: list[int] = []
+
+    def wrong_unknown(conn: Any) -> Any:
+        reads.append(1)
+        row = real_state(conn)
+        return dict(row, unknown_candidates=999) if row and len(reads) == 2 else row
+
+    monkeypatch.setattr(q, "old_review_state", wrong_unknown)
+    assert diff_review.main() == 1
+    assert "unknown_candidates: old 33 new 999" in capsys.readouterr().out
+    reads.clear()
+    monkeypatch.setattr(
+        q, "old_review_state", lambda conn: real_state(conn) if not reads.append(1) and len(reads) == 1 else None
+    )
+    assert diff_review.main() == 1
+    assert "new: no review_detection_state row" in capsys.readouterr().out

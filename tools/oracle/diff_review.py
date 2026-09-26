@@ -14,7 +14,10 @@ own: an event's cost changing because the expected score at one end was 100/0/50
 a sigmoid value; a faded event appearing or vanishing because the peak moved; a material
 event gaining or losing confirmation because the anchor's drop crossed the threshold. A
 Chess960 game the old writer reviewed is listed for the record and never fails the check (such a
-game is never reviewed here); a standard game with events on one side only does.
+game is never reviewed here); an analysable game with events on one side only, or missing from
+the scratch database, does — the archive's row, never the scratch copy's, says which is which.
+The two state rows must both exist and agree on the UNKNOWN total; the window sizes must agree
+once the excluded games are taken off the old one.
 
     pipeline review                                  (DATABASE_URL = the scratch database)
     python tools/oracle/diff_review.py
@@ -30,6 +33,7 @@ import chess
 from common import oracle, report, scratch
 
 from core import oracle as q
+from core.chess.eligibility import is_analysable
 
 SMALL_MEN = (3, 5)
 
@@ -83,37 +87,48 @@ def main() -> int:
         new_rows = q.review_events(new)
         new_state = q.old_review_state(new)  # the same one-row shape
         ids = sorted({int(r["chess_game_id"]) for r in old_rows} | {int(r["chess_game_id"]) for r in new_rows})
-        games = q.game_fens(new, ids)
+        # Eligibility and the bucket a game falls in are read from the ARCHIVE's row: the
+        # scratch copy is what is being checked, so it cannot also say which games to check.
+        archived = q.game_fens(old, ids)
+        present = q.game_fens(new, ids)
 
     old_by = {(int(r["chess_game_id"]), int(r["anchor_ply"])): r for r in old_rows}
     new_by = {(int(r["chess_game_id"]), int(r["anchor_ply"])): r for r in new_rows}
     old_games = {g for g, _ in old_by}
     new_games = {g for g, _ in new_by}
 
+    def excluded(g: int) -> bool:
+        return g in archived and not is_analysable(archived[g][0])
+
     window: list[str] = []
     never: list[str] = []
     for g in sorted(old_games - new_games):
-        variant = games.get(g, ("?", []))[0]
-        if variant == "standard":
-            window.append(f"{g}: has events only in old")
+        if excluded(g):
+            never.append(f"{g}: only in old — {archived[g][0]}, never reviewed here")
+        elif g not in present:
+            window.append(f"{g}: has events in old and is missing from the scratch database")
         else:
-            never.append(f"{g}: only in old — {variant}, never reviewed here")
+            window.append(f"{g}: has events only in old")
     for g in sorted(new_games - old_games):
-        window.append(f"{g}: has events only in new")
+        window.append(f"{g}: has events only in new" + ("" if g in archived else " and is not in the archive"))
+    for g in ids:
+        if g in archived and g in present and archived[g][0] != present[g][0]:
+            window.append(f"{g}: variant {archived[g][0]} in the archive, {present[g][0]} in the scratch database")
 
     exact: list[str] = []
     small: list[str] = []
     small_games: set[int] = set()
+    compared: set[tuple[int, int]] = set()
     for g in ids:
-        variant, fens = games.get(g, ("?", []))
-        if variant != "standard":
+        if g not in archived or excluded(g):
             continue
-        at = reaches_small_castling_free(fens)
+        at = reaches_small_castling_free(archived[g][1])
         bucket = small if at is not None else exact
         if at is not None:
             small_games.add(g)
         old_keys = {k for k in old_by if k[0] == g}
         new_keys = {k for k in new_by if k[0] == g}
+        compared |= old_keys | new_keys
         for k in sorted(old_keys - new_keys):
             bucket.append(f"{g} ply{k[1]}: only in old ({old_by[k]['base_route']})")
         for k in sorted(new_keys - old_keys):
@@ -121,12 +136,33 @@ def main() -> int:
         for k in sorted(old_keys & new_keys):
             bucket += compare_event(f"{g} ply{k[1]}", old_by[k], new_by[k])
 
-    checked = len([k for k in old_by | new_by if k[0] not in small_games])
+    # The state row: the UNKNOWN total must agree. A difference has only two legitimate
+    # sources, each to be read individually: an excluded game's candidates (in the old total,
+    # never in the new) and a small-position game whose cliff probes moved with the pricing.
+    state: list[str] = []
+    if old_state is None:
+        state.append("old: no review_detection_state row")
+    if new_state is None:
+        state.append("new: no review_detection_state row")
+    if old_state is not None and new_state is not None:
+        if old_state["unknown_candidates"] != new_state["unknown_candidates"]:
+            state.append(
+                f"unknown_candidates: old {old_state['unknown_candidates']} new {new_state['unknown_candidates']}"
+                f" ({len(never)} excluded games, {len(small_games)} small-position games could account for it)"
+            )
+        if old_state["window_games"] - len(never) != new_state["window_games"]:
+            state.append(
+                f"window_games: old {old_state['window_games']} less {len(never)} excluded games"
+                f" is not the new {new_state['window_games']}"
+            )
+
+    checked = len([k for k in compared if k[0] not in small_games])
     print(f"old: {len(old_rows)} events over {len(old_games)} games; new: {len(new_rows)} over {len(new_games)}")
     print(f"old state: {old_state}; new state: {new_state}")
     print(f"games reaching a 3–5-man castling-free position: {len(small_games)}")
-    rc = report("review events — window (standard games)", window, len(old_games | new_games))
+    rc = report("review events — window (analysable games)", window, len(old_games | new_games))
     rc |= report("review events — exact parity (no small castling-free position)", exact, checked)
+    rc |= report("review state — UNKNOWN total and window size", state, 2)
     print(f"\n== review events — games the old writer reviewed that are never reviewed here ({len(never)})")
     for d in never:
         print("  " + d)
