@@ -14,11 +14,12 @@ import { Chess } from "chess.js";
 import type { Move, Square } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import { BranchCompareView } from "./BranchCompareView";
+import { ExploreLayer } from "./ExploreLayer";
 import { LineReaderPanel } from "./PositionCard/LineReaderPanel";
 import { SolverSimilarModal } from "./PositionCard/SolverSimilarModal";
 import { useSimilarPositions } from "../hooks/useSimilarPositions";
 import { HIGHLIGHT, SQUARES } from "../utils/board";
-import { branchCompareTarget, mapKey, moveUci, sanResolvesToMove, similarTarget, uciToMove } from "../utils/chess";
+import { branchCompareTarget, mapKey, moveUci, parsesAsFen, sanResolvesToMove, similarTarget, uciToMove } from "../utils/chess";
 import type { AcceptanceMap } from "../practice";
 
 type PuzzleState = "playing" | "wrong" | "solved";
@@ -129,6 +130,15 @@ export function PuzzleEngine({
     if (!compareTarget) setBranchCompareOpen(false);
     if (!similarAt) setSimilarOpen(false);
   }, [compareTarget, similarAt]);
+  // Explore from here: the board the solver is showing at the click — after the player's moves and
+  // any auto-played reply — captured into state so a reply landing while the layer is open does
+  // not re-seed it. Ungated like the other two (opening it before answering spoils one's own puzzle
+  // and touches no scoring), closed on every puzzle change. Map mode is not excluded: the layer
+  // needs only a FEN. The solver stays mounted underneath and owes nothing.
+  const [exploreSeed, setExploreSeed] = useState<string | null>(null);
+  useEffect(() => setExploreSeed(null), [fen]);
+  const closeExplore = useCallback(() => setExploreSeed(null), []);
+  const canExplore = parsesAsFen(game.fen()); // always, on a board chess.js itself produced
   // Where the wrong move was played from; Try Again restores here, not the puzzle start.
   const checkpointFen = useRef(fen);
   const checkpointMoveIndex = useRef(0);
@@ -488,13 +498,16 @@ export function PuzzleEngine({
           </>
         )}
       </div>
-      {/* Both launchers always rendered, invisible without a target, so nothing below the board shifts. */}
+      {/* The launchers are always rendered, invisible without a target, so nothing below the board shifts. */}
       <div className="flex w-full flex-col gap-2 sm:flex-row">
         <button type="button" data-testid="branch-compare-launch" onClick={() => compareTarget && setBranchCompareOpen(true)} disabled={!compareTarget} className={`${launcher} ${compareTarget ? launcherOn : launcherOff}`}>
           What if {compareTarget?.preFen.split(" ")[1] === "w" ? "White" : "Black"} had played differently?
         </button>
         <button type="button" data-testid="similar-launch" onClick={() => similarAt && setSimilarOpen(true)} disabled={!similarAt} className={`${launcher} ${similarAt ? launcherOn : launcherOff}`}>
           Similar positions in your repertoire
+        </button>
+        <button type="button" data-testid="explore-launch" onClick={() => canExplore && setExploreSeed(game.fen())} disabled={!canExplore} title={canExplore ? undefined : "This position cannot be explored"} className={`${launcher} ${launcherOn}`}>
+          Explore from here
         </button>
       </div>
       {/* The note on the position the board is showing, and the whole line for a repertoire puzzle. */}
@@ -503,6 +516,7 @@ export function PuzzleEngine({
       </div>
       {branchCompareOpen && compareTarget && <BranchCompareView fen={compareTarget.fen} preFen={compareTarget.preFen} orientation={boardOrientation} onClose={() => setBranchCompareOpen(false)} />}
       {similarOpen && similarAt && <SolverSimilarModal fen={similarAt.fen} move={similarAt.move} search={similarSearch} orientation={boardOrientation} onClose={() => setSimilarOpen(false)} />}
+      {exploreSeed && <ExploreLayer fen={exploreSeed} orientation={boardOrientation} onClose={closeExplore} />}
     </div>
   );
 }

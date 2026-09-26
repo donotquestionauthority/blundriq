@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Chess } from "chess.js";
-import { lastMoveSquares, mapKey, normalizeSan, sanResolvesToMove, sanToSquares } from "./chess";
+import { lastMoveSquares, legalMove, mapKey, normalizeSan, parsesAsFen, sanResolvesToMove, sanToSquares } from "./chess";
 
 describe("normalizeSan", () => {
   // Pinned against the Python mirror; the two must agree.
@@ -50,5 +50,27 @@ describe("null moves in the arrow helpers", () => {
     expect(lastMoveSquares(["e4", "--", "Nf3"], 3)).toBeNull();
     expect(lastMoveSquares(["e4", "e5", "--"], 3)).toBeNull();
     expect(lastMoveSquares(["e4", "e5", "Nf3"], 3)).toEqual(["g1", "f3"]);
+  });
+});
+
+describe("legalMove", () => {
+  it("takes a SAN token or a move object, and refuses the null move", () => {
+    const g = new Chess();
+    expect(legalMove(g, { from: "e2", to: "e4" })?.san).toBe("e4");
+    expect(legalMove(g, "e5")?.san).toBe("e5");
+    expect(legalMove(g, { from: "g1", to: "f3", promotion: "q" })?.san).toBe("Nf3");
+    expect(legalMove(g, "--")).toBeNull();
+    // An illegal move throws in chess.js, as before; the caller's try/catch owns that. A square
+    // moved to itself is illegal in the object form (chess.js has no null move there).
+    expect(() => legalMove(g, { from: "a7", to: "a5" })).toThrow();
+    expect(() => legalMove(g, { from: "a1", to: "a1" })).toThrow();
+  });
+});
+
+describe("parsesAsFen", () => {
+  it("is true only when chess.js can seed a board", () => {
+    expect(parsesAsFen(new Chess().fen())).toBe(true);
+    expect(parsesAsFen("not a fen")).toBe(false);
+    expect(parsesAsFen("")).toBe(false);
   });
 });

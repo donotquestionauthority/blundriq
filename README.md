@@ -20,4 +20,4 @@ uvicorn api.main:app               # the API; `cd ui && npm run dev` for the fro
 
 Secrets are environment variables read only in `core/secrets.py`; tests need `TEST_DATABASE_URL`.
 
-MIT licensed. Stockfish is GPL-3.0; its notices will ship with the in-browser engine under `ui/public/engine/` when Explore lands.
+MIT licensed. Stockfish is GPL-3.0; the in-browser engine under `ui/public/engine/` ships with its licence, notices (`NNUE-NOTICE.txt`, `AUTHORS`, `STOCKFISH-SOURCE.md`) and corresponding source, linked from the Explore view's footer.

@@ -54,6 +54,11 @@ Chess.com / Lichess APIs
            table, and GET /scout/dismissed lists every dismissed board for restoring. Compare's third
            column comes from the same views.
 
+  Explore (browser only, no server): a full-screen layer over any position card and the Practice solver, seeded
+           with that board; Stockfish 18 runs in a Web Worker from `ui/public/engine/` (GPL-3.0, notices and
+           corresponding source served from the same directory) and evaluates whatever line the player plays.
+           The only server read is `explore_engine_depth` from the settings row.
+
   Home page reads: due count (Practice eligibility), games today/week, streaks, new blunders — recurring
            boards the Blunders list has never shown (seen_blunder_boards, which that page fills with what it
            rendered; the first look ever records the whole list as known) — one predicate in core/blunders.py,
@@ -109,7 +114,7 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `api/auth.py` | One password, one signed cookie. |
 | `api/routes/*` | Thin routes. |
 | `pipeline/cli.py` | The `pipeline` command. |
-| `ui/` | React app. `Preferences` renders `core/settings.py`'s schema generically. |
+| `ui/` | React app. `Preferences` renders `core/settings.py`'s schema generically. `src/engine/` is the in-browser Stockfish: `useStockfish` (the worker, stop-and-drain queue, White-POV scores), `exploreLine` (the explored line and its terminal status), `eval` (labels, PV to SAN); `components/ExploreLayer` is the layer both hosts mount. `public/engine/` holds the engine and its notices, pinned by hash (`engineAssets.test.ts`, `tests/test_engine_source.py`). |
 | `core/sql/schema.sql`, `core/sql/migrations/` | The database. Every table has a one-line comment saying why it exists. |
 | `tests/` | pytest against a scratch Postgres; vitest for the UI. `test_secrets_policy.py` enforces the single-reader rule for secrets. |
 

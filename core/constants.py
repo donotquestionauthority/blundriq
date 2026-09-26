@@ -83,9 +83,6 @@ CC0_SERVE_THEMES = (
     "queenRookEndgame",
 )
 
-# Depth choices offered on Explore (was app_settings.explore_engine_depth_options).
-EXPLORE_DEPTH_OPTIONS = (12, 16, 18, 20)
-
 # --- Practice: the five buckets a play batch is drawn from -----------------------------
 # Two are bounded by spaced repetition (the player's own puzzles and his own missed mates);
 # three rotate through the corpus by theme class. The order is the fill order when minting.
