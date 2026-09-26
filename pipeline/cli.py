@@ -9,6 +9,7 @@
     pipeline generate-puzzles
     pipeline srs-maintain                         un-retire mastered puzzles whose pattern recurred
     pipeline import-opponents [--profile ID] [--reset-lichess-cursors]   scouted opponents' games
+    pipeline review [--workers N]                 retag the window's review events
     pipeline import-corpus --csv FILE             rebuild the Lichess CC0 corpus sample
     pipeline import-repertoire FILE --mode update|scratch [--preserve-manual] [--dry-run]
     pipeline housekeep
@@ -37,6 +38,7 @@ from core.ingest import run as ingest
 from core.puzzles import corpus, srs
 from core.puzzles.generate import run as puzzles
 from core.repertoire import importing, matching
+from core.review import run as review
 from core.scout import importing as scout_importing
 
 
@@ -156,6 +158,12 @@ def _step_import_opponents(conn: psycopg.Connection[Any], args: argparse.Namespa
     return summary
 
 
+def _step_review(conn: psycopg.Connection[Any], args: argparse.Namespace) -> dict[str, Any]:
+    """Reads its settings itself, after its locks (core/review/run.py). `--workers` is for
+    the Mac and the Dell; the hourly chain runs serially."""
+    return review.run(conn, workers=int(getattr(args, "workers", None) or 1))
+
+
 def _step_housekeep(conn: psycopg.Connection[Any], _: argparse.Namespace) -> dict[str, Any]:
     return housekeeping.run(conn, settings.load(conn).analysis_game_limit)
 
@@ -212,6 +220,7 @@ def hourly_steps() -> dict[str, Step]:
         "generate-puzzles": _step_generate_puzzles,
         "srs-maintain": _step_srs_maintain,
         "import-opponents": _step_import_opponents,
+        "review": _step_review,
         "housekeep": _step_housekeep,
     }
     return {name: steps[name] for name in runs.HOURLY_STEPS}
@@ -315,6 +324,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="cutover only: walk every initialised profile's Lichess history once more, from the start",
     )
     p_opp.set_defaults(func=_cmd("import-opponents", _step_import_opponents))
+
+    p_rev = sub.add_parser("review", help="retag the window's review events (the Review pages read them)")
+    p_rev.add_argument("--workers", type=int, help="tagging processes (default 1)")
+    p_rev.set_defaults(func=_cmd("review", _step_review))
 
     p_corpus = sub.add_parser("import-corpus", help="rebuild the Lichess CC0 corpus sample from the published CSV")
     p_corpus.add_argument("--csv", required=True, help="the decompressed lichess_db_puzzle.csv")
