@@ -36,6 +36,11 @@ disposable and is modified.
                                                  # Scout's positions, decision nodes and report against the
                                                  # old route's queries lifted from the archive (all-time
                                                  # windows; the scratch copy's dismissals are emptied first)
+    pipeline review && python tools/oracle/diff_review.py
+                                                 # the new detector's generation against the old writer's last
+                                                 # one, per (game, anchor ply): exact parity claimed for every
+                                                 # game without a 3–5-man castling-free position; the rest
+                                                 # listed apart (docs/decisions/001)
 
 `diff_puzzles.py --generation` deletes the generated puzzles before remaking them, and
 deleting a puzzle cascades its SRS row away, so it refuses to run unless the database name

@@ -26,7 +26,8 @@ Chess.com / Lichess APIs
         │                 Practice (api) ──► puzzle_attempts, player_puzzle_state (SRS), exposure, skip
         │                 pipeline srs-maintain un-retires mastered puzzles whose pattern recurs
         │
-        └─► pipeline review ──► review_events (regenerated, never migrated)
+        └─► pipeline review ──► review_events (the whole window retagged hourly, per-game replace, under the
+                                 review lock then the repertoire lock; regenerated, never migrated)
 
   Blunders (api) reads blunders by board ──► dismissed_blunder_fens; explain ──► ai_explanation_cache, ai_calls;
            create puzzle ──► puzzles (tagged 'custom', which no generator displaces)
@@ -106,7 +107,7 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `core/puzzles/attempts.py` | Grading (line replay or acceptance map) and recording an attempt in one transaction. |
 | `core/scout/` | Scout: `profiles.py` (add with handle verification, remove, list), `importing.py` (`pipeline import-opponents`: onboarding, the two cursors, the Lichess boundary from its own request, a storage failure as a failed run), `positions.py` (the three-tier list in one statement, chain collapse, dismissed boards excluded, card details with the repertoire's move and the engine's from the replay game), `nodes.py` (where the opponent chooses), `report.py` (activity, openings, best and worst lines by shrunk win rate). |
 | `core/activity.py` | Games played in the last 24 h / 7 d / 30 d / ever, for the player (Home, every variant) or an opponent (Scout). |
-| `core/review/` (to come) | Review detection (no tablebase rung; see decisions/001). |
+| `core/review/` | Review: `detect.py` (the pure detector over one game's stored analysis: material candidates proved by PV replay, missed wins, faded advantage, merged at the anchor ply and routed; priced by forced mate then the win-probability curve, nothing else — decisions/001), `window.py` (the analysed, intact part of the analysis window and the repertoire / missed-motif context), `write.py` (the per-game replace that keeps `first_detected_at` and stamps `meaning_changed_at` on a reclassification only), `run.py` (`pipeline review`: one transaction, review lock then repertoire lock before any read, held to the commit; a game the detector cannot tag keeps its rows and fails the run). |
 | `core/blunders.py` | The Blunders page: boards ranked by distinct games and severity, their games, dismissal. |
 | `core/ai.py`, `core/prompts.py` | Explaining a blunder: context read from the database, sandboxed prompt templates, provider call over HTTP, cache, hourly and daily caps. |
 | `core/puzzles/custom.py` | Creating and retiring a hand-made puzzle. |
@@ -126,7 +127,7 @@ The six `bq_*` SQL functions (`core/sql/schema.sql`, top) canonicalise FENs and 
 
 ## Deployment
 
-Render: root directory = repo root, build `pip install .`, start `uvicorn api.main:app --host 0.0.0.0 --port $PORT`, build filter on `api/ core/ pyproject.toml .python-version`; Python version from `.python-version`. Vercel: root `ui/` with the project setting "Ignored Build Step: Automatic" (skips commits that do not touch `ui/`), and `VITE_API_URL` must be set in the Vercel project to the API origin (staging `https://api-personal.blundriq.com`) because the built UI has no `/api` proxy. GitHub Actions: `ci.yml` on push/PR; `pipeline.yml` hourly (`pipeline run --analyze-limit 60`: import → match → analyze → generate-puzzles → srs-maintain → import-opponents → housekeep, Stockfish 18 downloaded from the pinned release), secrets only in that workflow. The Dell runs the same `pipeline` CLI against the same database for bulk work (`pipeline analyze --workers 30`).
+Render: root directory = repo root, build `pip install .`, start `uvicorn api.main:app --host 0.0.0.0 --port $PORT`, build filter on `api/ core/ pyproject.toml .python-version`; Python version from `.python-version`. Vercel: root `ui/` with the project setting "Ignored Build Step: Automatic" (skips commits that do not touch `ui/`), and `VITE_API_URL` must be set in the Vercel project to the API origin (staging `https://api-personal.blundriq.com`) because the built UI has no `/api` proxy. GitHub Actions: `ci.yml` on push/PR; `pipeline.yml` hourly (`pipeline run --analyze-limit 60`: import → match → analyze → generate-puzzles → srs-maintain → import-opponents → review → housekeep, Stockfish 18 downloaded from the pinned release), secrets only in that workflow. The Dell runs the same `pipeline` CLI against the same database for bulk work (`pipeline analyze --workers 30`).
 
 ## Windows and retention
 

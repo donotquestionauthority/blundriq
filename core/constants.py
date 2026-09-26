@@ -146,6 +146,12 @@ LOCK_PUZZLE_QUEUE = 3001
 LOCK_SRS_ATTEMPT = 3002
 LOCK_AI_BUDGET = 3003
 LOCK_REPERTOIRE = 3004  # matching and every repertoire change, from reading lines to publishing results
+LOCK_REVIEW = 3005  # the review run, from reading the window to publishing events (core/review/run.py)
+
+# Game terminations decided off the board. Such a game carries no review signal: the
+# detector returns an authoritative zero for it. The one membership authority; the
+# vocabulary is the platforms' (core/chess/platform.py).
+CLOCK_DECIDED_TERMINATIONS = ("timeout", "abandonment")
 
 # AI explanations (core/ai.py). Anthropic's floor for a thinking budget; the room kept after
 # the budget for the answer itself; and the models that think unless told not to, where

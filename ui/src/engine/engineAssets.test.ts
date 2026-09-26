@@ -1,10 +1,10 @@
 /**
  * The engine files under `public/engine/` are pinned by hash. The WASM, the worker glue and the
  * licence text are the upstream release, byte-unmodified; the corresponding-source archive is the
- * one tracked file CLAUDE.md rule 2 lets carry third-party attribution addresses, and its hash is
- * what makes the exception exactly that file: a byte changed inside it — an address added, one
- * replaced, a file removed — is a different archive, which is a new review and a new pin
- * (`tests/test_engine_source.py` records what this one contains).
+ * only tracked file that carries third-party attribution addresses (two, both upstream authors'
+ * own, reviewed), and its hash is what confines that to exactly this file: a byte changed inside
+ * it — an address added, one replaced, a file removed — is a different archive, which is a new
+ * content review and a new pin (`tests/test_engine_source.py` records what this one contains).
  */
 /// <reference types="node" />
 import { createHash } from "node:crypto";

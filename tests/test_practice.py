@@ -1166,7 +1166,7 @@ def test_an_exposure_from_before_the_snapshot_is_served_and_graded_as_one_segmen
             (PLAYER_ID, pid),
         )
         c.commit()
-        assert schema.upgrade(c) == [4]
+        assert schema.upgrade(c) == [n for n, _ in schema.migration_files() if n > 3]  # 004 and whatever followed
         snapshot = c.execute("SELECT presentation_ply FROM player_puzzle_exposure").fetchone()
         assert snapshot is not None and snapshot["presentation_ply"] is None
         today = visibility.presentation_ply(c, pid, lookahead_plies=2)

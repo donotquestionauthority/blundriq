@@ -625,3 +625,55 @@ def forget_dismissals(conn: Connection[Any]) -> int:
         cur.execute("DELETE FROM dismissed_blunder_fens WHERE player_id = %s", (PLAYER_ID,))
         conn.commit()
         return cur.rowcount
+
+
+# --- review ----------------------------------------------------------------------------------
+
+REVIEW_EVENT_FIELDS = (
+    "base_route",
+    "opening_candidate",
+    "pool_key",
+    "cost",
+    "phase",
+    "piece_label",
+    "book_relation",
+)
+REVIEW_EVIDENCE_FIELDS = ("class", "proof_state", "secondary", "game_priced_loss")
+
+
+def old_review_events(conn: Connection[Any]) -> list[dict[str, Any]]:
+    """The old writer's last generation for the player, every event, oldest anchor first."""
+    return [
+        dict(r)
+        for r in conn.execute(
+            "SELECT chess_game_id, anchor_ply, base_route, opening_candidate, pool_key, evidence, cost, phase,"
+            " piece_label, book_relation FROM review_events WHERE player_id = %s ORDER BY chess_game_id, anchor_ply",
+            (PLAYER_ID,),
+        ).fetchall()
+    ]
+
+
+def old_review_state(conn: Connection[Any]) -> dict[str, Any] | None:
+    """The old writer's window size and UNKNOWN count (one row; the new writer's is the same shape)."""
+    row = conn.execute(
+        "SELECT window_games, unknown_candidates FROM review_detection_state WHERE player_id = %s", (PLAYER_ID,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def review_events(conn: Connection[Any]) -> list[dict[str, Any]]:
+    """This pipeline's rows, the same columns, for analysable games only."""
+    query = cast(
+        LiteralString,
+        "SELECT re.chess_game_id, re.anchor_ply, re.base_route, re.opening_candidate, re.pool_key, re.evidence,"
+        " re.cost, re.phase, re.piece_label, re.book_relation FROM review_events re"
+        f" JOIN chess_games cg ON cg.id = re.chess_game_id WHERE re.player_id = %s AND {analysable_sql('cg')}"
+        " ORDER BY re.chess_game_id, re.anchor_ply",
+    )
+    return [dict(r) for r in conn.execute(query, (PLAYER_ID,)).fetchall()]
+
+
+def game_fens(conn: Connection[Any], ids: list[int]) -> dict[int, tuple[str, list[str]]]:
+    """{game id: (variant, FEN sequence)} for the games given, from this database."""
+    rows = conn.execute("SELECT id, variant, fen_sequence FROM chess_games WHERE id = ANY(%s)", (ids,)).fetchall()
+    return {int(r["id"]): (str(r["variant"]), list(r["fen_sequence"] or [])) for r in rows}

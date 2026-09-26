@@ -97,6 +97,11 @@ def _see_capture(board: chess.Board, move: chess.Move) -> int:
     return captured_val - _see(b, to_sq, not board.turn)
 
 
+# The review detector's capture-resolution extension ranks captures with this same
+# arithmetic (core/review/detect.py), so it is shared rather than forked.
+see_capture = _see_capture
+
+
 # --- forced-reply winnability ------------------------------------------------------------
 
 
