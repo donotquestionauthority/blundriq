@@ -121,8 +121,9 @@ function LearnPanel({ learn, reveal, engineAvailable, promptInFlow }: { learn: L
           {reveal && reveal.rows.length > 0 && (
             <ul className="space-y-1">
               {reveal.rows.map((r) => (
-                <li key={`${r.from}-${r.to}`} className="flex items-baseline gap-2 break-words">
-                  <span aria-hidden className="h-2.5 w-2.5 shrink-0 translate-y-0.5 rounded-sm" style={{ backgroundColor: r.color }} />
+                <li key={`${r.from}-${r.to}-${r.move}`} className="flex items-baseline gap-2 break-words">
+                  {/* A row with no arrow of its own (a promotion to another piece on the same squares) has no swatch. */}
+                  <span aria-hidden className="h-2.5 w-2.5 shrink-0 translate-y-0.5 rounded-sm" style={r.drawn ? { backgroundColor: r.color } : undefined} />
                   <span className="text-zinc-500">{r.label}</span>
                   <span className="font-mono" aria-label={r.move}>
                     {r.move}
@@ -176,15 +177,20 @@ export default function GameReview() {
   const [showTimer, setShowTimer] = useState(true);
   const [prefError, setPrefError] = useState(false);
   const [modeSettled, setModeSettled] = useState(false);
+  // A field the player has already changed is never overwritten by the initial read, which can
+  // land after the game did; and a save's failure reverts only the selection it was for — a
+  // newer one has its own generation.
   const modeTouched = useRef(false);
+  const storedTouched = useRef(0);
+  const timerTouched = useRef(0);
   useEffect(() => {
     let alive = true;
     getReviewPrefs()
       .then((p) => {
         if (!alive) return;
-        setStoredMode(p.review_default_mode);
+        if (!storedTouched.current) setStoredMode(p.review_default_mode);
         if (!modeTouched.current) setMode(p.review_default_mode);
-        setShowTimer(p.review_show_timer);
+        if (!timerTouched.current) setShowTimer(p.review_show_timer);
         setModeSettled(true);
       })
       .catch(() => {
@@ -211,11 +217,12 @@ export default function GameReview() {
   const makeDefault = useCallback(() => {
     const target = mode;
     const previous = storedMode;
+    const gen = ++storedTouched.current;
     setStoredMode(target);
     setReviewPref({ review_default_mode: target })
       .then(() => setPrefError(false))
       .catch(() => {
-        setStoredMode(previous);
+        if (gen === storedTouched.current) setStoredMode(previous);
         setPrefError(true);
       });
   }, [mode, storedMode]);
@@ -223,11 +230,12 @@ export default function GameReview() {
   const toggleTimer = useCallback(
     (next: boolean) => {
       const previous = showTimer;
+      const gen = ++timerTouched.current;
       setShowTimer(next);
       setReviewPref({ review_show_timer: next })
         .then(() => setPrefError(false))
         .catch(() => {
-          setShowTimer(previous);
+          if (gen === timerTouched.current) setShowTimer(previous);
           setPrefError(true);
         });
     },

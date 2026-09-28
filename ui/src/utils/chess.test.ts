@@ -129,6 +129,22 @@ describe("the game review's arrows", () => {
     ]);
     // A slot that is not legal here, or absent, draws nothing; the promotion piece rides in the SAN.
     expect(buildLearnRevealArrows({ fen: fenSequence[2], committedMove: "O-O", engineMove: "--" }).rows).toEqual([]);
+    expect(r.rows.every((x) => x.drawn)).toBe(true);
+  });
+
+  it("the reveal merges labels only for the same move: another promotion piece is its own row, undrawn", () => {
+    const fen = "8/1P6/8/k7/8/8/8/7K w - - 0 1";
+    const r = buildLearnRevealArrows({ fen, committedMove: "b8=N", engineMove: "b8=Q", gameMove: "b8=Q" });
+    expect(r.arrows).toHaveLength(1);
+    expect(r.arrows[0].color).toBe(ARROWS.committed);
+    expect(r.rows.map((x) => [x.label, x.move, x.drawn])).toEqual([
+      ["You played", "b8=N", true],
+      ["Stockfish plays · You played in the game", "b8=Q", false],
+    ]);
+    // The same piece spelled two ways is one move, one row.
+    const same = buildLearnRevealArrows({ fen, committedMove: "b8Q", engineMove: "b8=Q" });
+    expect(same.rows).toHaveLength(1);
+    expect(same.rows[0].label).toBe("You played · Stockfish plays");
   });
 
   it("appendBookArrow draws once per pair and reports whether it drew", () => {

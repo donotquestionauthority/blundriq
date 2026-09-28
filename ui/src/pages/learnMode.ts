@@ -12,6 +12,7 @@ import type { Square } from "chess.js";
 import { ApiError } from "../api";
 import type { PromotionPiece } from "../components/PromotionChooser";
 import { learnCommit } from "../games";
+import type { LearnCommitBody } from "../games";
 import { legalMove } from "../utils/chess";
 
 /** The standard branch: four questions, asked in this order at every rep. They ask; they never
@@ -194,6 +195,9 @@ export function useLearnMode({ enabled, gameId, ply, fen, showTimer }: { enabled
   const [promo, setPromo] = useState<{ from: Square; to: Square } | null>(null);
   const [commitState, setCommitState] = useState<LearnCommitState>("idle");
   const [commitFailure, setCommitFailure] = useState<LearnCommitFailure | null>(null);
+  // The request body is built once at the commit and kept: every retry, silent or manual, sends
+  // exactly it. The timer preference changing afterwards is for the next rep, not this record.
+  const [commitBody, setCommitBody] = useState<LearnCommitBody | null>(null);
 
   // One attempt id per rep: a retry reuses it (that is the idempotency key's job), a fresh rep
   // gets a new one. `epoch` counts rep boundaries: the timer's reset and the guard that drops a
@@ -234,6 +238,7 @@ export function useLearnMode({ enabled, gameId, ply, fen, showTimer }: { enabled
       setPromo(null);
       setCommitState("idle");
       setCommitFailure(null);
+      setCommitBody(null);
       setElapsedMs(0);
       setTimed(nextTimed);
       setEpoch((e) => e + 1);
@@ -302,11 +307,9 @@ export function useLearnMode({ enabled, gameId, ply, fen, showTimer }: { enabled
   }, [epoch]);
 
   const postCommit = useCallback(
-    async (san: string, elapsed: number | null, attempt: string, myEpoch: number) => {
+    async (body: LearnCommitBody, myEpoch: number) => {
       setCommitState("saving");
       setCommitFailure(null);
-      // `elapsed_ms` is omitted, never null, when untimed: NULL in the column has one meaning.
-      const body = elapsed == null ? { attempt_id: attempt, ply, committed_move: san } : { attempt_id: attempt, ply, committed_move: san, elapsed_ms: elapsed };
       try {
         await learnCommit(gameId, body);
         if (myEpoch === epochRef.current) setCommitState("saved");
@@ -334,7 +337,7 @@ export function useLearnMode({ enabled, gameId, ply, fen, showTimer }: { enabled
         setCommitFailure(kind);
       }
     },
-    [gameId, ply],
+    [gameId],
   );
 
   const commit = useCallback(
@@ -343,22 +346,24 @@ export function useLearnMode({ enabled, gameId, ply, fen, showTimer }: { enabled
       stopTimer();
       const elapsed = timed ? Math.round(readElapsed()) : null;
       if (elapsed != null) setElapsedMs(elapsed);
+      // `elapsed_ms` is omitted, never null, when untimed: NULL in the column has one meaning.
+      const body: LearnCommitBody = elapsed == null ? { attempt_id: attemptId, ply, committed_move: san } : { attempt_id: attemptId, ply, committed_move: san, elapsed_ms: elapsed };
+      setCommitBody(body);
       setCommittedMove(san);
       setSkipped(false);
       setRevealed(true);
       setSelected(null);
       setPromo(null);
-      void postCommit(san, elapsed, attemptId, epochRef.current);
+      void postCommit(body, epochRef.current);
     },
-    [revealed, stopTimer, timed, readElapsed, postCommit, attemptId],
+    [revealed, stopTimer, timed, readElapsed, postCommit, attemptId, ply],
   );
 
   const retryCommit = useCallback(() => {
-    if (!committedMove || commitState === "saving") return;
+    if (!commitBody || commitState === "saving") return;
     // The same attempt id and the same bytes: that is what makes the retry decidable forever.
-    const elapsed = timed ? Math.round(readElapsed()) : null;
-    void postCommit(committedMove, elapsed, attemptId, epochRef.current);
-  }, [committedMove, commitState, timed, readElapsed, postCommit, attemptId]);
+    void postCommit(commitBody, epochRef.current);
+  }, [commitBody, commitState, postCommit]);
 
   // Move entry. A pawn reaching the last rank snaps back and opens the chooser (by drag or by a
   // second tap), so the committed move carries the piece the player chose, never an auto-queen.

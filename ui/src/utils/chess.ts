@@ -89,6 +89,16 @@ export function parsesAsFen(fen: string): boolean {
   }
 }
 
+/** The squares and promotion piece of a SAN move in a position, or null if it is not legal there. */
+export function resolveMove(fen: string, san: string): { from: string; to: string; promotion?: string } | null {
+  try {
+    const move = legalMove(new Chess(fen), san);
+    return move ? { from: move.from, to: move.to, promotion: move.promotion } : null;
+  } catch {
+    return null;
+  }
+}
+
 /** `[from, to]` of a SAN move in a position, or null if it is not legal there. */
 export function sanToSquares(fen: string, san: string): [string, string] | null {
   try {
@@ -346,6 +356,9 @@ export interface RevealRow {
   from: string;
   to: string;
   color: string;
+  /** False for a different move on squares another row's arrow already occupies (a promotion to
+   *  another piece): the row is named, but no arrow of its colour is on the board. */
+  drawn: boolean;
 }
 
 export interface RevealArrows {
@@ -358,32 +371,40 @@ export interface RevealArrows {
  * meaning it carries. Collisions are the common case (the committed move is the game's, or the
  * engine's, or the book's), and react-chessboard keys arrows by their squares, so two slots on
  * one pair would render as one arrow in whichever colour won: the first slot in row order keeps
- * the colour and leads the label. The opponent's move resolves against `prevFen`, every other
- * slot against `fen`. A slot with no SAN, or one that is not legal in its position, is skipped.
+ * the colour and leads the label. Labels merge only when the moves agree: a promotion to another
+ * piece shares the squares but is a different move, so it gets its own row, undrawn. The
+ * opponent's move resolves against `prevFen`, every other slot against `fen`. A slot with no SAN,
+ * or one that is not legal in its position, is skipped.
  */
 export function buildLearnRevealArrows(p: { fen: string; prevFen?: string | null; committedMove?: string | null; engineMove?: string | null; bookMove?: string | null; gameMove?: string | null; opponentMove?: string | null }): RevealArrows {
   const san: Record<RevealSlot, string | null | undefined> = { committed: p.committedMove, engine: p.engineMove, book: p.bookMove, played: p.gameMove, opponent: p.opponentMove };
   const arrows: BoardArrow[] = [];
   const rows: RevealRow[] = [];
-  const byPair = new Map<string, RevealRow>();
+  const byMove = new Map<string, RevealRow>();
+  const drawnPairs = new Set<string>();
   for (const slot of REVEAL_SLOT_ORDER) {
     const move = san[slot];
     if (!move) continue;
     const source = slot === "opponent" ? p.prevFen : p.fen;
     if (!source) continue;
-    const sq = sanToSquares(source, move);
-    if (!sq) continue;
-    const key = `${sq[0]}-${sq[1]}`;
-    const existing = byPair.get(key);
+    const resolved = resolveMove(source, move);
+    if (!resolved) continue;
+    const pair = `${resolved.from}-${resolved.to}`;
+    const key = `${source}|${pair}${resolved.promotion ?? ""}`;
+    const existing = byMove.get(key);
     if (existing) {
       existing.slots.push(slot);
       existing.label = existing.slots.map((s) => REVEAL_SLOT_LABEL[s]).join(" · ");
       continue;
     }
-    const row: RevealRow = { slots: [slot], label: REVEAL_SLOT_LABEL[slot], move, from: sq[0], to: sq[1], color: REVEAL_SLOT_COLOR[slot] };
-    byPair.set(key, row);
+    const drawn = !drawnPairs.has(pair);
+    const row: RevealRow = { slots: [slot], label: REVEAL_SLOT_LABEL[slot], move, from: resolved.from, to: resolved.to, color: REVEAL_SLOT_COLOR[slot], drawn };
+    byMove.set(key, row);
     rows.push(row);
-    arrows.push({ startSquare: sq[0], endSquare: sq[1], color: row.color });
+    if (drawn) {
+      drawnPairs.add(pair);
+      arrows.push({ startSquare: resolved.from, endSquare: resolved.to, color: row.color });
+    }
   }
   return { arrows, rows };
 }

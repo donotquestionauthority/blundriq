@@ -198,5 +198,37 @@ const asMode = (v: unknown): ReviewMode => (v === "review" ? "review" : "learn")
 /** The two Review fields of the settings row; a malformed value reads as the non-spoiling default. */
 export const getReviewPrefs = () => api.get<Record<string, unknown>>("/settings").then((s) => ({ review_default_mode: asMode(s.review_default_mode), review_show_timer: s.review_show_timer !== false }));
 
-/** Settings are one row: read it, change the field, write it back. */
-export const setReviewPref = (patch: Partial<ReviewPrefs>) => api.get<Record<string, unknown>>("/settings").then((s) => api.put<Record<string, unknown>>("/settings", { ...s, ...patch }));
+/**
+ * Settings are one row and the API has no partial update, so a write is read → change the
+ * field → write back. Writes are serialised through one chain and their patches coalesced:
+ * two controls changed while a save is in flight would otherwise each read the original row
+ * and the second write would put the first field back. Every call resolves once its own
+ * patch has been written, and rejects if that write failed.
+ */
+let pending: Partial<ReviewPrefs> = {};
+let waiters: { resolve: () => void; reject: (e: unknown) => void }[] = [];
+let inFlight: Promise<void> | null = null;
+
+function flushPrefs(): Promise<void> {
+  const patch = pending;
+  const mine = waiters;
+  pending = {};
+  waiters = [];
+  return api
+    .get<Record<string, unknown>>("/settings")
+    .then((s) => api.put<Record<string, unknown>>("/settings", { ...s, ...patch }))
+    .then(
+      () => mine.forEach((w) => w.resolve()),
+      (e: unknown) => mine.forEach((w) => w.reject(e)),
+    )
+    .then(() => {
+      inFlight = waiters.length ? flushPrefs() : null;
+    });
+}
+
+export function setReviewPref(patch: Partial<ReviewPrefs>): Promise<void> {
+  pending = { ...pending, ...patch };
+  const done = new Promise<void>((resolve, reject) => waiters.push({ resolve, reject }));
+  if (!inFlight) inFlight = flushPrefs();
+  return done;
+}

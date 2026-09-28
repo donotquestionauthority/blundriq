@@ -366,8 +366,8 @@ def project_game(conn: Connection[Any], player_color: str, fen_sequence: Any) ->
     `{"by_ply": {ply: entry}}` with a key for EVERY index. Only player-turn plies (side to move
     from the FEN, never ply parity) are looked up, once per distinct board; an opponent-turn
     ply carries `{"status": "not_your_turn"}` and is never looked up — the game's opponent left
-    the book or did not, and the prepared reply belongs to the next ply (Rob's ruling of
-    2026-08-12). A populated map whose every entry is `none` is information; None is not.
+    the book or did not, and the prepared reply belongs to the next ply. A populated map whose
+    every entry is `none` is information; None is not.
     """
     if player_color not in ("white", "black"):
         return None

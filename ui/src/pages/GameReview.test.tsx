@@ -319,6 +319,19 @@ describe("promotion: all four pieces survive, by drag and by tap", () => {
     expect(learnCommit.mock.calls[0][1].committed_move).toBe(san);
     expect(bodyText()).toContain(san);
   });
+  it("a promotion to another piece than the engine's is two rows, one arrow, and never one label", async () => {
+    const p = promoPayload();
+    p.game.ply_analysis![0] = { ply: 0, eval: 900, best_move: "b8=Q", best_line: "b8=Q" };
+    getGameReview.mockResolvedValue(p);
+    await renderReview(0);
+    await reachCommitStep();
+    await drop("b7", "b8");
+    await act(async () => screen.getByLabelText("Promote to knight").click());
+    const rows = Array.from(screen.getByTestId("learn-panel").querySelectorAll("ul > li")).map((li) => (li.textContent ?? "").trim());
+    expect(rows).toEqual(["You playedb8=N", "Stockfish plays · You played in the gameb8=Q"]);
+    expect(arrowColors()).toEqual([ARROWS.committed]);
+    expect(bodyText()).not.toContain("You played · Stockfish plays");
+  });
   it("a second tap on a promotion target opens the same chooser", async () => {
     await renderReview(0);
     await reachCommitStep();
@@ -478,6 +491,54 @@ describe("the timer", () => {
     await reachCommitStep();
     await drop("f1", "c4");
     expect(typeof learnCommit.mock.calls[0][1].elapsed_ms).toBe("number");
+  });
+  it("a preference read that lands after the player's edits does not overwrite them", async () => {
+    let resolvePrefs: (p: unknown) => void = () => {};
+    getReviewPrefs.mockImplementation(() => new Promise((r) => (resolvePrefs = r)));
+    await renderReview();
+    expect(screen.getByTestId("board")).toBeInTheDocument(); // the game is up while the read is pending
+    const timer = screen.getByLabelText("Time my reps") as HTMLInputElement;
+    expect(timer.checked).toBe(true);
+    await act(async () => fireEvent.click(timer));
+    expect(setReviewPref).toHaveBeenCalledWith({ review_show_timer: false });
+    expect(timer.checked).toBe(false);
+    fireEvent.change(screen.getByLabelText("Mode"), { target: { value: "review" } });
+    await act(async () => fireEvent.click(screen.getByLabelText("Always start here")));
+    expect(setReviewPref).toHaveBeenCalledWith({ review_default_mode: "review" });
+    await act(async () => resolvePrefs({ review_default_mode: "learn", review_show_timer: true }));
+    expect((screen.getByLabelText("Time my reps") as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByLabelText("Mode") as HTMLSelectElement).value).toBe("review");
+    expect((screen.getByLabelText("Always start here") as HTMLInputElement).checked).toBe(true); // stored = review, kept
+  });
+  it("an older save's failure never reverts a newer selection", async () => {
+    getReviewPrefs.mockResolvedValue({ review_default_mode: "learn", review_show_timer: true });
+    let rejectFirst: (e: unknown) => void = () => {};
+    setReviewPref.mockImplementationOnce(() => new Promise((_, rej) => (rejectFirst = rej))).mockResolvedValue(undefined);
+    await renderReview();
+    const timer = screen.getByLabelText("Time my reps") as HTMLInputElement;
+    await act(async () => fireEvent.click(timer)); // off, held
+    await act(async () => fireEvent.click(timer)); // on again, succeeds
+    expect(timer.checked).toBe(true);
+    await act(async () => rejectFirst(new ApiError(500, "x")));
+    await flush();
+    expect(timer.checked).toBe(true);
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+  });
+  it("a manual retry re-sends the body the commit built, even after the timer was switched off", async () => {
+    learnCommit.mockRejectedValue(new TypeError("offline"));
+    await renderReview();
+    await reachCommitStep();
+    await drop("f1", "c4");
+    await flush();
+    expect(learnCommit).toHaveBeenCalledTimes(2);
+    const first = learnCommit.mock.calls[0][1];
+    expect(typeof first.elapsed_ms).toBe("number");
+    await act(async () => fireEvent.click(screen.getByLabelText("Time my reps"))); // off, mid-rep
+    learnCommit.mockResolvedValue({ id: 9, created: false });
+    await act(async () => screen.getByText("Try again").click());
+    await flush();
+    expect(learnCommit).toHaveBeenCalledTimes(3);
+    expect(learnCommit.mock.calls[2][1]).toEqual(first);
   });
   it("Time my reps and Always start here write the settings row", async () => {
     getReviewPrefs.mockResolvedValue({ review_default_mode: "review", review_show_timer: true });
