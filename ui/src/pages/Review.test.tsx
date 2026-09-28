@@ -464,6 +464,23 @@ describe("Review worklist", () => {
     expect(screen.getByText("fresh_one")).toBeInTheDocument();
   });
 
+  it("a scope change while the page request is pending leaves its stale-opening recovery intact", async () => {
+    const held = deferred();
+    getReviewPage.mockImplementation((_t: string, opening: string) => (opening === "Scandinavian" ? held.promise : Promise.resolve(page())));
+    renderPage();
+    await screen.findByText("Opening problems");
+    fireEvent.change(combo("Focus opening"), { target: { value: "Scandinavian" } });
+    await waitFor(() => expect(lastPageCall()).toEqual(["focus", "Scandinavian", "variation"]));
+    fireEvent.click(screen.getByRole("tab", { name: "All" }));
+    held.resolve(Promise.reject(new ApiError(422, "unknown opening key: 'Scandinavian'")));
+    await screen.findByText(/no longer has review games/);
+    await waitFor(() => expect(combo("Focus opening").value).toBe("__all__"));
+    expect(screen.queryByRole("alert")).toBeNull();
+    // The chosen scope survived the recovery.
+    expect(screen.getByRole("tab", { name: "All" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("heading", { name: "Faded advantage" })).toBeInTheDocument();
+  });
+
   it("the Focus opening list shows each family's to-review count", async () => {
     renderPage();
     await screen.findByText("Opening problems");

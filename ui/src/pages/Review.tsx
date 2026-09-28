@@ -17,10 +17,13 @@ import { daysAgo } from "../blunders";
  * resets to All openings with a one-line notice; any other error stays an error. A game row opens
  * the game on its platform in a new tab.
  *
- * Every drill request belongs to a view: a generation bumped by each scope or server-param change,
- * the stale-opening recovery and unmount. A response from an earlier view is dropped, success or
+ * Every request belongs to a view. A drill request belongs to the drill view (a generation bumped
+ * by each scope or server-param change, the stale-opening recovery and unmount); the page request
+ * belongs to the page view (bumped by the same things except a scope change, which is client-only
+ * and leaves the page request current). A response from an earlier view is dropped, success or
  * failure, so a slow request can neither overwrite a fresh drill-down nor restore page 2 alone
- * after an A → B → A round trip of the same filters.
+ * after an A → B → A round trip of the same filters — while a page request that outlives a scope
+ * change still recovers from a stale opening.
  *
  * Filter, scope and expansion state are per session; nothing is remembered.
  */
@@ -216,12 +219,19 @@ export default function Review() {
   const [openNodes, setOpenNodes] = useState<Set<string>>(new Set());
   const [eventsByNode, setEventsByNode] = useState<Record<string, NodeEventsState>>({});
 
-  // The view generation: bumped (in event handlers, never during render) whenever what is on
+  // Two view generations, bumped in event handlers (never during render) whenever what is on
   // screen changes so that an outstanding request no longer describes it. A request captures the
-  // generation it was made for and is ignored unless it is still the current one.
+  // generation it was made for and is ignored unless it is still the current one. `pageGen` is the
+  // page request's; `viewGen` the drill-downs'. A scope change bumps only the drills: the page
+  // request does not carry the scope, so it stays current and may still recover.
+  const pageGen = useRef(0);
   const viewGen = useRef(0);
-  const nextView = () => {
+  const nextDrillView = () => {
     viewGen.current += 1;
+  };
+  const nextView = () => {
+    pageGen.current += 1;
+    nextDrillView();
   };
   useEffect(() => () => nextView(), []);
 
@@ -236,12 +246,12 @@ export default function Review() {
   }, []);
 
   const fetchPage = useCallback(async () => {
-    const gen = viewGen.current;
+    const gen = pageGen.current;
     try {
       return await getReviewPage(timeClass, opening, groupBy);
     } catch (err) {
       // A 422 for a focus the user has since left must not undo their newer choice.
-      if (isStaleOpeningError(err) && opening !== OPENING_ALL && gen === viewGen.current) {
+      if (isStaleOpeningError(err) && opening !== OPENING_ALL && gen === pageGen.current) {
         recoverToAllOpenings();
         return await getReviewPage(timeClass, OPENING_ALL, groupBy);
       }
@@ -352,7 +362,7 @@ export default function Review() {
   // Scope is client-side: sections stay open, drill-downs collapse and forget their rows so they
   // reload under the new scope. A single-pool category is its own drill-down, so it closes too.
   const changeScope = (next: ReviewedScope) => {
-    nextView();
+    nextDrillView();
     setScope(next);
     setOpenNodes(new Set());
     setOpenCats((prev) => new Set([...prev].filter((c) => c !== CAT.endgame && c !== CAT.faded)));
