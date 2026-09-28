@@ -4,6 +4,7 @@ import { api, ApiError } from "./api";
 import Layout from "./components/Layout";
 import Blunders from "./pages/Blunders";
 import Deviations from "./pages/Deviations";
+import GameReview from "./pages/GameReview";
 import Games from "./pages/Games";
 import Home from "./pages/Home";
 import Login from "./pages/Login";
@@ -40,6 +41,7 @@ export default function App() {
         <Route path="/repertoire" element={<Repertoire />} />
         <Route path="/repertoire/conflicts" element={<RepertoireConflicts />} />
         <Route path="/review" element={<Review />} />
+        <Route path="/review/:gameId" element={<GameReview />} />
         <Route path="/games" element={<Games />} />
         <Route path="/scout" element={<Scout />} />
         <Route path="/practice" element={<Practice />} />
