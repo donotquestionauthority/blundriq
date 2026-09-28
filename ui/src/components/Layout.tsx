@@ -17,6 +17,7 @@ const PRIMARY: Item[] = [
 const MORE: Item[] = [
   { to: "/scout", label: "Scout" },
   { to: "/repertoire", label: "Repertoire" },
+  { to: "/review", label: "Review" },
   { to: "/games", label: "Games" },
   { to: "/preferences", label: "Preferences" },
 ];
