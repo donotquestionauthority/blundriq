@@ -9,6 +9,10 @@ export const HIGHLIGHT = {
   wrong: "rgba(239, 68, 68, 0.5)",
   legalDot: "radial-gradient(rgba(0,0,0,0.25) 22%, transparent 22%)",
   legalRing: "radial-gradient(transparent 51%, rgba(0,0,0,0.3) 51%)",
+  /** The played move's squares when a yellow `bestMissed` arrow is on the same board: the
+   *  yellow fill would carry the opposite meaning in the same colour, so the squares get an
+   *  inset frame instead. A `boxShadow` value, applied as `{ boxShadow: … }`. */
+  lastMoveFrame: "inset 0 0 0 3px rgba(17, 24, 39, 0.80), inset 0 0 0 5px rgba(255, 255, 255, 0.85)",
 } as const;
 
 /** Arrow colours by meaning, from a colour-blind-safe palette (Okabe–Ito). A board never
@@ -18,4 +22,7 @@ export const ARROWS = {
   played: "#D55E00", // the move actually played
   engine: "#009E73", // the engine's best move
   book: "#E69F00", // the repertoire's move
+  committed: "#CC79A7", // the move committed in a Learn rep
+  bestHint: "#56B4E9", // the engine's best move in the position shown (the game review)
+  bestMissed: "#F0E442", // the engine's best move at the prior ply, not played (the game review)
 } as const;

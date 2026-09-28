@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Chess } from "chess.js";
-import { lastMoveSquares, legalMove, mapKey, normalizeSan, parsesAsFen, sanResolvesToMove, sanToSquares } from "./chess";
+import { lastMoveSquares, legalMove, mapKey, normalizeSan, parsesAsFen, sanResolvesToMove, sanToSquares, spineLastMove, reviewArrowsFromPlyAnalysis, reviewArrowsForPly, buildLearnRevealArrows, appendBookArrow } from "./chess";
+import { ARROWS } from "./board";
 
 describe("normalizeSan", () => {
   // Pinned against the Python mirror; the two must agree.
@@ -72,5 +73,71 @@ describe("parsesAsFen", () => {
     expect(parsesAsFen(new Chess().fen())).toBe(true);
     expect(parsesAsFen("not a fen")).toBe(false);
     expect(parsesAsFen("")).toBe(false);
+  });
+});
+
+describe("the game review's arrows", () => {
+  const spine = (sans: string[]) => {
+    const c = new Chess();
+    const fenSequence = [c.fen()];
+    const moves: string[] = [];
+    for (const s of sans) {
+      moves.push(c.move(s).san);
+      fenSequence.push(c.fen());
+    }
+    return { fenSequence, moves };
+  };
+  const { fenSequence, moves } = spine(["e4", "e5", "Nf3", "Nc6"]);
+
+  it("spineLastMove reads the move that produced the position from the spine", () => {
+    expect(spineLastMove(fenSequence, moves, 1)).toEqual(["e2", "e4"]);
+    expect(spineLastMove(fenSequence, moves, 0)).toBeNull();
+    expect(spineLastMove(null, moves, 1)).toBeNull();
+  });
+
+  it("from the per-position analysis: bestHint here, bestMissed one ply after a move that was not the engine's", () => {
+    const pa = fenSequence.map((_, i) => ({ best_move: i === 2 ? "Bb5" : i === 3 ? "Bc5" : null }));
+    const at2 = reviewArrowsFromPlyAnalysis({ fenSequence, ply: 2, plyAnalysis: pa, moves });
+    expect(at2.arrows.map((a) => a.color)).toEqual([ARROWS.bestHint]);
+    expect(at2.bestMissed).toBe(false);
+    const at3 = reviewArrowsFromPlyAnalysis({ fenSequence, ply: 3, plyAnalysis: pa, moves });
+    expect(at3.arrows.map((a) => [a.startSquare, a.endSquare, a.color])).toEqual([
+      ["f8", "c5", ARROWS.bestHint],
+      ["f1", "b5", ARROWS.bestMissed],
+    ]);
+    expect(at3.bestMissed).toBe(true);
+    // The move played was the engine's: no bestMissed, whatever the spelling.
+    const agreed = fenSequence.map((_, i) => ({ best_move: i === 2 ? "Nf3+" : null }));
+    expect(reviewArrowsFromPlyAnalysis({ fenSequence, ply: 3, plyAnalysis: agreed, moves }).bestMissed).toBe(false);
+  });
+
+  it("from blunder rows alone, the same shape", () => {
+    const r = reviewArrowsForPly({ fenSequence, ply: 3, blunderAtPly: null, blunderAtPrevPly: { best_move: "Bb5", move_played: "Nf3" } });
+    expect(r.arrows.map((a) => a.color)).toEqual([ARROWS.bestMissed]);
+    expect(r.bestMissed).toBe(true);
+    expect(reviewArrowsForPly({ fenSequence, ply: 2, blunderAtPly: { best_move: "Bb5" } }).arrows.map((a) => a.color)).toEqual([ARROWS.bestHint]);
+  });
+
+  it("the Learn reveal draws one arrow per from/to pair and legends every meaning, in precedence order", () => {
+    const r = buildLearnRevealArrows({ fen: fenSequence[2], prevFen: fenSequence[1], committedMove: "Bc4", engineMove: "Bb5", bookMove: "Bc4", gameMove: "Nf3", opponentMove: "e5" });
+    expect(r.arrows).toHaveLength(4);
+    expect(r.rows.map((x) => [x.label, x.move, x.color])).toEqual([
+      ["You played · Your prep plays", "Bc4", ARROWS.committed],
+      ["Stockfish plays", "Bb5", ARROWS.engine],
+      ["You played in the game", "Nf3", ARROWS.played],
+      ["Opponent's last move", "e5", ARROWS.opponent],
+    ]);
+    // A slot that is not legal here, or absent, draws nothing; the promotion piece rides in the SAN.
+    expect(buildLearnRevealArrows({ fen: fenSequence[2], committedMove: "O-O", engineMove: "--" }).rows).toEqual([]);
+  });
+
+  it("appendBookArrow draws once per pair and reports whether it drew", () => {
+    const base = [{ startSquare: "f1", endSquare: "c4", color: ARROWS.engine }];
+    expect(appendBookArrow(base, fenSequence[2], "Bc4")).toEqual({ arrows: base, drew: false });
+    const added = appendBookArrow(base, fenSequence[2], "Bb5");
+    expect(added.drew).toBe(true);
+    expect(added.arrows.map((a) => a.color)).toEqual([ARROWS.engine, ARROWS.book]);
+    expect(appendBookArrow(base, fenSequence[2], null)).toEqual({ arrows: base, drew: false });
+    expect(appendBookArrow(base, fenSequence[2], "O-O").drew).toBe(false);
   });
 });
