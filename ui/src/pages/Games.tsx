@@ -246,7 +246,7 @@ export default function Games() {
       g.variant === "standard" && filters ? (
         <a
           href={`/review/${g.id}`}
-          className="text-xs underline"
+          className="whitespace-nowrap text-xs underline"
           onClick={(e) => {
             // The scroll position is read at the click, not at render: the table renders once and
             // the player scrolls afterwards.
