@@ -12,7 +12,7 @@ function heldApi(initial: Row) {
   const hold = <T>(value: () => T) => new Promise<T>((resolve) => releases.push(() => resolve(value())));
   vi.stubGlobal(
     "fetch",
-    vi.fn((url: string, init?: RequestInit) => {
+    vi.fn((_url: string, init?: RequestInit) => {
       const ok = (body: Row) => ({ ok: true, status: 200, json: async () => body });
       if (init?.method === "PUT") {
         return hold(() => {
