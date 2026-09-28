@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { Link, useLocation } from "react-router";
 import { useApi } from "../hooks/useApi";
 import { GROUP_BY_LABELS, GROUP_BY_MODES, OPENING_ALL, REVIEW_TIME_CLASS_LABELS, bookRelationLabel, countLabel, getPoolEvents, getReviewPage, isStaleOpeningError, pieceLabelDisplay, pieceOrTheme, prettyToken, touchPoolShown } from "../review";
 import type { GroupByMode, OpeningFamily, OpeningSubgroup, PoolCategory, ReviewGameRow, ReviewPool, ReviewTimeClass, ReviewedScope } from "../review";
@@ -14,8 +15,9 @@ import { daysAgo } from "../blunders";
  * the Focus-opening and Group-by controls; every other category opens collapsed. Opening a node
  * loads its first page of games lazily and stamps the node shown (best effort) so the
  * representative rotates. A focused opening that no longer has review games (422 from the server)
- * resets to All openings with a one-line notice; any other error stays an error. A game row opens
- * the game on its platform in a new tab.
+ * resets to All openings with a one-line notice; any other error stays an error. A game row's
+ * "Review →" opens the game's review at its anchor ply, carrying this page's location so the
+ * review's Close returns here; the Lost wins list shows fifty games at a time.
  *
  * Every request belongs to a view. A drill request belongs to the drill view (a generation bumped
  * by each scope or server-param change, the stale-opening recovery and unmount); the page request
@@ -56,7 +58,34 @@ function Chevron({ open }: { open: boolean }) {
 
 // --- The game table (one row per game) ------------------------------------------------------------
 
+const LOST_WINS_STEP = 50;
+
+/** The Lost wins games, fifty at a time: the rows are all in the page response, so "Show more"
+ *  reveals the next fifty without a request. A scope change starts again from the first fifty. */
+function LostWinsList({ rows, scope }: { rows: ReviewGameRow[]; scope: ReviewedScope }) {
+  const [shown, setShown] = useState(LOST_WINS_STEP);
+  const [shownScope, setShownScope] = useState(scope);
+  if (shownScope !== scope) {
+    setShownScope(scope);
+    setShown(LOST_WINS_STEP);
+  }
+  const remaining = rows.length - shown;
+  return (
+    <>
+      <GameTable rows={rows.slice(0, shown)} showBestMove={false} scope={scope} />
+      {remaining > 0 && (
+        <button type="button" onClick={() => setShown((n) => n + LOST_WINS_STEP)} className="mt-2 text-xs underline">
+          Show {Math.min(remaining, LOST_WINS_STEP)} more ({remaining} remaining)
+        </button>
+      )}
+    </>
+  );
+}
+
+/** The one place the link into a game's review is built: the anchor ply, and where to come back to. */
 function GameTable({ rows, showBestMove, scope }: { rows: ReviewGameRow[]; showBestMove: boolean; scope: ReviewedScope }) {
+  const location = useLocation();
+  const from = { pathname: location.pathname, search: location.search };
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-left text-xs">
@@ -76,13 +105,9 @@ function GameTable({ rows, showBestMove, scope }: { rows: ReviewGameRow[]; showB
           {rows.map((e) => (
             <tr key={`${e.chess_game_id}:${e.anchor_ply}`} className="border-t border-zinc-200 dark:border-zinc-800">
               <td className="py-1 pr-2 whitespace-nowrap">
-                {e.url ? (
-                  <a href={e.url} target="_blank" rel="noreferrer" className="underline">
-                    Open game ↗︎
-                  </a>
-                ) : (
-                  <span className="text-zinc-400">No link</span>
-                )}
+                <Link to={`/review/${e.chess_game_id}?ply=${e.anchor_ply}`} state={{ from }} className="underline">
+                  Review →
+                </Link>
               </td>
               <td className="py-1 pr-2">
                 {e.opponent_username || "—"}
@@ -490,7 +515,7 @@ export default function Review() {
               {catVisible(data.categories.lost_wins.total_games, data.categories.lost_wins.to_review_games) && (
                 <CategorySection title="Lost wins" count={countLabel(scope, data.categories.lost_wins.total_games, data.categories.lost_wins.to_review_games)} open={openCats.has(CAT.lostWins)} onToggle={() => toggleCat(CAT.lostWins)}>
                   <p className="mb-2 text-xs text-zinc-500">Games I was winning and didn't convert — from the review corpus.</p>
-                  <GameTable rows={scope === "to_review" ? data.categories.lost_wins.games.filter((g) => !g.reviewed) : data.categories.lost_wins.games} showBestMove={false} scope={scope} />
+                  <LostWinsList rows={scope === "to_review" ? data.categories.lost_wins.games.filter((g) => !g.reviewed) : data.categories.lost_wins.games} scope={scope} />
                 </CategorySection>
               )}
             </div>

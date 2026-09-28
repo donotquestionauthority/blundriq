@@ -310,6 +310,10 @@ class Settings(BaseModel):
     review_recency_half_life_games: int = Field(
         default=200, ge=10, description="Half-life (games) for recency weighting."
     )
+    review_default_mode: Literal["learn", "review"] = Field(
+        default="learn", description="Mode the game review opens in."
+    )
+    review_show_timer: bool = Field(default=True, description="Time Learn-mode reps.")
 
     # --- Explore / AI ----------------------------------------------------
     explore_engine_depth: int = Field(

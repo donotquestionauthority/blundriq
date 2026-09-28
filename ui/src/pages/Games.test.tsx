@@ -1,7 +1,25 @@
 import { render, screen, fireEvent } from "@testing-library/react";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { vi, describe, it, expect } from "vitest";
 import Games from "./Games";
 import { buildQuery, pgnOf, sortGames, type Game } from "../games";
+
+/** The page in a router; `state` is what a closing review hands back. */
+function renderGames(state?: unknown) {
+  return render(
+    <MemoryRouter initialEntries={[{ pathname: "/games", state }]}>
+      <Routes>
+        <Route path="/games" element={<Games />} />
+        <Route path="/review/:gameId" element={<ReviewStub />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+function ReviewStub() {
+  const location = useLocation();
+  return <pre data-testid="review-state">{JSON.stringify(location.state)}</pre>;
+}
 
 const game = (over: Partial<Game>): Game => ({
   id: 1,
@@ -70,7 +88,7 @@ describe("Games page", () => {
         });
       }),
     );
-    render(<Games />);
+    renderGames();
     await screen.findByLabelText("Opponent");
     fireEvent.change(screen.getByLabelText("Opponent"), { target: { value: "zz" } });
     await vi.waitFor(() => expect(resolvers).toHaveLength(2));
@@ -96,7 +114,7 @@ describe("Games page", () => {
         return { ok: true, status: 200, json: async () => body };
       }),
     );
-    render(<Games />);
+    renderGames();
     expect(await screen.findByText("opp")).toBeInTheDocument();
     expect(screen.getByText("1 games · 1W 0L 0D · 100% wins")).toBeInTheDocument();
     expect(screen.getByText(/I deviated · ply 3/)).toBeInTheDocument();
@@ -106,5 +124,66 @@ describe("Games page", () => {
     expect(screen.getByText(/expected/)).toBeInTheDocument();
     const called = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
     expect(called.some((u) => u.includes("/games?since_days=30&page=1"))).toBe(true);
+  });
+
+  it("a standard row has a Review action carrying the page's state, a Chess960 row has none", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        const path = url.replace(/^.*\/api/, "").split("?")[0];
+        const body =
+          path === "/games"
+            ? { games: [game({ id: 1, opponent_username: "std" }), game({ id: 2, opponent_username: "fischer", variant: "chess960" })], summary: { total: 2, wins: 2, losses: 0, draws: 0, win_pct: 100, pages: 3 } }
+            : path === "/settings"
+              ? { games_columns: ["Opponent", "Variant"], games_default_window_days: 30 }
+              : { books: [], chapters: [] };
+        return { ok: true, status: 200, json: async () => body };
+      }),
+    );
+    renderGames();
+    expect(await screen.findByText("fischer")).toBeInTheDocument();
+    const links = screen.getAllByRole("link", { name: "Review →" });
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAttribute("href", "/review/1");
+    fireEvent.change(screen.getByLabelText("Opponent"), { target: { value: "s" } });
+    await vi.waitFor(() => expect((fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.some((c) => String(c[0]).includes("opponent=s"))).toBe(true));
+    Object.defineProperty(window, "scrollY", { configurable: true, value: 1500 });
+    fireEvent.click(screen.getAllByRole("link", { name: "Review →" })[0]);
+    const state = JSON.parse((await screen.findByTestId("review-state")).textContent ?? "{}");
+    expect(state.from).toEqual({ pathname: "/games" });
+    expect(state.games.filters.opponent).toBe("s");
+    expect(state.games.page).toBe(1);
+    expect(state.games.sort).toEqual({ key: "played_at", dir: "desc" });
+    expect(state.games.scrollTop).toBe(1500); // read at the click, after the scroll
+  });
+
+  it("restores the filters, page, sort and scroll a closing review handed back", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        calls.push(url);
+        const path = url.replace(/^.*\/api/, "").split("?")[0];
+        const body =
+          path === "/games"
+            ? { games: [game({ id: 7, opponent_username: "back" })], summary: { total: 300, wins: 1, losses: 0, draws: 0, win_pct: 100, pages: 3 } }
+            : path === "/settings"
+              ? { games_columns: ["Opponent", "Result"], games_default_window_days: 30 }
+              : { books: [], chapters: [] };
+        return { ok: true, status: 200, json: async () => body };
+      }),
+    );
+    const scrollTo = vi.fn();
+    vi.stubGlobal("scrollTo", scrollTo);
+    const filters = { since_days: null, last_n_games: 250, color: "black", result: "", platform: "", variant: "", book: "", chapter: "", deviation: "", opponent: "qq" };
+    renderGames({ from: { pathname: "/games" }, games: { filters, page: 3, sort: { key: "result", dir: "asc" }, scrollTop: 420 } });
+    expect(await screen.findByText("back")).toBeInTheDocument();
+    expect(calls.some((u) => u.includes("/games?last_n_games=250&color=black&opponent=qq&page=3"))).toBe(true);
+    expect(calls.some((u) => u.includes("since_days=30"))).toBe(false);
+    expect(screen.getByText("page 3 of 3")).toBeInTheDocument();
+    expect((screen.getByLabelText("Opponent") as HTMLInputElement).value).toBe("qq");
+    expect(screen.getByRole("button", { name: /Result ↑/ })).toBeInTheDocument();
+    await vi.waitFor(() => expect(scrollTo).toHaveBeenCalledWith(0, 420));
+    expect(scrollTo).toHaveBeenCalledTimes(1);
   });
 });

@@ -150,9 +150,14 @@ export const touchPoolShown = (poolId: string, timeClass: ReviewTimeClass, openi
 /** The one error the page recovers from on its own: the focused opening no longer has review games. */
 export const isStaleOpeningError = (err: unknown): boolean => err instanceof ApiError && err.status === 422 && err.message.includes("unknown opening key");
 
-/** Machine tokens (piece labels, themes, verdicts) as words. */
+/** Machine tokens (piece labels, themes, verdicts) as words: `hangingPiece`, `forced_loss` and
+ *  `mateIn2` read "Hanging piece", "Forced loss" and "Mate in 2". */
 export function prettyToken(s: string): string {
-  const t = s.replace(/_/g, " ");
+  const t = s
+    .replace(/_/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([a-zA-Z])([0-9])/g, "$1 $2")
+    .toLowerCase();
   return t.charAt(0).toUpperCase() + t.slice(1);
 }
 

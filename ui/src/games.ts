@@ -1,4 +1,5 @@
 /** Types and pure helpers for the Games page (kept out of the component file for fast refresh). */
+import { api } from "./api";
 
 export type Game = {
   id: number;
@@ -83,3 +84,151 @@ export function pgnOf(moves: string[] | null): string {
   return moves.map((m, i) => (i % 2 === 0 ? `${i / 2 + 1}. ${m}` : m)).join(" ");
 }
 
+
+// --- the per-game review ------------------------------------------------------------------------
+
+export type ReviewMode = "learn" | "review";
+
+/** One position's stored analysis; `eval` is White-POV centipawns, mate ±10000. */
+export interface PlyAnalysisEntry {
+  ply: number;
+  eval: number | null;
+  best_move: string | null;
+  best_line: string | null;
+}
+
+export interface ReviewBlunder {
+  ply: number;
+  fen: string;
+  move_played: string | null;
+  best_move: string | null;
+  best_line: string | null;
+  post_blunder_line: string | null;
+  cp_loss: number | null;
+  classification: string | null;
+  phase: string | null;
+  /** Distinct analysable games at this board, this one included. */
+  fen_occurrence_count: number;
+}
+
+export type RepertoireStatus = "match" | "agree" | "end_of_line" | "conflict" | "unreadable" | "none" | "not_your_turn";
+
+export interface RepertoireConflictGroup {
+  move: string;
+  book: string | null;
+  chapter: string | null;
+  line_name: string | null;
+  more_lines: number;
+}
+
+export interface RepertoireEntry {
+  status: RepertoireStatus;
+  /** Non-null exactly when the status is `match` or `agree`. */
+  book_move: string | null;
+  book: string | null;
+  chapter: string | null;
+  line_name: string | null;
+  line_ply: number | null;
+  plan: string[];
+  more_lines: number;
+  transposed: boolean | null;
+  conflict: RepertoireConflictGroup[] | null;
+}
+
+/** `null` means not computed (no active repertoire of this colour, or a failure); a populated map
+ *  has an entry at every ply, so coverage is read from `status`, never from a key's presence. */
+export interface RepertoireProjection {
+  by_ply: Record<string, RepertoireEntry>;
+}
+
+export interface ReviewGame {
+  id: number;
+  url: string | null;
+  source: "chesscom" | "lichess";
+  played_at: string | null;
+  time_control: string | null;
+  time_class: string | null;
+  opening_name: string | null;
+  opening_eco: string | null;
+  termination: string | null;
+  variant: "standard" | "chess960";
+  starting_fen: string | null;
+  moves: string[] | null;
+  fen_sequence: string[] | null;
+  analysis_status: string;
+  analysis_depth: number | null;
+  ply_analysis: PlyAnalysisEntry[] | null;
+  ply_analysis_depth: number | null;
+  analyzed: boolean;
+  player_color: "white" | "black";
+  opponent_username: string | null;
+  opponent_rating: number | null;
+  player_rating: number | null;
+  result: "win" | "loss" | "draw" | null;
+  reviewed_at: string | null;
+  /** The moves are no longer stored (housekeeping): the page shows a card, not a board. */
+  out_of_window: boolean;
+}
+
+export interface GameReviewResponse {
+  game: ReviewGame;
+  blunders: ReviewBlunder[];
+  repertoire: RepertoireProjection | null;
+}
+
+export const getGameReview = (gameId: number) => api.get<GameReviewResponse>(`/games/${gameId}/review`);
+export const markGameReviewed = (gameId: number) => api.post<unknown>(`/games/${gameId}/reviewed`);
+
+export interface LearnCommitBody {
+  attempt_id: string;
+  ply: number;
+  committed_move: string;
+  /** Present exactly when the rep was timed. */
+  elapsed_ms?: number;
+}
+export const learnCommit = (gameId: number, body: LearnCommitBody) => api.post<{ id: number; created: boolean }>(`/games/${gameId}/learn-commit`, body);
+
+export interface ReviewPrefs {
+  review_default_mode: ReviewMode;
+  review_show_timer: boolean;
+}
+
+const asMode = (v: unknown): ReviewMode => (v === "review" ? "review" : "learn");
+
+/** The two Review fields of the settings row; a malformed value reads as the non-spoiling default. */
+export const getReviewPrefs = () => api.get<Record<string, unknown>>("/settings").then((s) => ({ review_default_mode: asMode(s.review_default_mode), review_show_timer: s.review_show_timer !== false }));
+
+/**
+ * Settings are one row and the API has no partial update, so a write is read → change the
+ * field → write back. Writes are serialised through one chain and their patches coalesced:
+ * two controls changed while a save is in flight would otherwise each read the original row
+ * and the second write would put the first field back. Every call resolves once its own
+ * patch has been written, and rejects if that write failed.
+ */
+let pending: Partial<ReviewPrefs> = {};
+let waiters: { resolve: () => void; reject: (e: unknown) => void }[] = [];
+let inFlight: Promise<void> | null = null;
+
+function flushPrefs(): Promise<void> {
+  const patch = pending;
+  const mine = waiters;
+  pending = {};
+  waiters = [];
+  return api
+    .get<Record<string, unknown>>("/settings")
+    .then((s) => api.put<Record<string, unknown>>("/settings", { ...s, ...patch }))
+    .then(
+      () => mine.forEach((w) => w.resolve()),
+      (e: unknown) => mine.forEach((w) => w.reject(e)),
+    )
+    .then(() => {
+      inFlight = waiters.length ? flushPrefs() : null;
+    });
+}
+
+export function setReviewPref(patch: Partial<ReviewPrefs>): Promise<void> {
+  pending = { ...pending, ...patch };
+  const done = new Promise<void>((resolve, reject) => waiters.push({ resolve, reject }));
+  if (!inFlight) inFlight = flushPrefs();
+  return done;
+}
