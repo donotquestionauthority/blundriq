@@ -27,8 +27,23 @@ function ConfidenceBadge({ confidence }: { confidence: "high" | "low" }) {
   return confidence === "high" ? <span className="whitespace-nowrap rounded-full border border-emerald-600/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-700 dark:text-emerald-400">High</span> : <span className="whitespace-nowrap rounded-full border border-zinc-300 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-500 dark:border-zinc-700">Low</span>;
 }
 
+/** Count, severity and badge; wraps under the label on a phone instead of pushing past the screen. */
+function Meta({ count, severity, confidence }: { count: string; severity?: number; confidence?: "high" | "low" }) {
+  return (
+    <span className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-1">
+      <span className="whitespace-nowrap text-xs tabular-nums text-zinc-500">{count}</span>
+      {severity !== undefined && (
+        <span className="whitespace-nowrap text-xs tabular-nums text-zinc-600 dark:text-zinc-400" title={SEVERITY_TITLE}>
+          Severity {severity.toFixed(1)}
+        </span>
+      )}
+      {confidence && <ConfidenceBadge confidence={confidence} />}
+    </span>
+  );
+}
+
 function Chevron({ open }: { open: boolean }) {
-  return <span className={`inline-block w-3 text-xs text-zinc-400 transition-transform ${open ? "rotate-90" : ""}`}>▶</span>;
+  return <span className={`inline-block w-3 text-xs text-zinc-400 transition-transform ${open ? "rotate-90" : ""}`}>▸</span>;
 }
 
 // --- The game table (one row per game) ------------------------------------------------------------
@@ -43,7 +58,7 @@ function GameTable({ rows, showBestMove, scope }: { rows: ReviewGameRow[]; showB
             <th className="py-1 font-normal">Opponent</th>
             <th className="py-1 font-normal">Date</th>
             <th className="py-1 font-normal">Phase</th>
-            <th className="py-1 text-right font-normal">Cost</th>
+            <th className="py-1 pr-4 text-right font-normal">Cost</th>
             <th className="py-1 font-normal">Piece / theme</th>
             {showBestMove && <th className="py-1 font-normal">Best</th>}
             {scope === "all" && <th className="py-1 font-normal">Status</th>}
@@ -55,7 +70,7 @@ function GameTable({ rows, showBestMove, scope }: { rows: ReviewGameRow[]; showB
               <td className="py-1 pr-2 whitespace-nowrap">
                 {e.url ? (
                   <a href={e.url} target="_blank" rel="noreferrer" className="underline">
-                    Open game ↗
+                    Open game ↗︎
                   </a>
                 ) : (
                   <span className="text-zinc-400">No link</span>
@@ -67,7 +82,7 @@ function GameTable({ rows, showBestMove, scope }: { rows: ReviewGameRow[]; showB
               </td>
               <td className="py-1 pr-2 whitespace-nowrap text-zinc-500">{daysAgo(e.played_at) ?? "—"}</td>
               <td className="py-1 pr-2 whitespace-nowrap text-zinc-500">{e.phase ? prettyToken(e.phase) : "—"}</td>
-              <td className="py-1 pr-2 text-right font-mono font-semibold text-orange-600 dark:text-orange-400">{e.cost.toFixed(1)}</td>
+              <td className="py-1 pr-4 text-right font-mono font-semibold text-orange-600 dark:text-orange-400">{e.cost.toFixed(1)}</td>
               <td className="py-1 pr-2 whitespace-nowrap text-zinc-500">{pieceOrTheme(e)}</td>
               {showBestMove && <td className="py-1 pr-2 font-mono text-emerald-600 dark:text-emerald-400">{e.best_move ?? "—"}</td>}
               {scope === "all" && <td className="py-1 whitespace-nowrap text-[10px]">{e.reviewed ? <span className="font-medium text-emerald-600 dark:text-emerald-400">✓ reviewed</span> : <span className="text-zinc-400">—</span>}</td>}
@@ -135,17 +150,13 @@ function DrillDown({ state, onLoadMore, showBestMove, scope }: { state: NodeEven
 function NodeRow({ label, sublabel, count, severity, confidence, isOpening, representative, open, onToggle, state, onLoadMore, scope }: { label: string; sublabel: string | null; count: string; severity: number; confidence: "high" | "low"; isOpening: boolean; representative: ReviewGameRow; open: boolean; onToggle: () => void; state: NodeEventsState | undefined; onLoadMore: () => void; scope: ReviewedScope }) {
   return (
     <div className="rounded border border-zinc-200 dark:border-zinc-800">
-      <button type="button" onClick={onToggle} aria-expanded={open} className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-zinc-50 dark:hover:bg-zinc-900">
+      <button type="button" onClick={onToggle} aria-expanded={open} className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-left hover:bg-zinc-50 dark:hover:bg-zinc-900">
         <Chevron open={open} />
-        <span className="min-w-0 flex-1">
+        <span className="min-w-0 grow basis-48">
           <span className="block truncate text-sm font-medium">{label}</span>
           {sublabel && <span className="block truncate text-xs text-zinc-500">{sublabel}</span>}
         </span>
-        <span className="whitespace-nowrap text-xs tabular-nums text-zinc-500">{count}</span>
-        <span className="whitespace-nowrap text-xs tabular-nums text-zinc-600 dark:text-zinc-400" title={SEVERITY_TITLE}>
-          Severity {severity.toFixed(1)}
-        </span>
-        <ConfidenceBadge confidence={confidence} />
+        <Meta count={count} severity={severity} confidence={confidence} />
       </button>
       {open && (
         <div className="border-t border-zinc-200 px-3 py-2 dark:border-zinc-800">
@@ -162,14 +173,10 @@ function FamilyRow({ family, open, onToggle, scope, renderSubgroup }: { family: 
   const subgroups = scope === "to_review" ? family.subgroups.filter((s) => s.to_review_games > 0) : family.subgroups;
   return (
     <div className="rounded border border-zinc-200 dark:border-zinc-800">
-      <button type="button" onClick={onToggle} aria-expanded={open} className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-zinc-50 dark:hover:bg-zinc-900">
+      <button type="button" onClick={onToggle} aria-expanded={open} className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-left hover:bg-zinc-50 dark:hover:bg-zinc-900">
         <Chevron open={open} />
-        <span className="min-w-0 flex-1 truncate text-sm font-medium">{family.label}</span>
-        <span className="whitespace-nowrap text-xs tabular-nums text-zinc-500">{countLabel(scope, family.total_games, family.to_review_games)}</span>
-        <span className="whitespace-nowrap text-xs tabular-nums text-zinc-600 dark:text-zinc-400" title={SEVERITY_TITLE}>
-          Severity {family.severity.toFixed(1)}
-        </span>
-        <ConfidenceBadge confidence={family.confidence} />
+        <span className="min-w-0 grow basis-48 truncate text-sm font-medium">{family.label}</span>
+        <Meta count={countLabel(scope, family.total_games, family.to_review_games)} severity={family.severity} confidence={family.confidence} />
       </button>
       {open && <div className="space-y-2 border-t border-zinc-200 px-2 py-2 dark:border-zinc-800">{subgroups.length === 0 ? <p className="py-1 text-sm text-zinc-500">Nothing to review in this opening.</p> : subgroups.map(renderSubgroup)}</div>}
     </div>
@@ -180,16 +187,10 @@ function FamilyRow({ family, open, onToggle, scope, renderSubgroup }: { family: 
 function CategorySection({ title, count, open, onToggle, children, severity, confidence }: { title: string; count: string; open: boolean; onToggle: () => void; children: ReactNode; severity?: number; confidence?: "high" | "low" }) {
   return (
     <section className="rounded-lg border border-zinc-200 dark:border-zinc-800">
-      <button type="button" onClick={onToggle} aria-expanded={open} className="flex w-full items-center gap-3 px-3 py-3 text-left sm:px-4">
+      <button type="button" onClick={onToggle} aria-expanded={open} className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 px-3 py-3 text-left sm:px-4">
         <Chevron open={open} />
-        <h2 className="flex-1 text-base font-semibold sm:text-lg">{title}</h2>
-        <span className="whitespace-nowrap text-xs tabular-nums text-zinc-500">{count}</span>
-        {severity !== undefined && (
-          <span className="whitespace-nowrap text-xs tabular-nums text-zinc-600 dark:text-zinc-400" title={SEVERITY_TITLE}>
-            Severity {severity.toFixed(1)}
-          </span>
-        )}
-        {confidence && <ConfidenceBadge confidence={confidence} />}
+        <h2 className="min-w-0 grow basis-48 text-base font-semibold sm:text-lg">{title}</h2>
+        <Meta count={count} severity={severity} confidence={confidence} />
       </button>
       {open && <div className="space-y-2 px-3 pb-4 sm:px-4">{children}</div>}
     </section>

@@ -10,7 +10,7 @@ export function ReviewedScopeToggle({ value, onChange }: { value: ReviewedScope;
   return (
     <div className="text-xs text-zinc-500">
       Show
-      <div role="tablist" aria-label="Reviewed scope" className="mt-1 inline-flex rounded border border-zinc-300 p-0.5 dark:border-zinc-700">
+      <div role="tablist" aria-label="Reviewed scope" className="mt-1 flex w-fit rounded border border-zinc-300 p-0.5 dark:border-zinc-700">
         {OPTIONS.map((o) => {
           const active = o.key === value;
           return (

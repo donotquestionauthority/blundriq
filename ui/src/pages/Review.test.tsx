@@ -196,7 +196,7 @@ describe("Review worklist", () => {
   it("a game row opens the game on its platform in a new tab (8c replaces it with the in-app review)", async () => {
     renderPage();
     fireEvent.click(await screen.findByText("Lost wins"));
-    const link = (await screen.findAllByRole("link", { name: "Open game ↗" }))[0];
+    const link = (await screen.findAllByRole("link", { name: "Open game ↗︎" }))[0];
     expect(link).toHaveAttribute("href", "https://example.test/301");
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noreferrer");
