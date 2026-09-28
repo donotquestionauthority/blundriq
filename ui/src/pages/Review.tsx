@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useApi } from "../hooks/useApi";
 import { GROUP_BY_LABELS, GROUP_BY_MODES, OPENING_ALL, REVIEW_TIME_CLASS_LABELS, bookRelationLabel, countLabel, getPoolEvents, getReviewPage, isStaleOpeningError, pieceLabelDisplay, pieceOrTheme, prettyToken, touchPoolShown } from "../review";
@@ -15,7 +15,12 @@ import { daysAgo } from "../blunders";
  * loads its first page of games lazily and stamps the node shown (best effort) so the
  * representative rotates. A focused opening that no longer has review games (422 from the server)
  * resets to All openings with a one-line notice; any other error stays an error. A game row opens
- * the game on its platform until the per-game review page arrives (8c).
+ * the game on its platform in a new tab.
+ *
+ * Every drill request belongs to a view: a generation bumped by each scope or server-param change,
+ * the stale-opening recovery and unmount. A response from an earlier view is dropped, success or
+ * failure, so a slow request can neither overwrite a fresh drill-down nor restore page 2 alone
+ * after an A → B → A round trip of the same filters.
  *
  * Filter, scope and expansion state are per session; nothing is remembered.
  */
@@ -211,26 +216,32 @@ export default function Review() {
   const [openNodes, setOpenNodes] = useState<Set<string>>(new Set());
   const [eventsByNode, setEventsByNode] = useState<Record<string, NodeEventsState>>({});
 
+  // The view generation: bumped (in event handlers, never during render) whenever what is on
+  // screen changes so that an outstanding request no longer describes it. A request captures the
+  // generation it was made for and is ignored unless it is still the current one.
+  const viewGen = useRef(0);
+  const nextView = () => {
+    viewGen.current += 1;
+  };
+  useEffect(() => () => nextView(), []);
+
   // A focused opening that no longer has review games: back to All openings, everything but the
   // Opening section collapsed (its ids are opening-scoped), one line saying why.
   const recoverToAllOpenings = useCallback(() => {
+    nextView();
     setOpening(OPENING_ALL);
     setOpenCats(new Set([CAT.opening]));
     setOpenNodes(new Set());
     setNotice("That opening no longer has review games — showing all openings.");
   }, []);
 
-  // The params on screen right now. A request recovers only if it was made for these: a 422
-  // that arrives for a focus the user has since left must not undo their newer choice.
-  const current = useRef({ timeClass, opening });
-  current.current = { timeClass, opening };
-  const stillCurrent = (tc: ReviewTimeClass, op: string) => current.current.timeClass === tc && current.current.opening === op;
-
   const fetchPage = useCallback(async () => {
+    const gen = viewGen.current;
     try {
       return await getReviewPage(timeClass, opening, groupBy);
     } catch (err) {
-      if (isStaleOpeningError(err) && opening !== OPENING_ALL && stillCurrent(timeClass, opening)) {
+      // A 422 for a focus the user has since left must not undo their newer choice.
+      if (isStaleOpeningError(err) && opening !== OPENING_ALL && gen === viewGen.current) {
         recoverToAllOpenings();
         return await getReviewPage(timeClass, OPENING_ALL, groupBy);
       }
@@ -244,9 +255,11 @@ export default function Review() {
 
   function loadEvents(nodeId: string, page: number) {
     const key = cacheKey(nodeId);
+    const gen = viewGen.current;
     setEventsByNode((prev) => ({ ...prev, [key]: { loading: true, error: null, rows: prev[key]?.rows ?? [], total: prev[key]?.total ?? 0, page: prev[key]?.page ?? 0 } }));
     getPoolEvents(nodeId, timeClass, opening, scope, page)
       .then((res) => {
+        if (gen !== viewGen.current) return;
         setEventsByNode((prev) => {
           const cur = prev[key];
           const rows = page === 1 ? res.events : [...(cur?.rows ?? []), ...res.events];
@@ -254,8 +267,9 @@ export default function Review() {
         });
       })
       .catch((err: unknown) => {
+        if (gen !== viewGen.current) return;
         // The opening went stale between the page fetch and this drill: recover at the page level.
-        if (isStaleOpeningError(err) && opening !== OPENING_ALL && stillCurrent(timeClass, opening)) {
+        if (isStaleOpeningError(err) && opening !== OPENING_ALL) {
           recoverToAllOpenings();
           return;
         }
@@ -315,6 +329,7 @@ export default function Review() {
   // A server-param change is a fresh page: ids and memberships are filter-dependent, so everything
   // collapses — except Opening problems, which hosts the controls that were just used.
   function resetExpansion() {
+    nextView();
     setOpenCats(new Set([CAT.opening]));
     setOpenNodes(new Set());
     setEventsByNode({});
@@ -337,6 +352,7 @@ export default function Review() {
   // Scope is client-side: sections stay open, drill-downs collapse and forget their rows so they
   // reload under the new scope. A single-pool category is its own drill-down, so it closes too.
   const changeScope = (next: ReviewedScope) => {
+    nextView();
     setScope(next);
     setOpenNodes(new Set());
     setOpenCats((prev) => new Set([...prev].filter((c) => c !== CAT.endgame && c !== CAT.faded)));

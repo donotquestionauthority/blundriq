@@ -17,8 +17,9 @@ its events a node holds. Counts are distinct games at each node's own boundary, 
 from children. Representative rotation ranks distinct games, so the 24-hour cooldown alternates
 to a *different* game; `review_pool_state` records only when a node was last shown.
 
-Rule 7: the event fetch joins `analysable_sql('cg')`; a `review_events` row for a Chess960 game
-(the writer never produces one) is invisible to every node, count, drill-down and stamp.
+The event fetch joins `analysable_sql('cg')`, the shared eligibility predicate: a `review_events`
+row for a Chess960 game (the writer never produces one) is invisible to every node, count,
+drill-down and stamp.
 """
 
 from __future__ import annotations

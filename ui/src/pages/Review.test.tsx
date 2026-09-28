@@ -193,7 +193,7 @@ describe("Review worklist", () => {
     expect(screen.getByRole("columnheader", { name: "Best" })).toBeInTheDocument();
   });
 
-  it("a game row opens the game on its platform in a new tab (8c replaces it with the in-app review)", async () => {
+  it("a game row opens the game on its platform in a new tab", async () => {
     renderPage();
     fireEvent.click(await screen.findByText("Lost wins"));
     const link = (await screen.findAllByRole("link", { name: "Open game ↗︎" }))[0];
@@ -397,6 +397,71 @@ describe("Review worklist", () => {
     fireEvent.click(await screen.findByText("Main Line"));
     await screen.findByText("magnus_wannabe");
     expect(getPoolEvents).toHaveBeenCalledTimes(2);
+  });
+
+  const deferred = () => {
+    let resolve: (v: unknown) => void = () => undefined;
+    const promise = new Promise((r) => (resolve = r));
+    return { promise, resolve };
+  };
+  const events = (names: string[], page = 1, total = names.length) => ({ events: names.map((n, i) => row({ chess_game_id: 500 + i + page * 10, opponent_username: n, url: `https://example.test/${n}` })), total, page, page_size: 1, total_pages: 2 });
+  const ENDGAME = "v1:route:endgame_technique";
+
+  it("a drill response from before a scope round trip never overwrites the fresh rows", async () => {
+    const held = deferred();
+    getPoolEvents.mockImplementationOnce(() => held.promise);
+    renderPage();
+    fireEvent.click(await screen.findByRole("heading", { name: "Endgame technique" }));
+    await waitFor(() => expect(getPoolEvents).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("tab", { name: "All" }));
+    fireEvent.click(screen.getByRole("tab", { name: "To review" }));
+    getPoolEvents.mockResolvedValueOnce(events(["fresh_one"]));
+    fireEvent.click(screen.getByRole("heading", { name: "Endgame technique" }));
+    await screen.findByText("fresh_one");
+    held.resolve(events(["obsolete_one"]));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByText("fresh_one")).toBeInTheDocument();
+    expect(screen.queryByText("obsolete_one")).toBeNull();
+    expect(screen.queryByText("Loading…")).toBeNull();
+  });
+
+  it("a Load more from before a scope round trip never restores page 2 alone", async () => {
+    getPoolEvents.mockResolvedValueOnce(events(["first_a"], 1, 2));
+    renderPage();
+    fireEvent.click(await screen.findByRole("heading", { name: "Endgame technique" }));
+    await screen.findByText("first_a");
+    const held = deferred();
+    getPoolEvents.mockImplementationOnce(() => held.promise);
+    fireEvent.click(screen.getByRole("button", { name: "Load more (1 of 2)" }));
+    await waitFor(() => expect(getPoolEvents).toHaveBeenLastCalledWith(ENDGAME, "focus", "__all__", "to_review", 2));
+    fireEvent.click(screen.getByRole("tab", { name: "All" }));
+    fireEvent.click(screen.getByRole("tab", { name: "To review" }));
+    held.resolve(events(["second_a"], 2, 2));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByText("second_a")).toBeNull();
+    // Reopening fetches page 1 again; nothing from the old view survives.
+    getPoolEvents.mockResolvedValueOnce(events(["first_b"], 1, 2));
+    fireEvent.click(screen.getByRole("heading", { name: "Endgame technique" }));
+    await waitFor(() => expect(getPoolEvents).toHaveBeenLastCalledWith(ENDGAME, "focus", "__all__", "to_review", 1));
+    await screen.findByText("first_b");
+    expect(screen.queryByText("second_a")).toBeNull();
+    expect(screen.getByRole("button", { name: "Load more (1 of 2)" })).toBeInTheDocument();
+  });
+
+  it("a drill error from before a scope round trip is dropped, not shown on the reopened node", async () => {
+    const held = deferred();
+    getPoolEvents.mockImplementationOnce(() => held.promise);
+    renderPage();
+    fireEvent.click(await screen.findByRole("heading", { name: "Endgame technique" }));
+    fireEvent.click(screen.getByRole("tab", { name: "All" }));
+    fireEvent.click(screen.getByRole("tab", { name: "To review" }));
+    getPoolEvents.mockResolvedValueOnce(events(["fresh_one"]));
+    fireEvent.click(screen.getByRole("heading", { name: "Endgame technique" }));
+    await screen.findByText("fresh_one");
+    held.resolve(Promise.reject(new ApiError(500, "old boom")));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByText("old boom")).toBeNull();
+    expect(screen.getByText("fresh_one")).toBeInTheDocument();
   });
 
   it("the Focus opening list shows each family's to-review count", async () => {
