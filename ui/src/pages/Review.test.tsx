@@ -185,7 +185,7 @@ describe("Review worklist", () => {
     await waitFor(() => expect(getPoolEvents).toHaveBeenCalledWith(SUB, "focus", "__all__", "to_review", 1));
     expect(touchPoolShown).toHaveBeenCalledWith(SUB, "focus", "__all__");
     await screen.findByText("magnus_wannabe");
-    expect(screen.getByText(/\+2 more in this line/)).toBeInTheDocument();
+    expect(screen.getByText(/\+2 more in this game/)).toBeInTheDocument();
     expect(screen.getByText("Book move: c4")).toBeInTheDocument();
     expect(screen.getByText("Best move: Nf3")).toBeInTheDocument();
     expect(screen.getAllByText("You left book first — drill the line").length).toBeGreaterThan(0);
@@ -351,6 +351,52 @@ describe("Review worklist", () => {
     fireEvent.click(await screen.findByText("Main Line"));
     await screen.findByText(/no longer has review games/);
     await waitFor(() => expect(combo("Focus opening").value).toBe("__all__"));
+  });
+
+  it("a 422 for a focus the user has since left never undoes the newer choice", async () => {
+    let rejectScandi: (e: unknown) => void = () => undefined;
+    getReviewPage.mockImplementation((_t: string, opening: string) => {
+      if (opening === "Scandinavian") return new Promise((_, reject) => (rejectScandi = reject));
+      return Promise.resolve(page({ filter: { ...page().filter, openings: [...page().filter.openings, { key: "Italian", label: "Italian", to_review_games: 2 }] } }));
+    });
+    renderPage();
+    await screen.findByText("Opening problems");
+    fireEvent.change(combo("Focus opening"), { target: { value: "Scandinavian" } });
+    await waitFor(() => expect(lastPageCall()).toEqual(["focus", "Scandinavian", "variation"]));
+    fireEvent.change(combo("Focus opening"), { target: { value: "Italian" } });
+    await waitFor(() => expect(lastPageCall()).toEqual(["focus", "Italian", "variation"]));
+    await screen.findByText(/focused: Italian/);
+    rejectScandi(new ApiError(422, "unknown opening key: 'Scandinavian'"));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(combo("Focus opening").value).toBe("Italian");
+    expect(screen.queryByText(/no longer has review games/)).toBeNull();
+    expect(getReviewPage.mock.calls.map((c) => c[1]).filter((o) => o === "__all__")).toHaveLength(1);
+  });
+
+  it("a single-pool category left open across a scope change reloads under the new scope", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("heading", { name: "Endgame technique" }));
+    await screen.findByText("magnus_wannabe");
+    fireEvent.click(screen.getByRole("tab", { name: "All" }));
+    // Closed, not stuck on "Loading…"; opening it again fetches under the new scope.
+    expect(screen.queryByText("magnus_wannabe")).toBeNull();
+    expect(screen.queryByText("Loading…")).toBeNull();
+    fireEvent.click(screen.getByRole("heading", { name: "Endgame technique" }));
+    await waitFor(() => expect(getPoolEvents).toHaveBeenLastCalledWith("v1:route:endgame_technique", "focus", "__all__", "all", 1));
+    await screen.findByText("magnus_wannabe");
+  });
+
+  it("a scope round trip refetches a drill-down instead of serving rows from before", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByText("Scandinavian"));
+    fireEvent.click(await screen.findByText("Main Line"));
+    await screen.findByText("magnus_wannabe");
+    fireEvent.click(screen.getByRole("tab", { name: "All" }));
+    fireEvent.click(screen.getByRole("tab", { name: "To review" }));
+    fireEvent.click(screen.getByText("Scandinavian"));
+    fireEvent.click(await screen.findByText("Main Line"));
+    await screen.findByText("magnus_wannabe");
+    expect(getPoolEvents).toHaveBeenCalledTimes(2);
   });
 
   it("the Focus opening list shows each family's to-review count", async () => {

@@ -161,8 +161,8 @@ def fetch_events(conn: Connection[Any], time_class: str, focus: str) -> list[Eve
 def _enrich_opening_events(conn: Connection[Any], rows: list[dict[str, Any]]) -> None:
     """Opening nodes show the correct move: `best_move` / `best_line` from the blunders row at the
     same anchor, `expected_move` / `deviated_at_ply` from the game's repertoire result. Every key
-    is always present, NULL when there is nothing; one batched query per call. DISTINCT ON guards
-    the unconstrained blunders side (the lowest id wins)."""
+    is always present, NULL when there is nothing; one batched query per call. DISTINCT ON keeps
+    one row per requested (game, ply) whatever the input repeats."""
     if not rows:
         return
     found = conn.execute(
@@ -189,10 +189,11 @@ def _enrich_opening_events(conn: Connection[Any], rows: list[dict[str, Any]]) ->
 
 def _repertoire_ctx(conn: Connection[Any], gids: list[int]) -> dict[int, dict[str, Any] | None]:
     """The line each game is grouped under in "by repertoire": the game's deepest matched line
-    (max matched_ply, then the lowest line_id — the matcher's own tie-break, so the subgroup
-    agrees with the event's stored `line:` pool key). Every requested id is present (None: no
-    match recorded). Labels are LEFT-joined; a match whose labels no longer join is a
-    "Retired line", never mistaken for an unprepared game."""
+    (max matched_ply, then the lowest line_id — the matcher's own tie-break, the same selection
+    `core.review.window` makes for the event's `line:` pool key). Every requested id is present
+    (None: no match recorded). Labels are LEFT-joined; a match whose labels no longer join is a
+    "Retired line", never mistaken for an unprepared game. Lines are never deleted (their
+    puzzles' SRS state would go with them), so the two reads name the same line."""
     ctx: dict[int, dict[str, Any] | None] = {gid: None for gid in gids}
     if not gids:
         return ctx
@@ -313,7 +314,7 @@ def _distinct_to_review_games(members: list[Event]) -> int:
 
 def _game_rep_anchor(events_of_game: list[Event], half_life: int) -> Event:
     """A game's representative anchor: its highest cost × recency event; ties to the most recent,
-    the later ply, the higher id."""
+    then the earlier ply (the old key), then the higher id."""
     return max(
         events_of_game,
         key=lambda e: (_score(e, half_life), -e["recency_rank"], -(e["anchor_ply"] or 0), e["chess_game_id"]),
@@ -342,7 +343,7 @@ def collapse_to_games(members: list[Event], half_life: int) -> list[dict[str, An
 
 
 def _rank_games(collapsed: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Worst first: score DESC, then most recent, later ply, higher id."""
+    """Worst first: score DESC, then most recent, earlier ply, higher id."""
     return sorted(
         collapsed,
         key=lambda g: (g["score"], -g["rep"]["recency_rank"], -(g["rep"]["anchor_ply"] or 0), g["game_id"]),

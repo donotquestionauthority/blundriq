@@ -251,12 +251,15 @@ def corpus(clean: psycopg.Connection[DictRow]) -> psycopg.Connection[DictRow]:
     a won endgame-only game; a faded loss; and a Chess960 game carrying a planted row."""
     conn = clean
     for gid in range(1, 6):
-        game(conn, gid, days_ago=gid, reviewed=gid == 5)
+        # The reviewed game is the newest, so fetch order is not the drill-down's order.
+        game(conn, gid, days_ago=0.5 if gid == 5 else gid, reviewed=gid == 5)
         plant(conn, gid, 8, candidate=True, pool_key="line:1", cost=20 - gid, book_relation="deviation_before")
-    plant(conn, 1, 40, piece="rook", cost=30)
+    plant(conn, 1, 40, piece="rook", cost=3)
     game(conn, 6, days_ago=6, family="Italian", variation="Giuoco")
-    plant(conn, 6, 6, candidate=True, pool_key="line:2", cost=5, board_key=8)
-    plant(conn, 6, 10, candidate=True, pool_key="line:2", cost=4, board_key=9)
+    plant(conn, 6, 6, candidate=True, pool_key="line:2", cost=4, board_key=8)
+    plant(conn, 6, 10, candidate=True, pool_key="line:2", cost=5, board_key=9)
+    game(conn, 11, days_ago=11, family="Caro-Kann Defense", variation="Advance")
+    plant(conn, 11, 8, candidate=True, pool_key="line:3", cost=3)
     game(conn, 7, days_ago=7, time_class="blitz", family=None, variation=None)
     plant(conn, 7, 12, candidate=True, pool_key="eco:B01", cost=9)
     game(conn, 8, days_ago=8, result="win")
@@ -267,18 +270,36 @@ def corpus(clean: psycopg.Connection[DictRow]) -> psycopg.Connection[DictRow]:
     plant(conn, 10, 8, candidate=True, pool_key="line:1", cost=99, board_key=5)
     conn.execute(
         "INSERT INTO blunders (player_id, chess_game_id, ply, fen, classification, best_move, best_line)"
-        " VALUES (%s, 1, 8, 'x', 'blunder', 'Nf3', 'Nf3 e6 Bd3')",
-        (PLAYER_ID,),
+        " VALUES (%s, 1, 4, 'w', 'mistake', 'Nc3', NULL), (%s, 1, 8, 'x', 'blunder', 'Nf3', 'Nf3 e6 Bd3')",
+        (PLAYER_ID, PLAYER_ID),
     )
     return conn
+
+
+def test_fetch_ranks_games_densely_in_window_order(corpus: psycopg.Connection[DictRow]) -> None:
+    rows = read.fetch_events(corpus, "focus", "rapid_plus")
+    ranks = [(r["chess_game_id"], r["anchor_ply"], r["recency_rank"]) for r in rows]
+    assert ranks[:4] == [(5, 8, 0), (1, 8, 1), (1, 40, 1), (2, 8, 2)]  # one rank per game, plies in order
+    assert max(r["recency_rank"] for r in rows) == len({r["chess_game_id"] for r in rows}) - 1
+
+
+def test_book_relation_verdict_ties_lexically() -> None:
+    members = [
+        ev(i, book_relation=r) for i, r in enumerate(["post_book", "deviation_before", "post_book", "deviation_before"])
+    ]
+    assert read._book_relation_verdict(members) == "deviation_before"
+    members.append(ev(9, book_relation="post_book"))
+    assert read._book_relation_verdict(members) == "post_book"
+    assert read._book_relation_verdict([ev(1)]) is None
 
 
 def test_page_over_the_corpus(corpus: psycopg.Connection[DictRow]) -> None:
     p = read.page(corpus, Settings(), now=NOW)
     cats = p["categories"]
-    assert p["page"] == {"total_games": 8, "to_review_games": 7}  # the blitz and Chess960 games are out
+    assert p["page"] == {"total_games": 9, "to_review_games": 8}  # the blitz and Chess960 games are out
     assert p["filter"]["time_class"] == "focus"
-    assert [o["key"] for o in p["filter"]["openings"]] == ["__all__", "Scandinavian", "Italian"]
+    # Worst first by games to review, then by name: not the order the families were met in.
+    assert [o["key"] for o in p["filter"]["openings"]] == ["__all__", "Scandinavian", "Caro-Kann Defense", "Italian"]
     assert p["filter"]["openings"][1]["to_review_games"] == 4
 
     (fam,) = cats["opening"]["families"]
@@ -293,13 +314,14 @@ def test_page_over_the_corpus(corpus: psycopg.Connection[DictRow]) -> None:
     assert rep["expected_move"] is None and rep["displayed_route"] == "opening"
     assert 0 < sub["severity"] < sub["raw_severity"]
 
-    # The Italian pair (2 < 5) and the late rook stay in Tactical oversights, by piece.
+    # The thin lines (2 and 1 < 5) and the late rook stay in Tactical oversights, by piece, worst
+    # first: the rook event was met first (newest game) but the knights outweigh it.
+    assert [p["label"] for p in cats["oversights"]["defense"]["pools"]] == ["knight", "rook"]
     defense = {p["label"]: p for p in cats["oversights"]["defense"]["pools"]}
-    assert set(defense) == {"knight", "rook"}
-    assert defense["knight"]["total_games"] == 1 and defense["knight"]["event_count"] == 2
+    assert defense["knight"]["total_games"] == 2 and defense["knight"]["event_count"] == 3
     assert defense["rook"]["representative_game"]["anchor_ply"] == 40
     assert defense["rook"]["book_relation_verdict"] is None and defense["rook"]["pool_key"] is None
-    assert cats["oversights"]["total_games"] == 2 and cats["oversights"]["offense"]["pools"] == []
+    assert cats["oversights"]["total_games"] == 3 and cats["oversights"]["offense"]["pools"] == []
 
     # A won endgame-only game reaches the Endgame pool and the page's counts.
     (eg,) = cats["endgame"]["pools"]
@@ -320,19 +342,28 @@ def test_page_over_the_corpus(corpus: psycopg.Connection[DictRow]) -> None:
 
 def test_all_time_classes_and_a_focused_opening(corpus: psycopg.Connection[DictRow]) -> None:
     p = read.page(corpus, Settings(), time_class="all", now=NOW)
-    assert p["page"]["total_games"] == 9
-    assert [o["key"] for o in p["filter"]["openings"]] == ["__all__", "Scandinavian", "Italian", "__unclassified__"]
+    assert p["page"]["total_games"] == 10
+    assert [o["key"] for o in p["filter"]["openings"]] == [
+        "__all__",
+        "Scandinavian",
+        "Caro-Kann Defense",
+        "Italian",
+        "__unclassified__",
+    ]
     # The eco candidate is one short of nothing: alone it never clears 8, so it is a defense event.
-    assert p["categories"]["oversights"]["total_games"] == 3
+    assert p["categories"]["oversights"]["total_games"] == 4
 
     p = read.page(corpus, Settings(), opening="Italian", group_by="position", now=NOW)
     (fam,) = p["categories"]["opening"]["families"]
     assert fam["label"] == "Italian" and fam["event_count"] == 2 and fam["confidence"] == "low"
     assert [s["kind"] for s in fam["subgroups"]] == ["position", "position"]
     assert {s["label"] for s in fam["subgroups"]} == {"Scandi: Main"}
+    # Subgroups worst first (the costlier later ply was met second).
+    assert [s["representative_game"]["anchor_ply"] for s in fam["subgroups"]] == [10, 6]
+    assert fam["subgroups"][0]["severity"] > fam["subgroups"][1]["severity"]
     # Only Opening problems changed: the base categories and the page totals are untouched.
-    assert p["categories"]["oversights"]["total_games"] == 2
-    assert p["page"]["total_games"] == 8
+    assert p["categories"]["oversights"]["total_games"] == 3
+    assert p["page"]["total_games"] == 9
     with pytest.raises(read.ReviewParamError, match="unknown opening key"):
         read.page(corpus, Settings(), opening="Sicilian", now=NOW)
     with pytest.raises(read.ReviewParamError):
@@ -378,7 +409,10 @@ def test_drill_down_reconciles_with_the_page_and_paginates(corpus: psycopg.Conne
     d = read.pool_events(corpus, Settings(), sub["subgroup_id"])
     assert d["total"] == sub["to_review_games"] == 4
     assert [r["chess_game_id"] for r in d["rows"]] == [1, 2, 3, 4]
-    assert d["rows"][0]["best_move"] == "Nf3" and d["rows"][0]["extra_in_game"] == 0
+    assert d["rows"][0]["best_move"] == "Nf3" and d["rows"][0]["extra_in_game"] == 0  # the row at the anchor, not ply 4
+    # Un-reviewed first, then most recent: the reviewed game is the newest and still comes last.
+    d = read.pool_events(corpus, Settings(), sub["subgroup_id"], reviewed_scope="all")
+    assert [r["chess_game_id"] for r in d["rows"]] == [1, 2, 3, 4, 5]
     d = read.pool_events(corpus, Settings(), sub["subgroup_id"], reviewed_scope="all", limit=2, offset=2)
     assert d["total"] == sub["total_games"] == 5
     assert [(r["chess_game_id"], r["reviewed"]) for r in d["rows"]] == [(3, False), (4, False)]
@@ -388,7 +422,7 @@ def test_drill_down_reconciles_with_the_page_and_paginates(corpus: psycopg.Conne
     fam = p["categories"]["opening"]["families"][0]
     assert read.pool_events(corpus, Settings(), fam["family_id"])["total"] == 4
     knight = read.pool_events(corpus, Settings(), "v1:route:lapse_defense:knight", opening="Sicilian")
-    assert [r["chess_game_id"] for r in knight["rows"]] == [6] and knight["rows"][0]["extra_in_game"] == 1
+    assert [r["chess_game_id"] for r in knight["rows"]] == [6, 11] and knight["rows"][0]["extra_in_game"] == 1
     assert "best_move" not in knight["rows"][0]
     # Under a focus the thin Italian line drills at the waived floor and its members show as opening.
     p = read.page(corpus, Settings(), opening="Italian", now=NOW)
@@ -432,7 +466,7 @@ def test_a_chess960_row_is_invisible_everywhere(corpus: psycopg.Connection[DictR
     rows = read.fetch_events(corpus, "all", "all")
     assert 10 not in {r["chess_game_id"] for r in rows}
     p = read.page(corpus, Settings(), time_class="all", now=NOW)
-    assert p["page"]["total_games"] == 9
+    assert p["page"]["total_games"] == 10
     sub = p["categories"]["opening"]["families"][0]["subgroups"][0]
     assert sub["total_games"] == 5
     d = read.pool_events(corpus, Settings(), sub["subgroup_id"], time_class="all", reviewed_scope="all")

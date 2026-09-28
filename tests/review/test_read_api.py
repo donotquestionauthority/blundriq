@@ -38,13 +38,14 @@ def test_page_and_drill_down(client: TestClient) -> None:
         "time_class": "focus",
         "opening": "__all__",
         "openings": [
-            {"key": "__all__", "label": "All openings", "to_review_games": 5},
+            {"key": "__all__", "label": "All openings", "to_review_games": 6},
             {"key": "Scandinavian", "label": "Scandinavian", "to_review_games": 4},
+            {"key": "Caro-Kann Defense", "label": "Caro-Kann Defense", "to_review_games": 1},
             {"key": "Italian", "label": "Italian", "to_review_games": 1},
         ],
         "group_by": "variation",
     }
-    assert body["page"] == {"total_games": 8, "to_review_games": 7}
+    assert body["page"] == {"total_games": 9, "to_review_games": 8}
     sub = body["categories"]["opening"]["families"][0]["subgroups"][0]
     assert sub["representative_game"]["url"] == "https://example.test/1"
     d = client.get(f"/review/pools/{sub['subgroup_id']}/events", params={"reviewed_scope": "all"}).json()

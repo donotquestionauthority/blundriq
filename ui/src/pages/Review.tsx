@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useApi } from "../hooks/useApi";
 import { GROUP_BY_LABELS, GROUP_BY_MODES, OPENING_ALL, REVIEW_TIME_CLASS_LABELS, bookRelationLabel, countLabel, getPoolEvents, getReviewPage, isStaleOpeningError, pieceLabelDisplay, pieceOrTheme, prettyToken, touchPoolShown } from "../review";
@@ -78,7 +78,7 @@ function GameTable({ rows, showBestMove, scope }: { rows: ReviewGameRow[]; showB
               </td>
               <td className="py-1 pr-2">
                 {e.opponent_username || "—"}
-                {e.extra_in_game ? <span className="ml-1.5 text-[10px] text-zinc-500">+{e.extra_in_game} more in this line</span> : null}
+                {e.extra_in_game ? <span className="ml-1.5 text-[10px] text-zinc-500">+{e.extra_in_game} more in this game</span> : null}
               </td>
               <td className="py-1 pr-2 whitespace-nowrap text-zinc-500">{daysAgo(e.played_at) ?? "—"}</td>
               <td className="py-1 pr-2 whitespace-nowrap text-zinc-500">{e.phase ? prettyToken(e.phase) : "—"}</td>
@@ -220,11 +220,17 @@ export default function Review() {
     setNotice("That opening no longer has review games — showing all openings.");
   }, []);
 
+  // The params on screen right now. A request recovers only if it was made for these: a 422
+  // that arrives for a focus the user has since left must not undo their newer choice.
+  const current = useRef({ timeClass, opening });
+  current.current = { timeClass, opening };
+  const stillCurrent = (tc: ReviewTimeClass, op: string) => current.current.timeClass === tc && current.current.opening === op;
+
   const fetchPage = useCallback(async () => {
     try {
       return await getReviewPage(timeClass, opening, groupBy);
     } catch (err) {
-      if (isStaleOpeningError(err) && opening !== OPENING_ALL) {
+      if (isStaleOpeningError(err) && opening !== OPENING_ALL && stillCurrent(timeClass, opening)) {
         recoverToAllOpenings();
         return await getReviewPage(timeClass, OPENING_ALL, groupBy);
       }
@@ -233,7 +239,7 @@ export default function Review() {
   }, [timeClass, opening, groupBy, recoverToAllOpenings]);
   const { data, isLoading, error, isStale } = useApi(fetchPage, [timeClass, opening, groupBy]);
 
-  // A drill-down is cached under every server-visible axis plus the scope.
+  // A drill-down is cached under every server-visible axis plus the scope, for the life of that view.
   const cacheKey = (nodeId: string) => `${timeClass}::${opening}::${scope}::${nodeId}`;
 
   function loadEvents(nodeId: string, page: number) {
@@ -249,7 +255,7 @@ export default function Review() {
       })
       .catch((err: unknown) => {
         // The opening went stale between the page fetch and this drill: recover at the page level.
-        if (isStaleOpeningError(err) && opening !== OPENING_ALL) {
+        if (isStaleOpeningError(err) && opening !== OPENING_ALL && stillCurrent(timeClass, opening)) {
           recoverToAllOpenings();
           return;
         }
@@ -311,6 +317,7 @@ export default function Review() {
   function resetExpansion() {
     setOpenCats(new Set([CAT.opening]));
     setOpenNodes(new Set());
+    setEventsByNode({});
   }
   const changeTimeClass = (next: ReviewTimeClass) => {
     setNotice(null);
@@ -327,10 +334,13 @@ export default function Review() {
     setGroupBy(next);
     resetExpansion();
   };
-  // Scope is client-side: sections stay open, drill-downs collapse so they reload under the new scope.
+  // Scope is client-side: sections stay open, drill-downs collapse and forget their rows so they
+  // reload under the new scope. A single-pool category is its own drill-down, so it closes too.
   const changeScope = (next: ReviewedScope) => {
     setScope(next);
     setOpenNodes(new Set());
+    setOpenCats((prev) => new Set([...prev].filter((c) => c !== CAT.endgame && c !== CAT.faded)));
+    setEventsByNode({});
   };
 
   const visible = (toReview: number) => scope === "all" || toReview > 0;
