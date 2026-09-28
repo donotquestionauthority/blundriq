@@ -15,6 +15,7 @@ from typing import Any, LiteralString, cast
 
 from psycopg import Connection
 
+from core.chess.eligibility import analysable_sql, is_analysable
 from core.constants import PLAYER_ID
 
 PAGE_SIZE = 100
@@ -168,6 +169,85 @@ def search_opponents(conn: Connection[Any], q: str, limit: int = 10) -> list[str
         (PLAYER_ID, f"%{q}%", limit),
     ).fetchall()
     return [r["opponent_username"] for r in rows]
+
+
+# --- the per-game review ------------------------------------------------------------------------
+
+
+class GameNotFound(LookupError):
+    """No `player_games` row for the id."""
+
+
+class NotAnalysable(ValueError):
+    """The game exists but its variant is history only (Chess960): not reviewable anywhere."""
+
+
+def review_gate(conn: Connection[Any], game_id: int) -> None:
+    """The one gate every per-game Review route passes first, reading only the variant: a
+    missing game raises GameNotFound (404) and a Chess960 game raises NotAnalysable (422),
+    before anything else about it is read or returned."""
+    row = conn.execute(
+        "SELECT cg.variant FROM player_games pg JOIN chess_games cg ON cg.id = pg.chess_game_id"
+        " WHERE pg.player_id = %s AND cg.id = %s",
+        (PLAYER_ID, game_id),
+    ).fetchone()
+    if row is None:
+        raise GameNotFound(game_id)
+    if not is_analysable(row["variant"]):
+        raise NotAnalysable(game_id)
+
+
+_REVIEW_GAME_SQL = f"""
+    SELECT cg.id, cg.url, cg.played_at, cg.time_control, cg.time_class, cg.opening_name, cg.opening_eco,
+           cg.termination, cg.variant, cg.starting_fen, cg.moves, cg.fen_sequence, cg.analysis_status,
+           cg.analysis_depth, cg.ply_analysis, cg.ply_analysis_depth,
+           (cg.analysis_status = 'completed') AS analyzed,
+           pg.source, pg.player_color, pg.opponent_username, pg.opponent_rating, pg.player_rating, pg.result,
+           pg.reviewed_at
+    FROM player_games pg
+    JOIN chess_games cg ON cg.id = pg.chess_game_id
+    WHERE pg.player_id = %s AND cg.id = %s AND {analysable_sql("cg")}
+"""
+
+
+def game_for_review(conn: Connection[Any], game_id: int) -> dict[str, Any]:
+    """The game row the per-game page renders (moves, FENs, per-ply analysis, the header
+    facts), after the gate. `out_of_window` is `moves IS NULL`: housekeeping has dropped the
+    bulk columns and the page shows its card instead of a board."""
+    review_gate(conn, game_id)
+    row = conn.execute(_q(_REVIEW_GAME_SQL), (PLAYER_ID, game_id)).fetchone()
+    assert row is not None  # the gate just saw it, under the same predicate
+    g = dict(row)
+    g["out_of_window"] = g["moves"] is None
+    return g
+
+
+def blunders_for_game(conn: Connection[Any], game_id: int) -> list[dict[str, Any]]:
+    """The game's blunder rows by ply, each with how many distinct analysable games reached
+    its board (the "Nx in your games" figure; a Chess960 game at the same board counts for
+    nothing)."""
+    return conn.execute(
+        _q(
+            "SELECT b.ply, b.fen, b.move_played, b.best_move, b.best_line, b.post_blunder_line,"
+            " b.centipawn_loss AS cp_loss, b.classification, b.phase,"
+            " (SELECT count(DISTINCT b2.chess_game_id) FROM blunders b2 JOIN chess_games cg ON cg.id = b2.chess_game_id"
+            f"  WHERE b2.player_id = b.player_id AND b2.canonical_fen = b.canonical_fen AND {analysable_sql('cg')})"
+            " AS fen_occurrence_count"
+            " FROM blunders b WHERE b.player_id = %s AND b.chess_game_id = %s ORDER BY b.ply"
+        ),
+        (PLAYER_ID, game_id),
+    ).fetchall()
+
+
+def mark_reviewed(conn: Connection[Any], game_id: int) -> None:
+    """Stamp `reviewed_at` once: the first landing on the game sets it and every later one
+    leaves it (the worklist's only progress authority). The gate runs first."""
+    review_gate(conn, game_id)
+    conn.execute(
+        "UPDATE player_games SET reviewed_at = now()"
+        " WHERE player_id = %s AND chess_game_id = %s AND reviewed_at IS NULL",
+        (PLAYER_ID, game_id),
+    )
 
 
 def to_csv(rows: list[dict[str, Any]]) -> str:

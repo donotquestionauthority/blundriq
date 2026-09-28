@@ -338,3 +338,52 @@ def singular_move(fen: str, lines: list[Row]) -> str | None:
     if not lines:
         return None
     return project_ply(fen, lines).get("book_move")
+
+
+# --- a whole game ----------------------------------------------------------------
+
+
+STATUS_NOT_YOUR_TURN = "not_your_turn"
+
+
+def has_active_repertoire(conn: Connection[Any], color: str) -> bool:
+    """Whether one effectively-active line of a `color` book exists: the predicate every reader
+    composes, as an existence question."""
+    row = conn.execute(
+        "SELECT EXISTS (SELECT 1 FROM repertoire_lines rl JOIN chapters ch ON ch.id = rl.chapter_id"
+        " JOIN books bk ON bk.id = ch.book_id WHERE bk.player_id = %s AND bk.color = %s"
+        " AND rl.active AND ch.active AND bk.active) AS present",
+        (PLAYER_ID, color),
+    ).fetchone()
+    return bool(row and row["present"])
+
+
+def project_game(conn: Connection[Any], player_color: str, fen_sequence: Any) -> dict[str, Any] | None:
+    """What the repertoire says at every position of a game, keyed by ply.
+
+    None — not computed — when `player_color` is not a colour, the spine is not a non-empty
+    list of non-empty strings, or no effectively-active repertoire of that colour exists; else
+    `{"by_ply": {ply: entry}}` with a key for EVERY index. Only player-turn plies (side to move
+    from the FEN, never ply parity) are looked up, once per distinct board; an opponent-turn
+    ply carries `{"status": "not_your_turn"}` and is never looked up — the game's opponent left
+    the book or did not, and the prepared reply belongs to the next ply (Rob's ruling of
+    2026-08-12). A populated map whose every entry is `none` is information; None is not.
+    """
+    if player_color not in ("white", "black"):
+        return None
+    if not isinstance(fen_sequence, list) or not fen_sequence:
+        return None
+    fens = cast(list[Any], fen_sequence)
+    if not all(isinstance(f, str) and f for f in fens):
+        return None
+    spine = [str(f) for f in fens]
+    if not has_active_repertoire(conn, player_color):
+        return None
+    want = "w" if player_color == "white" else "b"
+    mine = [f.split(" ")[1:2] == [want] for f in spine]
+    lookup = list(dict.fromkeys(f for f, m in zip(spine, mine, strict=True) if m))
+    candidates = rep_lines(conn, lookup, book_color=cast(BookColor, player_color), with_stats=False) if lookup else {}
+    by_ply: dict[int, Row] = {}
+    for ply, fen in enumerate(spine):
+        by_ply[ply] = project_ply(fen, candidates.get(fen) or []) if mine[ply] else _entry(STATUS_NOT_YOUR_TURN, None)
+    return {"by_ply": by_ply}
