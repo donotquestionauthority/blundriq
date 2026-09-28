@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { api } from "../api";
 import { ALL_COLUMNS, DAY_OPTIONS, LAST_N_OPTIONS, buildQuery, pgnOf, sortGames } from "../games";
 import type { Filters, FilterValues, Game, SortKey, Summary } from "../games";
@@ -120,6 +120,7 @@ const select = "rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:b
 
 export default function Games() {
   const location = useLocation();
+  const navigate = useNavigate();
   // The snapshot a closing review handed back, read once at mount.
   const [restore] = useState<GamesSnapshot | null>(() => (location.state as { games?: GamesSnapshot } | null)?.games ?? null);
   const [columns, setColumns] = useState<string[]>([...ALL_COLUMNS]);
@@ -243,14 +244,20 @@ export default function Games() {
       ) : null,
     Review: (g) =>
       g.variant === "standard" && filters ? (
-        <Link
-          to={`/review/${g.id}`}
-          state={{ from: { pathname: "/games" }, games: { filters, page, sort, scrollTop: window.scrollY } satisfies GamesSnapshot }}
+        <a
+          href={`/review/${g.id}`}
           className="text-xs underline"
-          onClick={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            // The scroll position is read at the click, not at render: the table renders once and
+            // the player scrolls afterwards.
+            e.preventDefault();
+            e.stopPropagation();
+            const games: GamesSnapshot = { filters, page, sort, scrollTop: window.scrollY };
+            navigate(`/review/${g.id}`, { state: { from: { pathname: "/games" }, games } });
+          }}
         >
           Review →
-        </Link>
+        </a>
       ) : null,
   };
   const sortOf: Partial<Record<string, SortKey>> = {

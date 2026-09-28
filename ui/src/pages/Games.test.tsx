@@ -147,13 +147,14 @@ describe("Games page", () => {
     expect(links[0]).toHaveAttribute("href", "/review/1");
     fireEvent.change(screen.getByLabelText("Opponent"), { target: { value: "s" } });
     await vi.waitFor(() => expect((fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.some((c) => String(c[0]).includes("opponent=s"))).toBe(true));
+    Object.defineProperty(window, "scrollY", { configurable: true, value: 1500 });
     fireEvent.click(screen.getAllByRole("link", { name: "Review →" })[0]);
     const state = JSON.parse((await screen.findByTestId("review-state")).textContent ?? "{}");
     expect(state.from).toEqual({ pathname: "/games" });
     expect(state.games.filters.opponent).toBe("s");
     expect(state.games.page).toBe(1);
     expect(state.games.sort).toEqual({ key: "played_at", dir: "desc" });
-    expect(typeof state.games.scrollTop).toBe("number");
+    expect(state.games.scrollTop).toBe(1500); // read at the click, after the scroll
   });
 
   it("restores the filters, page, sort and scroll a closing review handed back", async () => {

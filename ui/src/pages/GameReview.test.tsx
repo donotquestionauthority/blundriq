@@ -226,17 +226,58 @@ describe("before a commit nothing that answers the question is on screen", () =>
     expect(arrowColors().length).toBeGreaterThan(1);
     // The committed move is the book move: one arrow, one legend row naming both.
     expect(text).toContain("You played · Your prep plays");
+    // The blunder card and its explanation are back beneath the legend.
+    expect(screen.getByTestId("blunder-card")).toBeInTheDocument();
+    expect(screen.getByTestId("ai-panel")).toBeInTheDocument();
+    expect(text).toContain(`−${CP_LOSS}cp`);
     expect(learnCommit).toHaveBeenCalledTimes(1);
     expect(learnCommit.mock.calls[0][0]).toBe(1);
     expect(learnCommit.mock.calls[0][1]).toMatchObject({ ply: 2, committed_move: "Bc4" });
     expect(typeof learnCommit.mock.calls[0][1].attempt_id).toBe("string");
   });
-  it("the board takes no move before the commit step", async () => {
+  it("the board takes no move before the commit step, and Explore is not offered until the reveal", async () => {
     await renderReview();
     expect(boardOptions.allowDragging).toBe(false);
     expect(boardOptions.onPieceDrop).toBeUndefined();
+    expect(screen.queryByText("🔍 Explore from here")).toBeNull();
     await reachCommitStep();
     expect(boardOptions.allowDragging).toBe(true);
+    expect(screen.queryByText("🔍 Explore from here")).toBeNull();
+    await act(async () => screen.getByText("Just show me").click());
+    expect(screen.getByText("🔍 Explore from here")).toBeInTheDocument();
+  });
+  it("in Learn the stepper is enabled exactly when a prompt ply lies that way", async () => {
+    await renderReview(2); // the only prompt ply
+    expect(screen.getByRole("button", { name: "← Back" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Next →" })).toBeDisabled();
+    await act(async () => fireEvent.keyDown(window, { key: "ArrowRight" }));
+    expect(bodyText()).toContain("move 2 / 4");
+    fireEvent.click(screen.getByLabelText("Step only through inaccuracies+")); // off: every decision ply prompts
+    expect(screen.getByRole("button", { name: "← Back" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Next →" })).toBeDisabled();
+    await act(async () => fireEvent.keyDown(window, { key: "ArrowLeft" }));
+    expect(bodyText()).toContain("move 0 / 4");
+    expect(bodyText()).toContain("What is your opponent threatening?");
+  });
+  it("a commit response from a rep the player has left is ignored", async () => {
+    let reject: (e: unknown) => void = () => {};
+    learnCommit.mockImplementation(() => new Promise((_, rej) => (reject = rej)));
+    await renderReview(2);
+    await reachCommitStep();
+    await drop("f1", "c4");
+    expect(bodyText()).toContain("Saving…");
+    fireEvent.click(screen.getByLabelText("Step only through inaccuracies+"));
+    await act(async () => fireEvent.keyDown(window, { key: "ArrowLeft" })); // a fresh rep at ply 0
+    expect(bodyText()).toContain("What is your opponent threatening?");
+    await act(async () => reject(new ApiError(409, "x")));
+    await flush();
+    expect(bodyText()).not.toContain("This rep was already recorded");
+    expect(bodyText()).toContain("What is your opponent threatening?");
+  });
+  it("a non-integer ply in the URL is truncated", async () => {
+    getReviewPrefs.mockResolvedValue({ review_default_mode: "review", review_show_timer: true });
+    await renderReview(2.7 as unknown as number);
+    expect(bodyText()).toContain("move 2 / 4");
   });
 });
 

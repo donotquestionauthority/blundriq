@@ -196,7 +196,8 @@ def learn_commit(game_id: int, body: LearnCommitBody) -> Any:
             # only when the moves are still stored.
             fens = g["fen_sequence"]
             board = isinstance(fens, list) and 0 <= body.ply < len(fens)
-            canonical = learn.canonical_san(str(fens[body.ply]), submitted) if board else None
+            needs_board = board and submitted not in (existing["committed_move"], existing["submitted_move"])
+            canonical = learn.canonical_san(str(fens[body.ply]), submitted) if needs_board else None
             return _verdict(learn.adjudicate(existing, game_id, body.ply, submitted, canonical, board=board), existing)
 
         if g["moves"] is None or g["fen_sequence"] is None:

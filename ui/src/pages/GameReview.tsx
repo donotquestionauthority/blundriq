@@ -164,7 +164,7 @@ export default function GameReview() {
   const idValid = Number.isInteger(numericId) && numericId > 0;
 
   const [ply, setPly] = useState(() => {
-    const p = Number(searchParams.get("ply"));
+    const p = Math.trunc(Number(searchParams.get("ply")));
     return Number.isFinite(p) && p >= 0 ? p : 0;
   });
   const [inaccOnly, setInaccOnly] = useState(false);
@@ -472,8 +472,11 @@ function ReviewBody(p: {
   const boardId = "review" + useId().replace(/[^a-zA-Z0-9-]/g, "");
 
   const hasBlunderPlies = blunderPlies.length > 0;
-  const canStepBack = inaccOnly && hasBlunderPlies ? blunderPlies.some((x) => x < curPly) : curPly > 0;
-  const canStepNext = inaccOnly && hasBlunderPlies ? blunderPlies.some((x) => x > curPly) : curPly < maxPly;
+  // The buttons and keys are enabled exactly when `stepPly` would move: in Learn, only a prompt
+  // ply in that direction; with the skip on, a blunder ply; else the bounds.
+  const stops = learnActive ? promptPlies : inaccOnly && hasBlunderPlies ? blunderPlies : null;
+  const canStepBack = stops ? stops.some((x) => x < curPly) : curPly > 0;
+  const canStepNext = stops ? stops.some((x) => x > curPly) : curPly < maxPly;
   const position = fenSeq[curPly] ?? fenSeq[0];
 
   // A rep runs at a prompt ply and nowhere else: a position reached by ⏭ or a deep link that is
@@ -631,8 +634,9 @@ function ReviewBody(p: {
           </div>
         )}
 
+        {/* Not while a rep is open: the layer's engine would answer the question being asked. */}
         <div className="mt-2 flex min-h-[32px] items-center justify-center">
-          {canExplore && (
+          {canExplore && !leakBlocked && (
             <button type="button" className={btn} onClick={() => setExploring(true)}>
               🔍 Explore from here
             </button>
@@ -644,11 +648,11 @@ function ReviewBody(p: {
       <div className="min-w-0 space-y-4">
         {learnActive && promptPlies.length === 0 && <p className={`${panel} text-zinc-500`}>{LEARN_COPY.nothingToWorkThrough}</p>}
 
-        {learnHere ? (
-          // Ahead of the blunder card on purpose: at a prompted ply the classification, the cp
-          // figure, the best move and the line are all answers, and the card renders every one.
-          <LearnPanel learn={learn} reveal={reveal} engineAvailable={revealEngineSan != null} promptInFlow={!learnSheetOnScreen} />
-        ) : cardBlunder ? (
+        {learnHere && <LearnPanel learn={learn} reveal={reveal} engineAvailable={revealEngineSan != null} promptInFlow={!learnSheetOnScreen} />}
+
+        {leakBlocked ? null : cardBlunder ? (
+          // Never at a prompted ply before the commit: the classification, the cp figure, the best
+          // move and the line are all answers, and the card renders every one.
           <div className={`${panel} space-y-3`} data-testid="blunder-card">
             <div className="flex items-center justify-between">
               <span className="font-semibold">{cardBlunder.classification ? (CLASS_LABEL[cardBlunder.classification] ?? cardBlunder.classification) : "Issue"}</span>
@@ -678,7 +682,7 @@ function ReviewBody(p: {
             )}
             <AiExplanationPanel key={`${gameId}:${cardBlunder.ply}`} chessGameId={gameId} ply={cardBlunder.ply} />
           </div>
-        ) : here?.best_move ? (
+        ) : learnHere ? null : here?.best_move ? (
           <div className={`${panel} space-y-2`}>
             <span className="font-semibold">Best move</span>
             <p>

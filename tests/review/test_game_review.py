@@ -256,6 +256,12 @@ def test_learn_commit_creates_a_row_with_snapshots(client: TestClient, corpus: p
     assert (row["game_move"], row["engine_move"], row["book_move"]) == ("Bb5", "Bc4", None)  # ply 4 is a conflict
     assert row["in_check"] is False and row["ply_classified"] is True and row["elapsed_ms"] == 4200
     # An untimed rep stores NULL; a timed one at another ply snapshots that ply's book move.
+    # A blunders row without a classification does not make the ply classified.
+    corpus.execute(
+        "INSERT INTO blunders (player_id, chess_game_id, ply, fen, move_played) VALUES (%s, 1, 2, 'x', 'Nf3')",
+        (PLAYER_ID,),
+    )
+    corpus.commit()
     r2 = client.post("/games/1/learn-commit", json=commit_body(2, "Nf3"))
     assert r2.status_code == 201
     row2 = one(corpus, "SELECT * FROM learn_commits WHERE ply = 2")
