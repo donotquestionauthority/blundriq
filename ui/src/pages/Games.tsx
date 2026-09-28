@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useLocation } from "react-router";
 import { api } from "../api";
 import { ALL_COLUMNS, DAY_OPTIONS, LAST_N_OPTIONS, buildQuery, pgnOf, sortGames } from "../games";
 import type { Filters, FilterValues, Game, SortKey, Summary } from "../games";
@@ -7,9 +8,14 @@ import type { Filters, FilterValues, Game, SortKey, Summary } from "../games";
  * The game log: filters, a summary line, a sortable table and an expandable row
  * with ratings, issue breakdown, repertoire detail and the PGN. Which columns
  * show and the default day window come from the settings row (games_columns,
- * games_default_window_days), so they are changed on Preferences, not here.
- * A Review button is added once the Review page exists.
+ * games_default_window_days), so they are changed on Preferences, not here. Every standard row
+ * has a Review action opening the game's review; it carries the filters, page, sort and scroll
+ * position in router state, and the page restores them when the review closes back to it. A
+ * Chess960 row has no Review action (history only): its external link is unchanged.
  */
+
+/** What the Review action snapshots and the page restores on return. */
+export type GamesSnapshot = { filters: Filters; page: number; sort: { key: SortKey; dir: "asc" | "desc" }; scrollTop: number };
 
 function Badge({ children, tone }: { children: React.ReactNode; tone: "green" | "red" | "gray" | "blue" | "yellow" | "purple" }) {
   const tones = {
@@ -113,15 +119,19 @@ function Detail({ g }: { g: Game }) {
 const select = "rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900";
 
 export default function Games() {
+  const location = useLocation();
+  // The snapshot a closing review handed back, read once at mount.
+  const [restore] = useState<GamesSnapshot | null>(() => (location.state as { games?: GamesSnapshot } | null)?.games ?? null);
   const [columns, setColumns] = useState<string[]>([...ALL_COLUMNS]);
-  const [filters, setFilters] = useState<Filters | null>(null);
+  const [filters, setFilters] = useState<Filters | null>(restore?.filters ?? null);
   const [values, setValues] = useState<FilterValues>({ books: [], chapters: [] });
   const [games, setGames] = useState<Game[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
-  const [page, setPage] = useState(1);
-  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "played_at", dir: "desc" });
+  const [page, setPage] = useState(restore?.page ?? 1);
+  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>(restore?.sort ?? { key: "played_at", dir: "desc" });
   const [open, setOpen] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const scrollRestored = useRef(restore == null);
 
   useEffect(() => {
     Promise.all([api.get<Record<string, unknown>>("/settings"), api.get<FilterValues>("/games/filters")])
@@ -129,21 +139,32 @@ export default function Games() {
         const cols = s.games_columns;
         if (Array.isArray(cols) && cols.length) setColumns(cols.map(String));
         setValues(fv);
-        setFilters({
-          since_days: typeof s.games_default_window_days === "number" ? s.games_default_window_days : 60,
-          last_n_games: 0,
-          color: "",
-          result: "",
-          platform: "",
-          variant: "",
-          book: "",
-          chapter: "",
-          deviation: "",
-          opponent: "",
-        });
+        // A restored snapshot keeps its filters; the settings default only seeds a fresh visit.
+        setFilters(
+          (f) =>
+            f ?? {
+              since_days: typeof s.games_default_window_days === "number" ? s.games_default_window_days : 60,
+              last_n_games: 0,
+              color: "",
+              result: "",
+              platform: "",
+              variant: "",
+              book: "",
+              chapter: "",
+              deviation: "",
+              opponent: "",
+            },
+        );
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
+
+  // The scroll position is restored after the first render with data, once.
+  useEffect(() => {
+    if (scrollRestored.current || games.length === 0 || !restore) return;
+    scrollRestored.current = true;
+    window.scrollTo(0, restore.scrollTop);
+  }, [games, restore]);
 
   useEffect(() => {
     if (!filters) return;
@@ -220,6 +241,17 @@ export default function Games() {
           open
         </a>
       ) : null,
+    Review: (g) =>
+      g.variant === "standard" && filters ? (
+        <Link
+          to={`/review/${g.id}`}
+          state={{ from: { pathname: "/games" }, games: { filters, page, sort, scrollTop: window.scrollY } satisfies GamesSnapshot }}
+          className="text-xs underline"
+          onClick={(e) => e.stopPropagation()}
+        >
+          Review →
+        </Link>
+      ) : null,
   };
   const sortOf: Partial<Record<string, SortKey>> = {
     Date: "played_at",
@@ -229,7 +261,7 @@ export default function Games() {
     Issues: "issue_count",
     Deviation: "deviated_at_ply",
   };
-  const shown = columns.filter((c) => c in cells);
+  const shown = [...columns.filter((c) => c in cells && c !== "Review"), "Review"];
 
   if (!filters) return <p className="text-sm text-zinc-500">{error ?? "…"}</p>;
 

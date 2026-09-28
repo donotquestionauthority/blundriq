@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Review from "./Review";
 import { ApiError } from "../api";
@@ -133,10 +133,18 @@ const emptyPage = (): ReviewPage =>
     page: { total_games: 0, to_review_games: 0 },
   });
 
+function ReviewStub() {
+  const location = useLocation();
+  return <pre data-testid="review-state">{JSON.stringify(location.state)}</pre>;
+}
+
 const renderPage = () =>
   render(
     <MemoryRouter initialEntries={["/review"]}>
-      <Review />
+      <Routes>
+        <Route path="/review" element={<Review />} />
+        <Route path="/review/:gameId" element={<ReviewStub />} />
+      </Routes>
     </MemoryRouter>,
   );
 
@@ -193,13 +201,14 @@ describe("Review worklist", () => {
     expect(screen.getByRole("columnheader", { name: "Best" })).toBeInTheDocument();
   });
 
-  it("a game row opens the game on its platform in a new tab", async () => {
+  it("a game row opens the game's review at its anchor ply, carrying where to come back to", async () => {
     renderPage();
     fireEvent.click(await screen.findByText("Lost wins"));
-    const link = (await screen.findAllByRole("link", { name: "Open game ↗︎" }))[0];
-    expect(link).toHaveAttribute("href", "https://example.test/301");
-    expect(link).toHaveAttribute("target", "_blank");
-    expect(link).toHaveAttribute("rel", "noreferrer");
+    const link = (await screen.findAllByRole("link", { name: "Review →" }))[0];
+    expect(link).toHaveAttribute("href", "/review/301?ply=14");
+    fireEvent.click(link);
+    const state = JSON.parse((await screen.findByTestId("review-state")).textContent ?? "{}");
+    expect(state).toEqual({ from: { pathname: "/review", search: "" } });
   });
 
   it("relabels forced-loss and never shows a book-relation label on a route pool", async () => {
@@ -486,5 +495,34 @@ describe("Review worklist", () => {
     await screen.findByText("Opening problems");
     const options = within(combo("Focus opening")).getAllByRole("option");
     expect(options.map((o) => o.textContent)).toEqual(["All openings (7)", "Scandinavian (5)"]);
+  });
+
+  it("Lost wins shows fifty games at a time, and a scope change starts again from the first fifty", async () => {
+    const games = Array.from({ length: 120 }, (_, i) => row({ chess_game_id: 1000 + i, opponent_username: `lw${i}`, base_route: "faded", reviewed: i % 2 === 1 }));
+    const p = page();
+    p.categories.lost_wins = { games, total_games: 120, to_review_games: 60 };
+    getReviewPage.mockResolvedValue(p);
+    renderPage();
+    fireEvent.click(await screen.findByText("Lost wins"));
+    expect(screen.getAllByRole("link", { name: "Review →" })).toHaveLength(50);
+    expect(screen.getByText("lw0")).toBeInTheDocument();
+    expect(screen.queryByText("lw100")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show 10 more (10 remaining)" }));
+    expect(screen.getAllByRole("link", { name: "Review →" })).toHaveLength(60);
+    expect(screen.getByText("lw118")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Show .* more/ })).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "All" }));
+    expect(screen.getAllByRole("link", { name: "Review →" })).toHaveLength(50);
+    expect(screen.getByRole("button", { name: "Show 50 more (70 remaining)" })).toBeInTheDocument();
+  });
+
+  it("theme and piece tokens read as words: camelCase and snake_case alike", async () => {
+    const { prettyToken, pieceOrTheme } = await vi.importActual<typeof import("../review")>("../review");
+    expect(prettyToken("hangingPiece")).toBe("Hanging piece");
+    expect(prettyToken("discoveredAttack")).toBe("Discovered attack");
+    expect(prettyToken("mateIn2")).toBe("Mate in 2");
+    expect(prettyToken("forced_loss")).toBe("Forced loss");
+    expect(prettyToken("fork")).toBe("Fork");
+    expect(pieceOrTheme(row({ piece_label: null, evidence: { theme: "backRankMate" } }))).toBe("Back rank mate");
   });
 });
