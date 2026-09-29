@@ -41,6 +41,7 @@ def test_everything_needs_login(app_env: None) -> None:
     assert c.get("/repertoire").status_code == 401
     assert c.get("/repertoire/annotation", params={"fen": h.START}).status_code == 401
     assert c.get("/repertoire/conflicts").status_code == 401
+    assert c.get("/repertoire/coverage", params={"fen": h.START}).status_code == 401
 
 
 def test_deviations_list_and_seen(client: TestClient) -> None:
@@ -133,3 +134,27 @@ def test_notes_round_trip(client: TestClient) -> None:
     assert client.get("/repertoire/annotation", params={"fen": fen}).json()["text"] == "Eyes f7 !"
     assert client.delete("/repertoire/annotation", params={"fen": fen}).status_code == 200
     assert client.get("/repertoire/annotation", params={"fen": fen}).json() is None
+
+
+def test_coverage_route(client: TestClient) -> None:
+    fens = h.spine(None, MAIN)
+    r = client.get("/repertoire/coverage", params={"fen": fens[4], "move": "d4"})
+    assert r.status_code == 200
+    body = r.json()
+    assert (body["status"], body["book_move"], body["played_is_book"], body["line_id"], body["line_ply"]) == (
+        "match",
+        "Bc4",
+        False,
+        1,
+        4,
+    )
+    assert client.get("/repertoire/coverage", params={"fen": fens[4]}).json()["played_is_book"] is None
+    assert client.get("/repertoire/coverage", params={"fen": h.spine(None, ["d4"])[1]}).json()["status"] == "none"
+    for bad in (
+        "rnbqkbnr/pppppppp w",
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR",
+        "bqnbrkrn/pppppppp/8/8/8/8/PPPPPPPP/BQNBRKRN w KQkq - 0 1",  # a 960 start: castling the placement cannot have
+    ):
+        assert client.get("/repertoire/coverage", params={"fen": bad}).status_code == 400
+    for bad_move in ("Nf6", "--", "0000"):
+        assert client.get("/repertoire/coverage", params={"fen": fens[4], "move": bad_move}).status_code == 400

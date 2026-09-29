@@ -4,7 +4,8 @@ GET /repertoire, GET /repertoire/{book_id}/sections, PATCH /repertoire/{books|ch
 Repertoire page; a PATCH switching a line on that the gate refuses is 409 `activation_conflict` with the
 refusal, and one switching a chapter or book on reports the lines it `held_back`. GET /repertoire/conflicts —
 the Conflicts page. GET|PUT|DELETE /repertoire/annotation, GET /repertoire/lines/{id}/annotated — the note
-editor and the line walk-through, on every card and in Practice. GET /repertoire/similar and
+editor and the line walk-through, on every card and in Practice. GET /repertoire/coverage — whether a
+card's board is in the repertoire, and the line to walk through. GET /repertoire/similar and
 GET /repertoire/branch-compare — the two compare surfaces (literal paths, registered before `/{book_id}`).
 
 Both compare routes re-serialise their FENs through python-chess before anything reads them: every
@@ -24,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from api import auth
 from core import db, settings
-from core.repertoire import annotations, books, branch_compare, conflicts, neighbourhood
+from core.repertoire import annotations, books, branch_compare, conflicts, neighbourhood, read
 
 router = APIRouter(prefix="/repertoire", tags=["repertoire"], dependencies=[auth.Authed])
 
@@ -75,6 +76,25 @@ def similar(
             )
         except neighbourhood.NoSignature as exc:
             raise HTTPException(400, "Not a position") from exc
+
+
+@router.get("/coverage")
+def coverage(fen: str = Query(max_length=100), move: str | None = Query(None, max_length=12)) -> dict[str, Any]:
+    """The repertoire's view of `fen` for a card: status, the book move, whether `move` is it,
+    and a line to walk through. `move`, when given, must be legal in `fen` (the null move is
+    not a move)."""
+    board = _board_or_400(fen)
+    canonical_move: str | None = None
+    if move and move.strip():
+        try:
+            parsed = board.parse_san(move.strip())
+        except ValueError as exc:
+            raise HTTPException(400, "move is not legal in fen") from exc
+        if not parsed:
+            raise HTTPException(400, "move is not legal in fen")
+        canonical_move = board.san(parsed)
+    with db.transaction() as conn:
+        return read.coverage(conn, fen, canonical_move)  # the raw string: exact identity with a stored spine is by text
 
 
 @router.get("/branch-compare")

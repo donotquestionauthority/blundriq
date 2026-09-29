@@ -8,6 +8,7 @@ import { AiExplanationPanel } from "./AiExplanationPanel";
 import { ClassBadge, RepliesLine } from "./CardInner";
 import { GamesTable } from "./GamesTable";
 import { LineReaderPanel } from "./LineReaderPanel";
+import { RepertoireBadge } from "./RepertoireBadge";
 import { RepLinesPanel } from "./RepLinesPanel";
 import { SimilarPositionsPanel } from "./SimilarPositionsPanel";
 import { lineNamesSummary, recommended } from "./types";
@@ -223,6 +224,9 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
             {d.bestLine && <p className="break-words pt-1 font-mono text-xs text-zinc-500">{d.bestLine}</p>}
           </div>
         )}
+
+        {/* Not on a decision node: its board is the opponent's move, and "what does my repertoire play here" has no answer there. */}
+        {!node && <RepertoireBadge fen={d.fen} move={queriedMove} />}
 
         <button type="button" data-testid="explore-launch" onClick={() => canExplore && setExploreSeed({ fen: d.fen, orientation: d.color })} disabled={!canExplore} title={canExplore ? undefined : "This position cannot be explored"} className="w-full rounded border border-sky-300 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-800 disabled:opacity-40 dark:border-sky-800 dark:bg-sky-900/30 dark:text-sky-300">
           Explore from here

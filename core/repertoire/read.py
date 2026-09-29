@@ -24,7 +24,8 @@ token that is not legal here makes the ply `unreadable`), then fails closed with
 when two *different* lines prescribe different moves. One line holding the same board twice is
 not a conflict (the tie-break's `line_ply` picks the earlier occurrence). `singular_move` is
 the thin wrapper every card uses for its repertoire arrow; four hand-rolled versions of it
-once disagreed with each other.
+once disagreed with each other. `coverage` is the same reduction for one board, with the line
+a card can walk through.
 """
 
 from __future__ import annotations
@@ -276,6 +277,7 @@ def _entry(
         "book": None,
         "chapter": None,
         "line_name": None,
+        "line_id": None,
         "line_ply": None,
         "plan": [],
         "more_lines": more_lines,
@@ -288,6 +290,7 @@ def _entry(
         entry["book"] = selected.get("book")
         entry["chapter"] = selected.get("chapter")
         entry["line_name"] = selected.get("line_name")
+        entry["line_id"] = selected.get("line_id")
         entry["line_ply"] = line_ply
         if status in (STATUS_MATCH, STATUS_AGREE):
             entry["book_move"] = selected.get("canonical_move")
@@ -338,6 +341,47 @@ def singular_move(fen: str, lines: list[Row]) -> str | None:
     if not lines:
         return None
     return project_ply(fen, lines).get("book_move")
+
+
+# --- one board, for a card ---------------------------------------------------------
+
+
+def coverage(conn: Connection[Any], fen: str, move: str | None = None) -> Row:
+    """The repertoire's view of one board, for a card: `project_ply` at `fen` (colour by the
+    side to move, as the card readers do), plus a line to walk through. `line_id` and
+    `line_ply` are the projection's selected occurrence when it selected one; for `conflict`
+    and `unreadable` they are the tie-break minimum over every occurrence of the board — any
+    matching line beats none for the walk-through, and the status still says the lines
+    disagree (`transposed` then says whether that occurrence is the board by text).
+    `played_is_book` compares `move` (a SAN legal in `fen`; ValueError otherwise) with the
+    book move, None when either is missing."""
+    board = chess.Board(fen)
+    played: str | None = None
+    if move is not None:
+        parsed = board.parse_san(move)
+        if not parsed:
+            raise ValueError("a null move ('--') is not a move")
+        played = board.san(parsed)
+    occurrences = rep_lines(conn, [fen], book_color="by_turn", with_stats=False).get(fen) or []
+    entry = project_ply(fen, occurrences)
+    representative: Row | None = None
+    transposed = entry["transposed"]
+    if entry["line_id"] is None and occurrences:
+        representative = min(occurrences, key=tie_break)
+        transposed = representative.get("occurrence_fen") != fen
+    book_move = entry["book_move"]
+    return {
+        "status": entry["status"],
+        "transposed": transposed,
+        "book_move": book_move,
+        "played_is_book": (played == book_move) if played is not None and book_move is not None else None,
+        "book": representative["book"] if representative else entry["book"],
+        "chapter": representative["chapter"] if representative else entry["chapter"],
+        "line_name": representative["line_name"] if representative else entry["line_name"],
+        "line_id": representative["line_id"] if representative else entry["line_id"],
+        "line_ply": representative["line_ply"] if representative else entry["line_ply"],
+        "more_lines": max(len({o.get("line_id") for o in occurrences}) - 1, 0),
+    }
 
 
 # --- a whole game ----------------------------------------------------------------

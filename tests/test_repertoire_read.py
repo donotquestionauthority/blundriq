@@ -605,6 +605,7 @@ def test_every_entry_carries_the_full_key_set():
         "book",
         "chapter",
         "line_name",
+        "line_id",
         "line_ply",
         "plan",
         "more_lines",
@@ -679,3 +680,19 @@ def test_mutation_grouping_by_raw_token_would_be_caught():
     assert out["status"] == read.STATUS_CONFLICT
     assert [g["move"] for g in out["conflict"]] == ["Nf3", "d4"]
     assert out["conflict"][0]["more_lines"] == 1
+
+
+def test_the_selected_occurrence_names_its_line_and_nothing_else_does():
+    """A card walks through the line the projection selected; a status that selected nothing
+    (conflict, unreadable, none) has no line to name here."""
+    exact = read.project_ply(FEN, [cand(line_id=7, expected_move="Nf3", occurrence_fen=FEN)])
+    assert (exact["status"], exact["line_id"]) == (read.STATUS_MATCH, 7)
+    agree = read.project_ply(FEN, [cand(line_id=8, expected_move="Nf3")])
+    assert (agree["status"], agree["line_id"]) == (read.STATUS_AGREE, 8)
+    end = read.project_ply(FEN, [cand(line_id=9, expected_move=None)])
+    assert (end["status"], end["line_id"]) == (read.STATUS_END_OF_LINE, 9)
+    conflict = read.project_ply(
+        FEN, [cand(line_id=1, expected_move="Nf3", line_name="a"), cand(line_id=2, expected_move="Nc3", line_name="b")]
+    )
+    assert (conflict["status"], conflict["line_id"]) == (read.STATUS_CONFLICT, None)
+    assert read.project_ply(FEN, [])["line_id"] is None
