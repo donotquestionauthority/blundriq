@@ -40,10 +40,12 @@ const pattern = (over: Partial<DeviationPattern> = {}): DeviationPattern => ({
   ...over,
 });
 
+const STAY = "2026-09-29T12:00:00+00:00";
 const page = (positions: DeviationPattern[], over: Partial<DeviationsResponse> = {}): DeviationsResponse => ({
   positions,
   total: positions.length,
   new_count: positions.filter((p) => p.is_new).length,
+  stay: STAY,
   to_acknowledge: positions.filter((p) => p.is_new).map((p) => [p.book_id, p.chapter_id, p.ply, p.expected_move]),
   page: 0,
   page_size: 50,
@@ -118,11 +120,14 @@ describe("Deviations page", () => {
   it("lists patterns from the default filters, draws the expected move in book colour, and refetches when a filter changes", async () => {
     const calls = stubFetch({
       "/settings": () => ({ status: 200, body: SETTINGS }),
-      "/deviations": () => ({ status: 200, body: page([pattern()]) }),
+      "/deviations": () => ({ status: 200, body: page([pattern()], { total_pages: 2 }) }),
     });
     renderPage();
     expect(await screen.findByText("3×")).toBeInTheDocument();
     expect(screen.getByText("1 deviation patterns")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Next →"));
+    await vi.waitFor(() => expect(lastList(calls)?.query.get("page")).toBe("1"));
+    expect(lastList(calls)?.query.get("stay")).toBe(STAY);
     expect(screen.getByText("📖 Italian")).toBeInTheDocument();
     expect(calls.filter((c) => c.path === "/deviations")[0].query.toString()).toBe(buildQuery(defaultFilters(SETTINGS), 0));
     const arrows = JSON.parse(screen.getByTestId(/^board-pc/).getAttribute("data-arrows") ?? "[]") as Array<{ color: string; endSquare: string }>;
@@ -133,6 +138,8 @@ describe("Deviations page", () => {
     ]);
     fireEvent.change(screen.getByLabelText("Color"), { target: { value: "black" } });
     await vi.waitFor(() => expect(lastList(calls)?.query.get("color")).toBe("black"));
+    expect(calls.filter((c) => c.path === "/deviations")).toHaveLength(3); // learning the marker is not a refetch
+    expect(lastList(calls)?.query.get("stay")).toBe(STAY); // the visit's marker rides on every later request
     fireEvent.change(screen.getByLabelText("Window"), { target: { value: "d30" } });
     await vi.waitFor(() => expect(lastList(calls)?.query.get("since_days")).toBe("30"));
     expect(lastList(calls)?.query.has("last_n_games")).toBe(false);

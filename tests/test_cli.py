@@ -122,10 +122,10 @@ def test_the_hourly_run_refuses_to_start_without_its_alert_secrets(
     capsys: pytest.CaptureFixture[str],
     missing: str,
 ) -> None:
-    """Alerts were silently dead for weeks once because the repository secret was misnamed:
-    send_failure returns False on a missing secret by design. The hourly run now reads its
-    alert secrets before its first step, like the API reads its own at startup, so a
-    missing or misnamed one is a red run that names the variable, and no step runs."""
+    """A run that cannot alert must not run: send_failure returns False on a missing secret
+    by design, so a missing or misnamed alert variable would otherwise leave every failure
+    silent. The hourly run reads its alert secrets before its first step, like the API reads
+    its own at startup, and a missing one is a red run that names the variable, no step run."""
     conn = clean
     conn.execute("INSERT INTO players (id) VALUES (%s)", (PLAYER_ID,))
     conn.commit()

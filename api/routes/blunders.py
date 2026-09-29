@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -25,6 +26,7 @@ def _filters(
     last_n_games: int = Query(0, ge=0, le=20000),
     time_class: TimeClass = Query("focus"),
     show_dismissed: bool = Query(False),
+    stay: datetime | None = Query(None),
 ) -> blunders.BlunderFilters:
     unknown = [c for c in classifications if c not in BLUNDER_CLASSES]
     if unknown:
@@ -36,6 +38,7 @@ def _filters(
         last_n_games=last_n_games,
         time_class=time_class,
         show_dismissed=show_dismissed,
+        stay=stay,
     )
 
 
@@ -47,8 +50,8 @@ def list_positions(
         config = settings.load(conn)
         if not f.classifications:
             f = replace(f, classifications=tuple(config.blunders_default_classifications))
-        # Boards are marked NEW only once the list has been looked at at least once.
-        f = replace(f, mark_new=blunders.seen_at(conn) is not None)
+        # Boards are marked NEW only by a visit that started after the first look ever.
+        f = replace(f, mark_new=blunders.marks_new(conn, f.stay))
         return blunders.positions(conn, f, config.time_class_focus, page)
 
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { BLUNDER_CLASSES, DAY_OPTIONS, LAST_N_OPTIONS, MIN_OCCURRENCE_OPTIONS, TIME_CLASS_LABELS, defaultFilters, dismissBoard, getBlunders, markSeen, restoreBoard, toCard } from "../blunders";
 import type { BlunderClass, BlunderFilters, TimeClass } from "../blunders";
@@ -9,8 +9,8 @@ import { useApi } from "../hooks/useApi";
 import { lichessAnalyzeUrl } from "../utils/chess";
 
 /**
- * Recurring positions where I go wrong, worst first. A position is a board; it recurs when it
- * turns up in several games. Filters open on the settings row's defaults and are not
+ * Recurring positions where I go wrong, new ones first, then worst first. A position is a
+ * board; it recurs when it turns up in several games. Filters open on the settings row's defaults and are not
  * remembered. Dismissing hides a board here and from Practice; the Dismissed view restores it.
  * A board this list has never shown carries a NEW chip (the server's predicate, the same one
  * Home counts with). Once a response is on screen the page acknowledges exactly the boards that
@@ -32,8 +32,12 @@ function List({ filters, setFilters }: { filters: BlunderFilters; setFilters: (f
   const [creating, setCreating] = useState<CreatePuzzleSource | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const key = JSON.stringify(filters);
+  // The visit's order marker: taken from the first accepted response and sent on every later
+  // request while this list is mounted, so acknowledging a page never reorders the next one. A
+  // ref, not state: learning it must not itself trigger a refetch.
+  const stay = useRef<string | null>(null);
   const { data, isLoading, error, refetch, isStale } = useApi(async () => {
-    const r = await getBlunders(filters, page);
+    const r = await getBlunders(filters, page, stay.current);
     // A dismissal can empty the last page: step back onto the new last page.
     if (page > 0 && page > r.total_pages - 1) setPage(r.total_pages - 1);
     return r;
@@ -41,9 +45,11 @@ function List({ filters, setFilters }: { filters: BlunderFilters; setFilters: (f
 
   // Acknowledge a response only once it is on screen: after commit, and only if useApi accepted
   // it (a response that lost to a newer request never becomes `data`; one that arrives after
-  // unmount never reaches an effect). `data` changes exactly once per accepted response.
+  // unmount never reaches an effect). `data` changes exactly once per accepted response. The
+  // first accepted response also fixes the visit's marker (a later one repeats it).
   useEffect(() => {
     if (!data || isStale) return;
+    stay.current ??= data.stay;
     markSeen(data.to_acknowledge).catch((e: unknown) => console.warn("could not acknowledge the list:", e));
   }, [data, isStale]);
 
@@ -234,7 +240,7 @@ export default function Blunders() {
   return (
     <div>
       <h1 className="text-xl font-semibold tracking-tight">Blunders</h1>
-      <p className="mb-4 mt-1 text-sm text-zinc-500">Recurring positions where I go wrong, worst first. A board marked NEW has not been shown here before.</p>
+      <p className="mb-4 mt-1 text-sm text-zinc-500">Recurring positions where I go wrong: new ones first, then worst first. A board marked NEW had not been shown here before this visit.</p>
       {error && (
         <p role="alert" className="text-sm text-red-600 dark:text-red-400">
           {error}

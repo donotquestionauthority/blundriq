@@ -21,10 +21,11 @@ through it (`rep_lines`, colour by the side to move) and the one move they agree
 pattern's own `expected_move` — the pipeline's matched move — is the second and outranks it.
 
 **New** (`mark_new`): a pattern the list has never shown. The page acknowledges exactly the
-patterns it rendered (`mark_seen`); the first look ever (`players.deviations_seen_at` still
-NULL) marks nothing and acknowledges everything then listed; Home counts the same predicate
-and never acknowledges. Order is by count alone, so an acknowledgement between two pages
-moves nothing.
+patterns it rendered (`mark_seen`); Home counts the same predicate and never acknowledges. New
+patterns come first, then count order inside each group, and the order is frozen for the visit
+by the same `stay` marker as Blunders, with the same visit lock (`LOCK_SEEN_DEVIATIONS`) and
+the same per-visit decision from the first look ever (`players.deviations_first_seen_at`,
+`marks_new`); core/blunders.py explains all three.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ from typing import Any, LiteralString, cast
 from psycopg import Connection
 
 from core.chess.eligibility import analysable_sql, evidence_sql, window_cte
-from core.constants import PLAYER_ID
+from core.constants import LOCK_SEEN_DEVIATIONS, PLAYER_ID
 from core.repertoire import read
 from core.settings import Settings
 
@@ -57,6 +58,7 @@ class DeviationFilters:
     color: str | None = None  # 'white' | 'black' | None for both
     min_ply: int = 1
     mark_new: bool = False
+    stay: datetime | None = None  # the visit's order marker; None starts one
 
 
 def default_filters(config: Settings, mark_new: bool = False) -> DeviationFilters:
@@ -119,7 +121,7 @@ JOIN books bk ON bk.id = grr.book_id
 """
 
 _KEY = "grr.book_id, grr.chapter_id, grr.deviated_at_ply, grr.expected_move"
-_ORDER = "count DESC, last_played DESC NULLS LAST, book_id, chapter_id, deviated_at_ply, expected_move"
+_ORDER = "is_new DESC, count DESC, last_played DESC NULLS LAST, book_id, chapter_id, deviated_at_ply, expected_move"
 _OUTER_ORDER = ", ".join("f." + c for c in _ORDER.split(", "))
 
 
@@ -135,17 +137,21 @@ def _ranked_sql(prefix: str, where: str) -> str:
         GROUP BY {_KEY}, bk.color, bk.title
         HAVING count(*) >= %(min_occ)s
     ),
-    flagged AS (
+    marked AS (
         SELECT agg.*, ch.title AS chapter,
-               (%(mark_new)s AND NOT EXISTS (
-                   SELECT 1 FROM seen_deviations s
-                   WHERE s.player_id = %(pid)s AND s.book_id = agg.book_id AND s.chapter_id = agg.chapter_id
-                     AND s.deviated_at_ply = agg.deviated_at_ply AND s.expected_move = agg.expected_move)) AS is_new,
-               NOT EXISTS (
-                   SELECT 1 FROM seen_deviations s
-                   WHERE s.player_id = %(pid)s AND s.book_id = agg.book_id AND s.chapter_id = agg.chapter_id
-                     AND s.deviated_at_ply = agg.deviated_at_ply AND s.expected_move = agg.expected_move) AS unseen
+               (SELECT s.seen_at FROM seen_deviations s
+                WHERE s.player_id = %(pid)s AND s.book_id = agg.book_id AND s.chapter_id = agg.chapter_id
+                  AND s.deviated_at_ply = agg.deviated_at_ply AND s.expected_move = agg.expected_move) AS seen_at
         FROM agg JOIN chapters ch ON ch.id = agg.chapter_id
+    ),
+    stay AS (
+        SELECT coalesce(%(stay)s::timestamptz, clock_timestamp()) AS at
+    ),
+    flagged AS (
+        SELECT marked.*,
+               (seen_at IS NULL) AS unseen,
+               (%(mark_new)s AND (seen_at IS NULL OR seen_at >= stay.at)) AS is_new
+        FROM marked, stay
     )
     """
 
@@ -154,9 +160,24 @@ def _key_of(r: Row) -> Key:
     return (int(r["book_id"]), int(r["chapter_id"]), int(r["deviated_at_ply"]), str(r["expected_move"]))
 
 
-def _page_rows(conn: Connection[Any], f: DeviationFilters, focus: str, page: int) -> tuple[list[Row], int, list[Key]]:
+@dataclass(frozen=True)
+class _Page:
+    rows: list[Row]
+    total: int
+    new_count: int  # marked NEW during this stay, on any page
+    unseen: list[Key]  # patterns no look has recorded, on any page
+    stay: datetime
+
+
+def _page_rows(conn: Connection[Any], f: DeviationFilters, focus: str, page: int) -> _Page:
     prefix, where, params = _scope(f, focus)
-    params |= {"min_occ": f.min_occurrences, "mark_new": f.mark_new, "limit": PAGE_SIZE, "offset": page * PAGE_SIZE}
+    params |= {
+        "min_occ": f.min_occurrences,
+        "mark_new": f.mark_new,
+        "stay": f.stay,
+        "limit": PAGE_SIZE,
+        "offset": page * PAGE_SIZE,
+    }
     body = _ranked_sql(prefix, where)
     with conn.cursor() as cur:
         cur.execute(
@@ -164,10 +185,12 @@ def _page_rows(conn: Connection[Any], f: DeviationFilters, focus: str, page: int
                 LiteralString,
                 body
                 + f"""
-                SELECT f.*, c.total, c.unseen_keys
+                SELECT f.*, c.total, c.new_count, c.unseen_keys, c.stay
                 FROM (SELECT count(*) AS total,
+                             count(*) FILTER (WHERE is_new) AS new_count,
                              coalesce(jsonb_agg(jsonb_build_array(book_id, chapter_id, deviated_at_ply, expected_move))
-                                      FILTER (WHERE unseen), '[]') AS unseen_keys
+                                      FILTER (WHERE unseen), '[]') AS unseen_keys,
+                             (SELECT at FROM stay) AS stay
                       FROM flagged) c
                 LEFT JOIN LATERAL (
                     SELECT * FROM flagged ORDER BY {_ORDER} LIMIT %(limit)s OFFSET %(offset)s
@@ -179,8 +202,13 @@ def _page_rows(conn: Connection[Any], f: DeviationFilters, focus: str, page: int
         )
         rows = [dict(r) for r in cur.fetchall()]
     counts = rows[0]
-    unseen = [(int(k[0]), int(k[1]), int(k[2]), str(k[3])) for k in counts["unseen_keys"]]
-    return [r for r in rows if r["book_id"] is not None], int(counts["total"]), unseen
+    return _Page(
+        rows=[r for r in rows if r["book_id"] is not None],
+        total=int(counts["total"]),
+        new_count=int(counts["new_count"]),
+        unseen=[(int(k[0]), int(k[1]), int(k[2]), str(k[3])) for k in counts["unseen_keys"]],
+        stay=counts["stay"],
+    )
 
 
 def _details(conn: Connection[Any], f: DeviationFilters, focus: str, keys: list[Key]) -> dict[Key, list[Row]]:
@@ -265,7 +293,10 @@ def _card(row: Row, games: list[Row], lines: list[Row]) -> Row:
 
 def positions(conn: Connection[Any], f: DeviationFilters, focus: str, page: int = 0) -> Row:
     """One page of the ranked list. `focus` is the `time_class_focus` setting."""
-    rows, total, unseen = _page_rows(conn, f, focus, page)
+    if f.stay is None:  # a visit starts: its marker waits for any acknowledgement in flight
+        conn.execute("SELECT pg_advisory_xact_lock(%s, %s)", (LOCK_SEEN_DEVIATIONS, PLAYER_ID))
+    p = _page_rows(conn, f, focus, page)
+    rows, total = p.rows, p.total
     details = _details(conn, f, focus, [_key_of(r) for r in rows])
     fens = [str(details[_key_of(r)][0]["deviation_fen"]) for r in rows if details.get(_key_of(r))]
     lines_by_fen = read.rep_lines(conn, fens, book_color="by_turn")
@@ -274,12 +305,15 @@ def positions(conn: Connection[Any], f: DeviationFilters, focus: str, page: int 
         games = details.get(_key_of(r), [])
         fen = str(games[0]["deviation_fen"]) if games else None
         cards.append(_card(r, games, lines_by_fen.get(fen, []) if fen else []))
-    shown = [_key_of(r) for r in rows if r["is_new"]] if f.mark_new else unseen
+    # Acknowledge what was shown and no look has recorded; a pattern shown NEW again during the
+    # stay is already recorded.
+    shown = [_key_of(r) for r in rows if r["unseen"]] if f.mark_new else p.unseen
     return {
         "positions": cards,
         "total": total,
-        "new_count": len(unseen) if f.mark_new else 0,
+        "new_count": p.new_count,
         "to_acknowledge": [list(k) for k in shown],
+        "stay": p.stay.isoformat(),
         "page": page,
         "page_size": PAGE_SIZE,
         "total_pages": max(1, -(-total // PAGE_SIZE)),
@@ -287,12 +321,13 @@ def positions(conn: Connection[Any], f: DeviationFilters, focus: str, page: int 
 
 
 def new_count(conn: Connection[Any], f: DeviationFilters, focus: str) -> int:
-    """How many patterns the list has never shown — Home's number. Zero before the first look."""
+    """How many patterns the list has never shown — Home's number. Zero before the first look.
+    Strict: a pattern the current stay still shows as NEW but has acknowledged is not counted."""
     if not f.mark_new:
         return 0
     prefix, where, params = _scope(f, focus)
-    params |= {"min_occ": f.min_occurrences, "mark_new": True}
-    body = _ranked_sql(prefix, where) + "SELECT count(*) AS n FROM flagged WHERE is_new"
+    params |= {"min_occ": f.min_occurrences, "mark_new": True, "stay": None}
+    body = _ranked_sql(prefix, where) + "SELECT count(*) AS n FROM flagged WHERE unseen"
     with conn.cursor() as cur:
         cur.execute(cast(LiteralString, body), params)
         row = cur.fetchone()
@@ -301,16 +336,38 @@ def new_count(conn: Connection[Any], f: DeviationFilters, focus: str) -> int:
 
 
 def seen_at(conn: Connection[Any]) -> datetime | None:
+    """When the list was last looked at (Home's date); None before the first look."""
     row = conn.execute("SELECT deviations_seen_at FROM players WHERE id = %s", (PLAYER_ID,)).fetchone()
     if row is None:
         raise RuntimeError("no players row; run `pipeline player set` first")
     return row["deviations_seen_at"]
 
 
-def mark_seen(conn: Connection[Any], keys: list[Key]) -> datetime:
-    """The page has shown these patterns (as `to_acknowledge` gave them)."""
+def marks_new(conn: Connection[Any], stay: datetime | None) -> bool:
+    """Whether a visit marks NEW: only one that started after the first look ever (the
+    Blunders twin explains the lock)."""
+    if stay is None:
+        conn.execute("SELECT pg_advisory_xact_lock(%s, %s)", (LOCK_SEEN_DEVIATIONS, PLAYER_ID))
     row = conn.execute(
-        "UPDATE players SET deviations_seen_at = now() WHERE id = %s RETURNING deviations_seen_at", (PLAYER_ID,)
+        "SELECT deviations_first_seen_at IS NOT NULL"
+        " AND (%s::timestamptz IS NULL OR deviations_first_seen_at < %s::timestamptz) AS marks"
+        " FROM players WHERE id = %s",
+        (stay, stay, PLAYER_ID),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("no players row; run `pipeline player set` first")
+    return bool(row["marks"])
+
+
+def mark_seen(conn: Connection[Any], keys: list[Key]) -> datetime:
+    """The page has shown these patterns (as `to_acknowledge` gave them). Under the visit lock,
+    every clock read after it (core/blunders.py `mark_seen`)."""
+    conn.execute("SELECT pg_advisory_xact_lock(%s, %s)", (LOCK_SEEN_DEVIATIONS, PLAYER_ID))
+    row = conn.execute(
+        "UPDATE players SET deviations_seen_at = clock_timestamp(),"
+        " deviations_first_seen_at = coalesce(deviations_first_seen_at, clock_timestamp())"
+        " WHERE id = %s RETURNING deviations_seen_at",
+        (PLAYER_ID,),
     ).fetchone()
     if row is None:
         raise RuntimeError("no players row; run `pipeline player set` first")
@@ -318,8 +375,8 @@ def mark_seen(conn: Connection[Any], keys: list[Key]) -> datetime:
         # Only patterns that exist: a key the client made up must not be a server error.
         conn.execute(
             """
-            INSERT INTO seen_deviations (player_id, book_id, chapter_id, deviated_at_ply, expected_move)
-            SELECT %(pid)s, (k->>0)::int, (k->>1)::int, (k->>2)::int, k->>3
+            INSERT INTO seen_deviations (player_id, book_id, chapter_id, deviated_at_ply, expected_move, seen_at)
+            SELECT %(pid)s, (k->>0)::int, (k->>1)::int, (k->>2)::int, k->>3, clock_timestamp()
             FROM jsonb_array_elements(%(keys)s) k
             WHERE EXISTS (SELECT 1 FROM chapters ch JOIN books bk ON bk.id = ch.book_id
                           WHERE ch.id = (k->>1)::int AND bk.id = (k->>0)::int AND bk.player_id = %(pid)s)

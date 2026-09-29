@@ -64,7 +64,10 @@ Chess.com / Lichess APIs
            boards the Blunders list has never shown (seen_blunder_boards, which that page fills with what it
            rendered; the first look ever records the whole list as known) — one predicate in core/blunders.py,
            shared with the page's NEW chips; new deviation patterns the same way (seen_deviations,
-           core/deviations.py); pipeline_runs (the hourly chain only).
+           core/deviations.py); pipeline_runs (the hourly chain only). Both lists put NEW rows first,
+           with the order frozen per visit by a `stay` marker the page echoes; a visit's first read
+           and every acknowledgement share an advisory lock, and whether a visit marks NEW at all
+           is decided from players.*_first_seen_at (core/blunders.py).
 ```
 
 Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one subcommand per step, each idempotent. Everything below is FastAPI routes in `api/routes/`, which are thin: they parse the request, call a function in `core/`, and return its result.

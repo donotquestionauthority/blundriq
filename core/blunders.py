@@ -19,10 +19,26 @@ restore accept any FEN and reduce it in SQL.
 **New** (`mark_new`): a board the list has never shown — not in `seen_blunder_boards` and not
 dismissed. The page acknowledges exactly the boards it rendered (`mark_seen`), so a board that
 arrived between the read and the acknowledgement, or that sits on a page never opened, stays
-new; the first look ever (`players.blunders_seen_at` still NULL) marks nothing and acknowledges
-everything then listed, so history is not news. Home reads the same predicate for its count
-and never acknowledges anything. The order is by score alone, so an acknowledgement between
-two pages moves nothing: page 2 is what it would have been.
+new. Home reads the same predicate for its count and never acknowledges anything.
+
+New boards come first, then score order inside each group. An acknowledgement must not move a
+board between the groups while the list is being paged, or page 2's offset would skip what page
+1's acknowledgement pushed up — so the order is frozen for the **stay**: the first request of a
+visit is answered with `stay` (the database clock) and every later request of that visit sends
+it back; a board acknowledged at or after `stay` still orders and shows as new for that visit.
+The next visit starts a new stay, and what the last one acknowledged falls back into score order.
+`to_acknowledge` and Home's count keep the strict predicate: no seen row at all.
+
+Two things make the marker exact. The first read of a visit and every acknowledgement take the
+same advisory lock (`LOCK_SEEN_BLUNDERS`), and both read the clock under it: an acknowledgement
+still in flight when a visit starts is committed and visible before the visit's `stay` is read,
+and one that starts later has `seen_at` after it, so no board can be unseen at the first read and
+acknowledged before `stay`. And whether a visit marks NEW at all is decided once, from the first
+look ever (`players.blunders_first_seen_at`, `marks_new`): a visit that started before the first
+look — the one that declares history known, page by page — marks nothing on any of its requests
+and acknowledges every active board on any page, each time; the next visit is the first to
+mark. So boards found during the first-look visit are declared known by its next request, and
+only what arrives after its last request is news next time.
 """
 
 from __future__ import annotations
@@ -34,7 +50,7 @@ from typing import Any, LiteralString, cast
 from psycopg import Connection
 
 from core.chess.eligibility import analysable_sql, evidence_sql, window_cte
-from core.constants import BLUNDER_CLASSES, BLUNDER_SCORE_WEIGHTS, PLAYER_ID
+from core.constants import BLUNDER_CLASSES, BLUNDER_SCORE_WEIGHTS, LOCK_SEEN_BLUNDERS, PLAYER_ID
 from core.settings import Settings
 
 Row = dict[str, Any]
@@ -51,7 +67,8 @@ class BlunderFilters:
     last_n_games: int = 0  # > 0 wins over since_days
     time_class: str = "focus"  # one of TIME_CLASSES
     show_dismissed: bool = False
-    mark_new: bool = False  # flag boards never shown; False before the first look
+    mark_new: bool = False  # flag boards never shown; False for the whole first-look visit (`marks_new`)
+    stay: datetime | None = None  # the visit's order marker (see the module doc); None starts one
 
 
 def default_filters(config: Settings, mark_new: bool = False) -> BlunderFilters:
@@ -142,24 +159,38 @@ def _ranked_sql(prefix: str, where: str) -> str:
         SELECT agg.*, cls.classifications,
                EXISTS (SELECT 1 FROM dismissed_blunder_fens d
                        WHERE d.player_id = %(pid)s AND d.canonical_fen = agg.canonical_fen) AS dismissed,
-               EXISTS (SELECT 1 FROM seen_blunder_boards s
-                       WHERE s.player_id = %(pid)s AND s.canonical_fen = agg.canonical_fen) AS seen
+               (SELECT s.seen_at FROM seen_blunder_boards s
+                WHERE s.player_id = %(pid)s AND s.canonical_fen = agg.canonical_fen) AS seen_at
         FROM agg JOIN cls USING (canonical_fen)
     ),
+    stay AS (
+        SELECT coalesce(%(stay)s::timestamptz, clock_timestamp()) AS at
+    ),
     flagged AS (
-        SELECT marked.*, (%(mark_new)s AND NOT seen AND NOT dismissed) AS is_new FROM marked
+        SELECT marked.*,
+               (seen_at IS NULL AND NOT dismissed) AS unseen,
+               (%(mark_new)s AND NOT dismissed AND (seen_at IS NULL OR seen_at >= stay.at)) AS is_new
+        FROM marked, stay
     )
     """
 
 
-Page = tuple[list[Row], int, int, list[str]]  # rows, active count, dismissed count, unseen board keys
+@dataclass(frozen=True)
+class _Page:
+    rows: list[Row]
+    active_count: int
+    dismissed_count: int
+    new_count: int  # marked NEW during this stay, on any page
+    unseen: list[str]  # board keys no look has recorded, on any page
+    stay: datetime
 
 
-def _page_rows(conn: Connection[Any], f: BlunderFilters, focus: str, page: int) -> Page:
+def _page_rows(conn: Connection[Any], f: BlunderFilters, focus: str, page: int) -> _Page:
     prefix, where, params = _scope(f, focus)
     params |= {
         "min_occ": f.min_occurrences,
         "mark_new": f.mark_new,
+        "stay": f.stay,
         "dismissed": f.show_dismissed,
         "limit": PAGE_SIZE,
         "offset": page * PAGE_SIZE,
@@ -171,18 +202,19 @@ def _page_rows(conn: Connection[Any], f: BlunderFilters, focus: str, page: int) 
                 LiteralString,
                 body
                 + """
-                SELECT f.*, c.active_count, c.dismissed_count, c.unseen
+                SELECT f.*, c.active_count, c.dismissed_count, c.new_count, c.unseen_keys, c.stay
                 FROM (SELECT count(*) FILTER (WHERE NOT dismissed) AS active_count,
                              count(*) FILTER (WHERE dismissed) AS dismissed_count,
-                             coalesce(array_agg(canonical_fen) FILTER (WHERE NOT seen AND NOT dismissed), '{}')
-                                 AS unseen
+                             count(*) FILTER (WHERE is_new) AS new_count,
+                             coalesce(array_agg(canonical_fen) FILTER (WHERE unseen), '{}') AS unseen_keys,
+                             (SELECT at FROM stay) AS stay
                       FROM flagged) c
                 LEFT JOIN LATERAL (
                     SELECT * FROM flagged WHERE dismissed = %(dismissed)s
-                    ORDER BY score DESC, last_played DESC NULLS LAST, canonical_fen
+                    ORDER BY is_new DESC, score DESC, last_played DESC NULLS LAST, canonical_fen
                     LIMIT %(limit)s OFFSET %(offset)s
                 ) f ON TRUE
-                ORDER BY f.score DESC, f.last_played DESC NULLS LAST, f.canonical_fen
+                ORDER BY f.is_new DESC, f.score DESC, f.last_played DESC NULLS LAST, f.canonical_fen
                 """,
             ),
             params,
@@ -190,11 +222,13 @@ def _page_rows(conn: Connection[Any], f: BlunderFilters, focus: str, page: int) 
         rows = [dict(r) for r in cur.fetchall()]
     # The counts ride on every row and survive a page past the end as one all-NULL row.
     counts = rows[0]
-    return (
-        [r for r in rows if r["canonical_fen"] is not None],
-        int(counts["active_count"]),
-        int(counts["dismissed_count"]),
-        [str(x) for x in counts["unseen"]],
+    return _Page(
+        rows=[r for r in rows if r["canonical_fen"] is not None],
+        active_count=int(counts["active_count"]),
+        dismissed_count=int(counts["dismissed_count"]),
+        new_count=int(counts["new_count"]),
+        unseen=[str(x) for x in counts["unseen_keys"]],
+        stay=counts["stay"],
     )
 
 
@@ -319,18 +353,24 @@ def _card(row: dict[str, Any], group: list[dict[str, Any]]) -> dict[str, Any]:
 def positions(conn: Connection[Any], f: BlunderFilters, focus: str, page: int = 0) -> dict[str, Any]:
     """One page of the ranked list, with the counts of both views. `focus` is the
     `time_class_focus` setting, which the 'focus' time class resolves to."""
-    rows, active, dismissed, unseen = _page_rows(conn, f, focus, page)
+    if f.stay is None:  # a visit starts: its marker waits for any acknowledgement in flight
+        conn.execute("SELECT pg_advisory_xact_lock(%s, %s)", (LOCK_SEEN_BLUNDERS, PLAYER_ID))
+    p = _page_rows(conn, f, focus, page)
+    rows = p.rows
     details = _details(conn, f, focus, [str(r["canonical_fen"]) for r in rows])
-    total = dismissed if f.show_dismissed else active
-    # What the page acknowledges once rendered: the boards it marked NEW — or, on the first
-    # look, every active board on any page, so that history is known rather than news.
-    shown = [str(r["canonical_fen"]) for r in rows if r["is_new"]] if f.mark_new else unseen
+    total = p.dismissed_count if f.show_dismissed else p.active_count
+    # What the page acknowledges once rendered: the boards it showed that no look has recorded
+    # yet — or, on the first look, every active board on any page, so history is known rather
+    # than news. A board shown NEW again during the stay is already recorded; re-sending it is
+    # a no-op, so it is left out.
+    shown = [str(r["canonical_fen"]) for r in rows if r["unseen"]] if f.mark_new else p.unseen
     return {
         "positions": [_card(r, details.get(str(r["canonical_fen"]), [])) for r in rows],
-        "active_count": active,
-        "dismissed_count": dismissed,
-        "new_count": len(unseen) if f.mark_new else 0,
+        "active_count": p.active_count,
+        "dismissed_count": p.dismissed_count,
+        "new_count": p.new_count,
         "to_acknowledge": shown,
+        "stay": p.stay.isoformat(),
         "page": page,
         "page_size": PAGE_SIZE,
         "total_pages": max(1, -(-total // PAGE_SIZE)),
@@ -339,12 +379,13 @@ def positions(conn: Connection[Any], f: BlunderFilters, focus: str, page: int = 
 
 def new_count(conn: Connection[Any], f: BlunderFilters, focus: str) -> int:
     """How many active boards the list has never shown — the Home page's number, from the
-    same ranking the page shows. Zero before the first look."""
+    same ranking the page shows. Zero before the first look. Strict: a board the current stay
+    still shows as NEW but has already acknowledged is not counted here."""
     if not f.mark_new:
         return 0
     prefix, where, params = _scope(f, focus)
-    params |= {"min_occ": f.min_occurrences, "mark_new": True}
-    body = _ranked_sql(prefix, where) + "SELECT count(*) AS n FROM flagged WHERE is_new"
+    params |= {"min_occ": f.min_occurrences, "mark_new": True, "stay": None}
+    body = _ranked_sql(prefix, where) + "SELECT count(*) AS n FROM flagged WHERE unseen"
     with conn.cursor() as cur:
         cur.execute(cast(LiteralString, body), params)
         row = cur.fetchone()
@@ -353,25 +394,48 @@ def new_count(conn: Connection[Any], f: BlunderFilters, focus: str) -> int:
 
 
 def seen_at(conn: Connection[Any]) -> datetime | None:
-    """When the list was last looked at; None before the first look."""
+    """When the list was last looked at (Home's date); None before the first look."""
     row = conn.execute("SELECT blunders_seen_at FROM players WHERE id = %s", (PLAYER_ID,)).fetchone()
     if row is None:
         raise RuntimeError("no players row; run `pipeline player set` first")
     return row["blunders_seen_at"]
 
 
+def marks_new(conn: Connection[Any], stay: datetime | None) -> bool:
+    """Whether a visit marks NEW: only one that started after the first look ever. Without a
+    marker the visit is starting now: under the visit lock, so a first look being recorded
+    right now counts, and any recorded first look is before the marker `positions` reads."""
+    if stay is None:
+        conn.execute("SELECT pg_advisory_xact_lock(%s, %s)", (LOCK_SEEN_BLUNDERS, PLAYER_ID))
+    row = conn.execute(
+        "SELECT blunders_first_seen_at IS NOT NULL"
+        " AND (%s::timestamptz IS NULL OR blunders_first_seen_at < %s::timestamptz) AS marks"
+        " FROM players WHERE id = %s",
+        (stay, stay, PLAYER_ID),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("no players row; run `pipeline player set` first")
+    return bool(row["marks"])
+
+
 def mark_seen(conn: Connection[Any], boards: list[str]) -> datetime:
     """The page has shown these boards (board keys, as `to_acknowledge` gave them). Only
-    those become known; anything found since the page read its list stays new."""
+    those become known; anything found since the page read its list stays new. Under the
+    visit lock, and every clock read after it, so `seen_at` and the first look sort against a
+    visit's `stay` the way the visit saw the rows (the module docstring)."""
+    conn.execute("SELECT pg_advisory_xact_lock(%s, %s)", (LOCK_SEEN_BLUNDERS, PLAYER_ID))
     row = conn.execute(
-        "UPDATE players SET blunders_seen_at = now() WHERE id = %s RETURNING blunders_seen_at", (PLAYER_ID,)
+        "UPDATE players SET blunders_seen_at = clock_timestamp(),"
+        " blunders_first_seen_at = coalesce(blunders_first_seen_at, clock_timestamp())"
+        " WHERE id = %s RETURNING blunders_seen_at",
+        (PLAYER_ID,),
     ).fetchone()
     if row is None:
         raise RuntimeError("no players row; run `pipeline player set` first")
     if boards:
         conn.execute(
-            "INSERT INTO seen_blunder_boards (player_id, canonical_fen)"
-            " SELECT %s, unnest(%s::text[]) ON CONFLICT DO NOTHING",
+            "INSERT INTO seen_blunder_boards (player_id, canonical_fen, seen_at)"
+            " SELECT %s, unnest(%s::text[]), clock_timestamp() ON CONFLICT DO NOTHING",
             (PLAYER_ID, boards),
         )
     return row["blunders_seen_at"]

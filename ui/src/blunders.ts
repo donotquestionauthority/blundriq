@@ -61,12 +61,16 @@ export interface BlundersResponse {
   positions: BlunderPosition[];
   active_count: number;
   dismissed_count: number;
-  /** Active boards never shown, on any page; 0 before the first look. */
+  /** Boards marked NEW during this visit, on any page; 0 before the first look. */
   new_count: number;
   /** Board keys the page acknowledges once this response is on screen: the boards it marked
    *  NEW — or, before the first look ever, every active board on any page, so history is
    *  known rather than news. Posted even when empty: that records the look. */
   to_acknowledge: string[];
+  /** The visit's order marker: the database clock when the visit's first list was read. Sent back
+   *  on every later request of the visit, so a board acknowledged during the visit keeps its
+   *  place at the top and its NEW chip until the next visit (core/blunders.py). */
+  stay: string;
   page: number;
   page_size: number;
   total_pages: number;
@@ -81,7 +85,7 @@ export interface BlunderFilters {
   show_dismissed: boolean;
 }
 
-export function buildQuery(f: BlunderFilters, page: number): string {
+export function buildQuery(f: BlunderFilters, page: number, stay: string | null = null): string {
   const q = new URLSearchParams();
   if (f.last_n_games > 0) q.set("last_n_games", String(f.last_n_games));
   else if (f.since_days) q.set("since_days", String(f.since_days));
@@ -89,6 +93,7 @@ export function buildQuery(f: BlunderFilters, page: number): string {
   q.set("time_class", f.time_class);
   for (const c of f.classifications) q.append("classifications", c);
   if (f.show_dismissed) q.set("show_dismissed", "true");
+  if (stay) q.set("stay", stay);
   q.set("page", String(page));
   return q.toString();
 }
@@ -145,7 +150,7 @@ export function daysAgo(iso: string | null | undefined): string | null {
   return days <= 0 ? "today" : days === 1 ? "yesterday" : `${days}d ago`;
 }
 
-export const getBlunders = (f: BlunderFilters, page: number) => api.get<BlundersResponse>(`/blunders?${buildQuery(f, page)}`);
+export const getBlunders = (f: BlunderFilters, page: number, stay: string | null = null) => api.get<BlundersResponse>(`/blunders?${buildQuery(f, page, stay)}`);
 export const dismissBoard = (fen: string) => api.post<{ detail: string }>("/blunders/dismiss", { fen });
 export const restoreBoard = (fen: string) => api.post<{ detail: string }>("/blunders/restore", { fen });
 /** The page has shown a response (its `to_acknowledge`, possibly empty). Only what was shown

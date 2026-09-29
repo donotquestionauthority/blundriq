@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { DAY_OPTIONS, LAST_N_OPTIONS, MIN_OCCURRENCE_OPTIONS, TIME_CLASS_LABELS } from "../blunders";
 import type { TimeClass } from "../blunders";
@@ -11,7 +11,7 @@ import { useApi } from "../hooks/useApi";
 import { lichessAnalyzeUrl } from "../utils/chess";
 
 /**
- * Where I keep leaving my own repertoire, most often first. A pattern is a book, a chapter, the
+ * Where I keep leaving my own repertoire, new patterns first, then most often first. A pattern is a book, a chapter, the
  * ply and the move the line expected there; it recurs when I leave the line at that point in
  * several games. There is no dismissal: a deviation that should not count is a line that should
  * not be active, and the Repertoire page switches lines off. NEW and its acknowledgement work
@@ -26,15 +26,21 @@ function List({ filters, setFilters }: { filters: DeviationFilters; setFilters: 
   const [creating, setCreating] = useState<CreatePuzzleSource | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const key = JSON.stringify(filters);
+  // The visit's order marker: taken from the first accepted response and sent on every later
+  // request while this list is mounted, so acknowledging a page never reorders the next one. A
+  // ref, not state: learning it must not itself trigger a refetch.
+  const stay = useRef<string | null>(null);
   const { data, isLoading, error, isStale } = useApi(async () => {
-    const r = await getDeviations(filters, page);
+    const r = await getDeviations(filters, page, stay.current);
     if (page > 0 && page > r.total_pages - 1) setPage(r.total_pages - 1);
     return r;
   }, [key, page]);
 
-  // Acknowledge a response only once it is on screen: after commit, and only if useApi accepted it.
+  // Acknowledge a response only once it is on screen: after commit, and only if useApi accepted
+  // it. The first accepted response also fixes the visit's marker.
   useEffect(() => {
     if (!data || isStale) return;
+    stay.current ??= data.stay;
     markSeen(data.to_acknowledge).catch((e: unknown) => console.warn("could not acknowledge the list:", e));
   }, [data, isStale]);
 
@@ -185,7 +191,7 @@ export default function Deviations() {
   return (
     <div>
       <h1 className="text-xl font-semibold tracking-tight">Deviations</h1>
-      <p className="mb-4 mt-1 text-sm text-zinc-500">Where I keep leaving my own repertoire, most often first. A pattern marked NEW has not been shown here before.</p>
+      <p className="mb-4 mt-1 text-sm text-zinc-500">Where I keep leaving my own repertoire: new patterns first, then most often first. A pattern marked NEW had not been shown here before this visit.</p>
       {error && (
         <p role="alert" className="text-sm text-red-600 dark:text-red-400">
           {error}

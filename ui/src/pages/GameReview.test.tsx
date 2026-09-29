@@ -524,7 +524,7 @@ describe("the timer", () => {
     expect(timer.checked).toBe(true);
     expect(screen.getByRole("alert")).toBeInTheDocument();
   });
-  it("two refused saves in a row revert to the last value the server confirmed (8C-R2-1)", async () => {
+  it("two refused saves in a row revert to the last value the server confirmed", async () => {
     getReviewPrefs.mockResolvedValue({ review_default_mode: "learn", review_show_timer: true });
     const rejects: ((e: unknown) => void)[] = [];
     setReviewPref.mockImplementation(() => new Promise((_, rej) => rejects.push(rej)));
@@ -578,7 +578,7 @@ describe("the timer", () => {
     fireEvent.change(screen.getByLabelText("Mode"), { target: { value: "review" } });
     expect((screen.getByLabelText("Always start here") as HTMLInputElement).checked).toBe(true); // stored = review, confirmed
   });
-  it("a save refused before the preference read landed reverts to what the read reported", async () => {
+  it("a save started before the read landed and refused after it reverts to what the read reported", async () => {
     let resolvePrefs: (p: unknown) => void = () => {};
     getReviewPrefs.mockImplementation(() => new Promise((r) => (resolvePrefs = r)));
     let rejectSave: (e: unknown) => void = () => {};
@@ -591,6 +591,53 @@ describe("the timer", () => {
     await act(async () => rejectSave(new ApiError(500, "x")));
     await flush();
     expect(timer.checked).toBe(false); // the read's value, not the compile-time default "on"
+  });
+  it("a save refused while the read is still pending is corrected by the read when it lands", async () => {
+    let resolvePrefs: (p: unknown) => void = () => {};
+    getReviewPrefs.mockImplementation(() => new Promise((r) => (resolvePrefs = r)));
+    setReviewPref.mockRejectedValueOnce(new ApiError(500, "x")).mockRejectedValueOnce(new ApiError(500, "x"));
+    await renderReview();
+    const timer = screen.getByLabelText("Time my reps") as HTMLInputElement;
+    await act(async () => fireEvent.click(timer)); // off, refused at once: back to the default "on"
+    await flush();
+    expect(timer.checked).toBe(true);
+    fireEvent.change(screen.getByLabelText("Mode"), { target: { value: "review" } });
+    await act(async () => fireEvent.click(screen.getByLabelText("Always start here"))); // → review, refused
+    await flush();
+    await act(async () => resolvePrefs({ review_default_mode: "review", review_show_timer: false })); // the row
+    await flush();
+    expect(timer.checked).toBe(false); // the read's value replaces the default the refusal fell back to
+    expect((screen.getByLabelText("Always start here") as HTMLInputElement).checked).toBe(true); // stored = review
+  });
+  it("a save that resolved before the read landed outranks it, even after a later refusal", async () => {
+    let resolvePrefs: (p: unknown) => void = () => {};
+    getReviewPrefs.mockImplementation(() => new Promise((r) => (resolvePrefs = r)));
+    setReviewPref.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new ApiError(500, "x"));
+    await renderReview();
+    const timer = screen.getByLabelText("Time my reps") as HTMLInputElement;
+    await act(async () => fireEvent.click(timer)); // off, saved
+    await flush();
+    await act(async () => fireEvent.click(timer)); // on, refused: back to the confirmed "off"
+    await flush();
+    expect(timer.checked).toBe(false);
+    await act(async () => resolvePrefs({ review_default_mode: "learn", review_show_timer: true })); // the row before the save
+    await flush();
+    expect(timer.checked).toBe(false); // the confirmed save stands over the stale read
+  });
+  it("a refused save followed by a pending one is not corrected by the read: the pending edit stands", async () => {
+    let resolvePrefs: (p: unknown) => void = () => {};
+    getReviewPrefs.mockImplementation(() => new Promise((r) => (resolvePrefs = r)));
+    setReviewPref.mockRejectedValueOnce(new ApiError(500, "x")).mockImplementationOnce(() => new Promise(() => {}));
+    await renderReview();
+    const timer = screen.getByLabelText("Time my reps") as HTMLInputElement;
+    await act(async () => fireEvent.click(timer)); // off, refused at once
+    await flush();
+    expect(timer.checked).toBe(true);
+    await act(async () => fireEvent.click(timer)); // off again, held
+    expect(timer.checked).toBe(false);
+    await act(async () => resolvePrefs({ review_default_mode: "learn", review_show_timer: true }));
+    await flush();
+    expect(timer.checked).toBe(false); // the click in flight stands over the read
   });
   it("a manual retry re-sends the body the commit built, even after the timer was switched off", async () => {
     learnCommit.mockRejectedValue(new TypeError("offline"));

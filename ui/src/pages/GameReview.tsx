@@ -183,12 +183,19 @@ export default function GameReview() {
   // (the initial read, or the latest save that resolved), never the value before the click: two
   // refused saves in a row would otherwise leave the control on the first one's optimistic value.
   // The read still records the confirmed value when a save is already in flight (it reports the
-  // row before that save); only a save that has resolved outranks it. Correctness of the refs
-  // relies on setReviewPref resolving calls in order and only once each call's own patch is
-  // written (games.ts): an older call's `.then` may run first, but the newest one runs last.
+  // row before that save); only a save that has resolved outranks it. A field whose newest edit
+  // was refused before the read landed is showing the compile-time default, not a value of the
+  // player's: the read corrects it (a pending edit, or one that saved, still stands over the
+  // read; once any save has resolved the field shows a confirmed value and the read, which
+  // reports an older row, never applies). The refused generation is only ever compared with the
+  // current one, so it needs no reset after a later save. Correctness of the refs relies on setReviewPref resolving calls in order and only
+  // once each call's own patch is written (games.ts): an older call's `.then` may run first,
+  // but the newest one runs last.
   const modeTouched = useRef(false);
   const storedTouched = useRef(0);
   const timerTouched = useRef(0);
+  const storedRefused = useRef(0); // the generation of the newest refused save, if it is the newest edit
+  const timerRefused = useRef(0);
   const confirmedStored = useRef<ReviewMode>("learn");
   const confirmedTimer = useRef(true);
   const storedSaved = useRef(false);
@@ -199,10 +206,10 @@ export default function GameReview() {
       .then((p) => {
         if (!alive) return;
         if (!storedSaved.current) confirmedStored.current = p.review_default_mode;
-        if (!storedTouched.current) setStoredMode(p.review_default_mode);
+        if (!storedTouched.current || (storedRefused.current === storedTouched.current && !storedSaved.current)) setStoredMode(p.review_default_mode);
         if (!modeTouched.current) setMode(p.review_default_mode);
         if (!timerSaved.current) confirmedTimer.current = p.review_show_timer;
-        if (!timerTouched.current) setShowTimer(p.review_show_timer);
+        if (!timerTouched.current || (timerRefused.current === timerTouched.current && !timerSaved.current)) setShowTimer(p.review_show_timer);
         setModeSettled(true);
       })
       .catch(() => {
@@ -237,7 +244,10 @@ export default function GameReview() {
         setPrefError(false);
       })
       .catch(() => {
-        if (gen === storedTouched.current) setStoredMode(confirmedStored.current);
+        if (gen === storedTouched.current) {
+          storedRefused.current = gen;
+          setStoredMode(confirmedStored.current);
+        }
         setPrefError(true);
       });
   }, [mode]);
@@ -252,7 +262,10 @@ export default function GameReview() {
         setPrefError(false);
       })
       .catch(() => {
-        if (gen === timerTouched.current) setShowTimer(confirmedTimer.current);
+        if (gen === timerTouched.current) {
+          timerRefused.current = gen;
+          setShowTimer(confirmedTimer.current);
+        }
         setPrefError(true);
       });
   }, []);
