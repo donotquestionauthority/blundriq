@@ -184,6 +184,22 @@ describe("Deviations page", () => {
     expect(similar[0].query.has("move")).toBe(false);
   });
 
+  it("asks the repertoire about the board without the aggregate move when that move is not playable there", async () => {
+    const calls = stubFetch({
+      "/settings": () => ({ status: 200, body: SETTINGS }),
+      "/deviations": () => ({ status: 200, body: page([pattern({ most_common_played: "exd5" })]) }),
+      "/repertoire/coverage": (_m, _b, q) => (q.has("move") ? { status: 400, body: { detail: "move is not legal in fen" } } : { status: 200, body: { status: "agree", transposed: true, book_move: "Bc4", played_is_book: null, book: "Italian", chapter: "Giuoco", line_name: "Main", line_id: 1, line_ply: 4, more_lines: 0 } }),
+    });
+    renderPage();
+    fireEvent.click(await screen.findByText("3×"));
+    const dialog = await screen.findByRole("dialog", { name: "Position" });
+    expect(await within(dialog).findByTestId("repertoire-coverage")).toHaveTextContent("In your repertoire (by transposition) · Italian › Giuoco › Main — your repertoire plays Bc4 here");
+    const asked = calls.filter((c) => c.path === "/repertoire/coverage");
+    expect(asked).toHaveLength(1);
+    expect(asked[0].query.get("fen")).toBe(AFTER_NC6);
+    expect(asked[0].query.has("move")).toBe(false);
+  });
+
   it("similar positions asks about the most common move when it is legal on the displayed board", async () => {
     const calls = stubFetch({
       "/settings": () => ({ status: 200, body: SETTINGS }),

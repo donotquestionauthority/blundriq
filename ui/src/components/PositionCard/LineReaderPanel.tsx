@@ -226,8 +226,9 @@ function StickyNote({ line, curPly, onJump }: { line: LineReaderLine; curPly: nu
   );
 }
 
-/** The whole line, move by move, with the author's notes and an editor for the current ply. */
-export function LineWalkthrough({ lineId }: { lineId: number }) {
+/** The whole line, move by move, with the author's notes and an editor for the current ply.
+ *  `initialPly` is where it opens (a card's board in the line), clamped to the line once it loads. */
+export function LineWalkthrough({ lineId, initialPly = 0 }: { lineId: number; initialPly?: number }) {
   const [line, setLine] = useState<LineReaderLine | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [curPly, setCurPly] = useState(0);
@@ -237,7 +238,9 @@ export function LineWalkthrough({ lineId }: { lineId: number }) {
     let cancelled = false;
     getLineAnnotated(lineId)
       .then((res) => {
-        if (!cancelled) setLine(res);
+        if (cancelled) return;
+        setLine(res);
+        setCurPly(Math.min(Math.max(0, initialPly), Math.max(0, res.positions.length - 1)));
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(detailOf(e, "Could not load the line."));
@@ -245,6 +248,8 @@ export function LineWalkthrough({ lineId }: { lineId: number }) {
     return () => {
       cancelled = true;
     };
+    // `initialPly` is read once, with the line: a later change of it is not a jump.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lineId]);
 
   // After a note is saved or deleted the line is read again; the board stays where it was.
@@ -340,7 +345,7 @@ export function LineWalkthrough({ lineId }: { lineId: number }) {
 }
 
 /** Keyed by what it shows, so a new position or line starts from a fresh, closed panel. */
-export function LineReaderPanel({ fen, repertoireLineId = null }: { fen: string; repertoireLineId?: number | null }) {
+export function LineReaderPanel({ fen, repertoireLineId = null, initialPly = 0 }: { fen: string; repertoireLineId?: number | null; initialPly?: number }) {
   const [open, setOpen] = useState(false);
   if (repertoireLineId == null) return <SinglePosition key={fen} fen={fen} />;
   return (
@@ -350,7 +355,7 @@ export function LineReaderPanel({ fen, repertoireLineId = null }: { fen: string;
       </button>
       {open && (
         <div className="rounded border border-zinc-200 p-3 dark:border-zinc-800">
-          <LineWalkthrough key={repertoireLineId} lineId={repertoireLineId} />
+          <LineWalkthrough key={repertoireLineId} lineId={repertoireLineId} initialPly={initialPly} />
         </div>
       )}
     </div>

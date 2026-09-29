@@ -261,6 +261,22 @@ export const conflictsPath = (opts: { fen?: string; filter?: "all" } = {}) => {
 export const getAnnotation = (fen: string) => api.get<Annotation | null>(`/repertoire/annotation?fen=${encodeURIComponent(fen)}`);
 export const putAnnotation = (fen: string, text: string, lineId: number | null) => api.put<Annotation | { detail: string; line_id: number }>("/repertoire/annotation", { fen, text, line_id: lineId });
 export const deleteAnnotation = (fen: string, lineId: number | null) => api.del<{ detail: string }>(`/repertoire/annotation?fen=${encodeURIComponent(fen)}${lineId != null ? `&line_id=${lineId}` : ""}`);
+/** `GET /repertoire/coverage`: the repertoire's view of one card's board. `line_id` names a line
+ *  to walk through (the selected one, or any of the board's lines when they disagree) and
+ *  `line_ply` the board's index in it; `played_is_book` is null without a move to judge. */
+export interface RepertoireCoverage {
+  status: "match" | "agree" | "end_of_line" | "conflict" | "unreadable" | "none";
+  transposed: boolean | null;
+  book_move: string | null;
+  played_is_book: boolean | null;
+  book: string | null;
+  chapter: string | null;
+  line_name: string | null;
+  line_id: number | null;
+  line_ply: number | null;
+  more_lines: number;
+}
+export const getCoverage = (fen: string, move: string | null, signal?: AbortSignal) => api.get<RepertoireCoverage>(`/repertoire/coverage?fen=${encodeURIComponent(fen)}${move ? `&move=${encodeURIComponent(move)}` : ""}`, signal);
 export const getLineAnnotated = (lineId: number) => api.get<LineReaderLine>(`/repertoire/lines/${lineId}/annotated`);
 
 /** "Imported: <title> by <author>", or the url, or nothing. */

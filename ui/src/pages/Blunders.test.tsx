@@ -318,6 +318,29 @@ describe("Blunders page", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  it("asks the repertoire about each card's board and played move, and shows the answer with the walk-through", async () => {
+    const calls = stubFetch({
+      "/settings": () => ({ status: 200, body: SETTINGS }),
+      "/blunders": () => ({ status: 200, body: page([position(), position({ fen: OTHER, count: 2, chess_game_id: null, context: "Open Game", move_played: "Nf3" })]) }),
+      "/blunders/prompts": () => ({ status: 200, body: PROMPTS }),
+      "/repertoire/coverage": (_m, _b, q) => ({ status: 200, body: q.get("fen") === FORK ? { status: "match", transposed: false, book_move: "Nxe5", played_is_book: false, book: "Italian", chapter: "Giuoco", line_name: "Main", line_id: 1, line_ply: 6, more_lines: 0 } : { status: "none", transposed: null, book_move: null, played_is_book: null, book: null, chapter: null, line_name: null, line_id: null, line_ply: null, more_lines: 0 } }),
+    });
+    renderPage();
+    fireEvent.click((await screen.findAllByTestId("position-card"))[0]);
+    const dialog = await screen.findByRole("dialog", { name: "Position" });
+    expect(await within(dialog).findByTestId("repertoire-coverage")).toHaveTextContent("In your repertoire · Italian › Giuoco › Main — your repertoire plays Nxe5 here");
+    expect(within(dialog).getByRole("button", { name: "📖 Read the whole line" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "＋ Add note" })).toBeInTheDocument(); // the card's own note stays
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(await within(dialog).findByText("Not in your repertoire")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: /Read the whole line/ })).toBeNull();
+    const asked = calls.filter((c) => c.path === "/repertoire/coverage");
+    expect(asked.map((c) => [c.query.get("fen"), c.query.get("move")])).toEqual([
+      [FORK, "d3"],
+      [OTHER, "Nf3"],
+    ]);
+  });
+
   it("opens from a tap on the board, and ignores the touchend that opened it", async () => {
     stubFetch({ "/settings": () => ({ status: 200, body: SETTINGS }), "/blunders": () => ({ status: 200, body: page([position(), position({ fen: OTHER })]) }), "/blunders/prompts": () => ({ status: 200, body: { prompts: [] } }) });
     renderPage();
