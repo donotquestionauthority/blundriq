@@ -524,6 +524,74 @@ describe("the timer", () => {
     expect(timer.checked).toBe(true);
     expect(screen.getByRole("alert")).toBeInTheDocument();
   });
+  it("two refused saves in a row revert to the last value the server confirmed (8C-R2-1)", async () => {
+    getReviewPrefs.mockResolvedValue({ review_default_mode: "learn", review_show_timer: true });
+    const rejects: ((e: unknown) => void)[] = [];
+    setReviewPref.mockImplementation(() => new Promise((_, rej) => rejects.push(rej)));
+    await renderReview();
+    const timer = screen.getByLabelText("Time my reps") as HTMLInputElement;
+    await act(async () => fireEvent.click(timer)); // off, held
+    await act(async () => fireEvent.click(timer)); // on, held
+    expect(timer.checked).toBe(true);
+    await act(async () => rejects[0](new ApiError(500, "x")));
+    await act(async () => rejects[1](new ApiError(500, "x")));
+    await flush();
+    expect(timer.checked).toBe(true); // the read's value, not the first click's unconfirmed "off"
+    expect(setReviewPref).toHaveBeenCalledTimes(2);
+
+    // The same for Always start here: stored = learn; Review then Learn made default, both refused.
+    fireEvent.change(screen.getByLabelText("Mode"), { target: { value: "review" } });
+    await act(async () => fireEvent.click(screen.getByLabelText("Always start here"))); // → review, held
+    fireEvent.change(screen.getByLabelText("Mode"), { target: { value: "learn" } });
+    await act(async () => fireEvent.click(screen.getByLabelText("Always start here"))); // → learn, held
+    await act(async () => rejects[2](new ApiError(500, "x")));
+    await act(async () => rejects[3](new ApiError(500, "x")));
+    await flush();
+    expect(setReviewPref).toHaveBeenCalledTimes(4);
+    fireEvent.change(screen.getByLabelText("Mode"), { target: { value: "review" } });
+    // stored is learn again (confirmed), so making Review the default is offered, not already so
+    expect((screen.getByLabelText("Always start here") as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+  });
+  it("a refused save reverts to the save before it that succeeded, not to the initial read", async () => {
+    getReviewPrefs.mockResolvedValue({ review_default_mode: "learn", review_show_timer: true });
+    setReviewPref.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new ApiError(500, "x"));
+    await renderReview();
+    const timer = screen.getByLabelText("Time my reps") as HTMLInputElement;
+    await act(async () => fireEvent.click(timer)); // off, succeeds
+    await flush();
+    expect(timer.checked).toBe(false);
+    await act(async () => fireEvent.click(timer)); // on, refused
+    await flush();
+    expect(timer.checked).toBe(false); // back to the confirmed "off"
+  });
+  it("a refused Always start here reverts to the default that was last saved, not to the initial read", async () => {
+    getReviewPrefs.mockResolvedValue({ review_default_mode: "learn", review_show_timer: true });
+    setReviewPref.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new ApiError(500, "x"));
+    await renderReview();
+    fireEvent.change(screen.getByLabelText("Mode"), { target: { value: "review" } });
+    await act(async () => fireEvent.click(screen.getByLabelText("Always start here"))); // → review, saved
+    await flush();
+    fireEvent.change(screen.getByLabelText("Mode"), { target: { value: "learn" } });
+    await act(async () => fireEvent.click(screen.getByLabelText("Always start here"))); // → learn, refused
+    await flush();
+    fireEvent.change(screen.getByLabelText("Mode"), { target: { value: "review" } });
+    expect((screen.getByLabelText("Always start here") as HTMLInputElement).checked).toBe(true); // stored = review, confirmed
+  });
+  it("a save refused before the preference read landed reverts to what the read reported", async () => {
+    let resolvePrefs: (p: unknown) => void = () => {};
+    getReviewPrefs.mockImplementation(() => new Promise((r) => (resolvePrefs = r)));
+    let rejectSave: (e: unknown) => void = () => {};
+    setReviewPref.mockImplementationOnce(() => new Promise((_, rej) => (rejectSave = rej)));
+    await renderReview();
+    const timer = screen.getByLabelText("Time my reps") as HTMLInputElement;
+    await act(async () => fireEvent.click(timer)); // off, held; the read is still pending
+    await act(async () => resolvePrefs({ review_default_mode: "learn", review_show_timer: false })); // the row says off
+    expect(timer.checked).toBe(false); // the click stands over the read
+    await act(async () => rejectSave(new ApiError(500, "x")));
+    await flush();
+    expect(timer.checked).toBe(false); // the read's value, not the compile-time default "on"
+  });
   it("a manual retry re-sends the body the commit built, even after the timer was switched off", async () => {
     learnCommit.mockRejectedValue(new TypeError("offline"));
     await renderReview();
