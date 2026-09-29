@@ -21,11 +21,11 @@ through it (`rep_lines`, colour by the side to move) and the one move they agree
 pattern's own `expected_move` — the pipeline's matched move — is the second and outranks it.
 
 **New** (`mark_new`): a pattern the list has never shown. The page acknowledges exactly the
-patterns it rendered (`mark_seen`); the first look ever (`players.deviations_seen_at` still
-NULL) marks nothing and acknowledges everything then listed; Home counts the same predicate
-and never acknowledges. New patterns come first, then count order inside each group, and the
-order is frozen for the visit by the same `stay` marker as Blunders (core/blunders.py explains
-it): a pattern acknowledged at or after `stay` still orders and shows as new for that visit.
+patterns it rendered (`mark_seen`); Home counts the same predicate and never acknowledges. New
+patterns come first, then count order inside each group, and the order is frozen for the visit
+by the same `stay` marker as Blunders, with the same visit lock (`LOCK_SEEN_DEVIATIONS`) and
+the same per-visit decision from the first look ever (`players.deviations_first_seen_at`,
+`marks_new`); core/blunders.py explains all three.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from typing import Any, LiteralString, cast
 from psycopg import Connection
 
 from core.chess.eligibility import analysable_sql, evidence_sql, window_cte
-from core.constants import PLAYER_ID
+from core.constants import LOCK_SEEN_DEVIATIONS, PLAYER_ID
 from core.repertoire import read
 from core.settings import Settings
 
@@ -293,6 +293,8 @@ def _card(row: Row, games: list[Row], lines: list[Row]) -> Row:
 
 def positions(conn: Connection[Any], f: DeviationFilters, focus: str, page: int = 0) -> Row:
     """One page of the ranked list. `focus` is the `time_class_focus` setting."""
+    if f.stay is None:  # a visit starts: its marker waits for any acknowledgement in flight
+        conn.execute("SELECT pg_advisory_xact_lock(%s, %s)", (LOCK_SEEN_DEVIATIONS, PLAYER_ID))
     p = _page_rows(conn, f, focus, page)
     rows, total = p.rows, p.total
     details = _details(conn, f, focus, [_key_of(r) for r in rows])
@@ -334,17 +336,38 @@ def new_count(conn: Connection[Any], f: DeviationFilters, focus: str) -> int:
 
 
 def seen_at(conn: Connection[Any]) -> datetime | None:
+    """When the list was last looked at (Home's date); None before the first look."""
     row = conn.execute("SELECT deviations_seen_at FROM players WHERE id = %s", (PLAYER_ID,)).fetchone()
     if row is None:
         raise RuntimeError("no players row; run `pipeline player set` first")
     return row["deviations_seen_at"]
 
 
-def mark_seen(conn: Connection[Any], keys: list[Key]) -> datetime:
-    """The page has shown these patterns (as `to_acknowledge` gave them). `seen_at` is the wall
-    clock, like `stay`, so the two compare inside one transaction as well."""
+def marks_new(conn: Connection[Any], stay: datetime | None) -> bool:
+    """Whether a visit marks NEW: only one that started after the first look ever (the
+    Blunders twin explains the lock)."""
+    if stay is None:
+        conn.execute("SELECT pg_advisory_xact_lock(%s, %s)", (LOCK_SEEN_DEVIATIONS, PLAYER_ID))
     row = conn.execute(
-        "UPDATE players SET deviations_seen_at = now() WHERE id = %s RETURNING deviations_seen_at", (PLAYER_ID,)
+        "SELECT deviations_first_seen_at IS NOT NULL"
+        " AND (%s::timestamptz IS NULL OR deviations_first_seen_at < %s::timestamptz) AS marks"
+        " FROM players WHERE id = %s",
+        (stay, stay, PLAYER_ID),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("no players row; run `pipeline player set` first")
+    return bool(row["marks"])
+
+
+def mark_seen(conn: Connection[Any], keys: list[Key]) -> datetime:
+    """The page has shown these patterns (as `to_acknowledge` gave them). Under the visit lock,
+    every clock read after it (core/blunders.py `mark_seen`)."""
+    conn.execute("SELECT pg_advisory_xact_lock(%s, %s)", (LOCK_SEEN_DEVIATIONS, PLAYER_ID))
+    row = conn.execute(
+        "UPDATE players SET deviations_seen_at = clock_timestamp(),"
+        " deviations_first_seen_at = coalesce(deviations_first_seen_at, clock_timestamp())"
+        " WHERE id = %s RETURNING deviations_seen_at",
+        (PLAYER_ID,),
     ).fetchone()
     if row is None:
         raise RuntimeError("no players row; run `pipeline player set` first")

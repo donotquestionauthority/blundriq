@@ -41,8 +41,8 @@ def list_patterns(
 ) -> dict[str, Any]:
     with db.transaction() as conn:
         config = settings.load(conn)
-        # Patterns are marked NEW only once the list has been looked at at least once.
-        f = replace(f, min_ply=config.deviations_default_min_ply, mark_new=deviations.seen_at(conn) is not None)
+        # Patterns are marked NEW only by a visit that started after the first look ever.
+        f = replace(f, min_ply=config.deviations_default_min_ply, mark_new=deviations.marks_new(conn, f.stay))
         return deviations.positions(conn, f, config.time_class_focus, page)
 
 

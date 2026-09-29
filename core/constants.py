@@ -147,6 +147,8 @@ LOCK_SRS_ATTEMPT = 3002
 LOCK_AI_BUDGET = 3003
 LOCK_REPERTOIRE = 3004  # matching and every repertoire change, from reading lines to publishing results
 LOCK_REVIEW = 3005  # the review run, from reading the window to publishing events (core/review/run.py)
+LOCK_SEEN_BLUNDERS = 3006  # a visit's first list read and every acknowledgement of the Blunders list
+LOCK_SEEN_DEVIATIONS = 3007  # the same for the Deviations list
 
 # Game terminations decided off the board. Such a game carries no review signal: the
 # detector returns an authoritative zero for it. The one membership authority; the

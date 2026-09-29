@@ -53,6 +53,9 @@ def test_deviations_list_and_seen(client: TestClient) -> None:
     assert client.post("/deviations/seen", json={"patterns": r["to_acknowledge"]}).status_code == 200
     assert client.get("/deviations/seen").json()["seen_at"] is not None
     assert client.get("/home").json()["new_deviations"] == 0
+    # A later request of the first-look visit does not turn what it acknowledged into news.
+    same_visit = client.get("/deviations", params={"time_class": "all", "stay": r["stay"]}).json()
+    assert same_visit["new_count"] == 0 and not same_visit["positions"][0]["is_new"]
     assert client.get("/deviations", params={"time_class": "nope"}).status_code == 422
     assert client.get("/deviations", params={"color": "red"}).status_code == 422
     # The visit's order marker round-trips; garbage is refused like any other parameter.

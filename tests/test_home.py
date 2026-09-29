@@ -9,7 +9,7 @@ from typing import Any
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
-from psycopg.rows import DictRow
+from psycopg.rows import DictRow, dict_row
 
 from core import blunders, home, runs
 from core.blunders import BlunderFilters
@@ -107,6 +107,78 @@ def test_the_first_look_marks_nothing_and_acknowledges_everything_listed(db: psy
         _game(db, gid, days_ago=0)
         _blunder(db, gid, "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
     assert _new(db) == 1
+
+
+def test_the_first_look_visit_marks_nothing_on_any_of_its_requests(db: psycopg.Connection[DictRow]) -> None:
+    """The visit that declares history known acknowledges page by page, and a later request of
+    that visit — Next, a filter change, the refetch after a dismissal — sends the marker back.
+    Whether a visit marks NEW is decided from the first look ever, not from what its own
+    acknowledgements wrote: paging through history reaches every board once, none of it NEW,
+    and only the next visit marks."""
+    fens = _many_boards(blunders.PAGE_SIZE + 3)
+    gid = 0
+    for fen in fens:
+        for _ in range(2):
+            gid += 1
+            _game(db, gid, days_ago=1)
+            _blunder(db, gid, fen)
+    assert not blunders.marks_new(db, None)  # never looked at
+    shown: list[str] = []
+    stay: datetime | None = None
+    for page in range(2):
+        marks = blunders.marks_new(db, stay)
+        r = blunders.positions(db, BlunderFilters(ALL, time_class="all", mark_new=marks, stay=stay), "rapid_plus", page)
+        stay = datetime.fromisoformat(r["stay"])
+        assert not marks and r["new_count"] == 0 and not any(p["is_new"] for p in r["positions"])
+        shown += [p["fen"] for p in r["positions"]]
+        blunders.mark_seen(db, r["to_acknowledge"])  # page 1's acknowledgement records everything...
+        assert not blunders.marks_new(db, stay)  # ...and the visit still marks nothing
+    assert len(shown) == len(set(shown)) == len(fens)
+    assert blunders.marks_new(db, None) and _new(db) == 0  # the next visit marks; nothing is waiting
+    for g in (gid + 1, gid + 2):  # found after the first look: news for the next visit
+        _game(db, g, days_ago=0)
+        _blunder(db, g, "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
+    nxt = _list(db)
+    assert nxt["new_count"] == 1 and nxt["positions"][0]["is_new"]
+
+
+def test_a_visits_marker_waits_for_an_acknowledgement_in_flight(
+    db: psycopg.Connection[DictRow], fresh_db_url: str
+) -> None:
+    """`seen_at` is written when the acknowledgement executes, not when it commits, so a visit
+    starting while one is still open could read its rows as unseen and yet, once it commits,
+    find them acknowledged before the visit's marker — and page 2 would skip what page 1's
+    acknowledgement moved. The first read of a visit waits for the acknowledgement instead:
+    every board is reached once, and the boards the open acknowledgement did not cover are the
+    visit's NEW ones."""
+    fens = _many_boards(blunders.PAGE_SIZE + 3)
+    gid = 0
+    for fen in fens:
+        for _ in range(2):
+            gid += 1
+            _game(db, gid, days_ago=1)
+            _blunder(db, gid, fen)
+    blunders.mark_seen(db, [])  # an earlier first look
+    db.commit()
+    earlier = _list(db)  # the previous visit's page 1 ...
+    db.commit()
+    with psycopg.Connection[DictRow].connect(fresh_db_url, row_factory=dict_row) as other:
+        blunders.mark_seen(other, earlier["to_acknowledge"])  # ... acknowledged, but not yet committed
+        db.execute("SET LOCAL lock_timeout = '200ms'")
+        with pytest.raises(psycopg.errors.LockNotAvailable):  # the new visit's first read waits for it
+            _list(db)
+        db.rollback()
+        other.commit()
+    seen: list[str] = []
+    stay: datetime | None = None
+    for page in range(2):
+        r = blunders.positions(db, BlunderFilters(ALL, time_class="all", mark_new=True, stay=stay), "rapid_plus", page)
+        stay = datetime.fromisoformat(r["stay"])
+        assert r["new_count"] == 3 and [p["is_new"] for p in r["positions"]].count(True) == (3 if page == 0 else 0)
+        seen += [p["fen"] for p in r["positions"]]
+        blunders.mark_seen(db, r["to_acknowledge"])
+    assert len(seen) == len(set(seen)) == len(fens)
+    assert _new(db) == 0
 
 
 def _many_boards(n: int) -> list[str]:
@@ -361,6 +433,10 @@ def test_the_route_marks_new_only_after_a_first_look_and_acknowledges_what_it_se
     assert r.json()["to_acknowledge"] == [A]  # ... which acknowledges everything listed
     assert client.post("/blunders/seen", json={"boards": r.json()["to_acknowledge"]}).status_code == 200
     assert client.get("/home").json()["new_blunders"] == 0
+    same_visit = client.get(
+        "/blunders", params={"time_class": "all", "classifications": ["blunder"], "stay": r.json()["stay"]}
+    )
+    assert same_visit.json()["new_count"] == 0 and [p["is_new"] for p in same_visit.json()["positions"]] == [False]
     _game(db, 3, days_ago=0)
     _blunder(db, 3, B)
     _game(db, 4, days_ago=0)

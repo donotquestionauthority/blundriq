@@ -50,8 +50,8 @@ def list_positions(
         config = settings.load(conn)
         if not f.classifications:
             f = replace(f, classifications=tuple(config.blunders_default_classifications))
-        # Boards are marked NEW only once the list has been looked at at least once.
-        f = replace(f, mark_new=blunders.seen_at(conn) is not None)
+        # Boards are marked NEW only by a visit that started after the first look ever.
+        f = replace(f, mark_new=blunders.marks_new(conn, f.stay))
         return blunders.positions(conn, f, config.time_class_focus, page)
 
 

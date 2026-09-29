@@ -7,7 +7,7 @@ from typing import Any
 
 import psycopg
 import pytest
-from psycopg.rows import DictRow
+from psycopg.rows import DictRow, dict_row
 
 from core import deviations, home, settings
 from core.deviations import DeviationFilters
@@ -132,6 +132,71 @@ def test_new_patterns_come_first_and_the_stay_freezes_the_order(db: psycopg.Conn
     later = _list(db, mark_new=True)
     assert [(c["expected_move"], c["is_new"]) for c in later["positions"]] == [("Bc4", False), ("Nxe5", False)]
     assert later["new_count"] == 0
+
+
+def _many_patterns(conn: psycopg.Connection[DictRow], n: int) -> list[str]:
+    """`n` patterns at the same ply, each missed in two games, keyed by the expected move."""
+    expected = [f"x{i}" for i in range(n)]
+    gid = 100
+    for exp in expected:
+        for _ in range(2):
+            gid += 1
+            fens = h.game(conn, gid, MAIN[:4] + ["d4"], days_ago=1)
+            h.result(
+                conn, gid, book_id=1, chapter_id=1, ply=4, by="me", expected=exp, played="d4", fen=fens[4], line_ids=[1]
+            )
+    return expected
+
+
+def _page_through(conn: psycopg.Connection[DictRow], *, marks: bool | None) -> tuple[list[str], list[int]]:
+    """Two pages with the marker sent back and an acknowledgement after each: the patterns shown,
+    and how many NEW chips each page had. `marks` None asks `marks_new` the way the route does."""
+    shown: list[str] = []
+    chips: list[int] = []
+    stay: datetime | None = None
+    for page in range(2):
+        mark_new = deviations.marks_new(conn, stay) if marks is None else marks
+        r = _list(conn, page, mark_new=mark_new, stay=stay)
+        stay = datetime.fromisoformat(r["stay"])
+        shown += [c["expected_move"] for c in r["positions"]]
+        chips.append(sum(1 for c in r["positions"] if c["is_new"]))
+        deviations.mark_seen(conn, [tuple(k) for k in r["to_acknowledge"]])
+    return shown, chips
+
+
+def test_the_first_look_visit_marks_nothing_on_any_of_its_requests(db: psycopg.Connection[DictRow]) -> None:
+    """Paging through history on the first look ever, marker sent back and an acknowledgement
+    after each page, reaches every pattern once with no NEW chip: the visit's own
+    acknowledgements do not turn it into a marking visit. The next visit marks."""
+    expected = _many_patterns(db, deviations.PAGE_SIZE + 3)
+    assert not deviations.marks_new(db, None)
+    shown, chips = _page_through(db, marks=None)
+    assert sorted(shown) == sorted(expected) and chips == [0, 0]
+    assert deviations.marks_new(db, None)
+    assert deviations.new_count(db, DeviationFilters(time_class="all", mark_new=True), "all") == 0
+
+
+def test_a_visits_marker_waits_for_an_acknowledgement_in_flight(
+    db: psycopg.Connection[DictRow], fresh_db_url: str
+) -> None:
+    """An acknowledgement still open when a visit starts would be read as unseen and then, once
+    committed, sort as acknowledged before the visit's marker, and page 2 would skip what it
+    moved. The visit's first read waits for it (the Blunders twin explains the lock)."""
+    expected = _many_patterns(db, deviations.PAGE_SIZE + 3)
+    deviations.mark_seen(db, [])  # an earlier first look
+    db.commit()
+    earlier = _list(db, mark_new=True)  # the previous visit's page 1 ...
+    db.commit()
+    with psycopg.Connection[DictRow].connect(fresh_db_url, row_factory=dict_row) as other:
+        deviations.mark_seen(other, [tuple(k) for k in earlier["to_acknowledge"]])  # ... acknowledged, not committed
+        db.execute("SET LOCAL lock_timeout = '200ms'")
+        with pytest.raises(psycopg.errors.LockNotAvailable):  # the new visit's first read waits for it
+            _list(db, mark_new=True)
+        db.rollback()
+        other.commit()
+    shown, chips = _page_through(db, marks=True)
+    assert sorted(shown) == sorted(expected) and chips == [3, 0]
+    assert deviations.new_count(db, DeviationFilters(time_class="all", mark_new=True), "all") == 0
 
 
 def test_home_reports_new_deviations_from_the_same_predicate(db: psycopg.Connection[DictRow]) -> None:

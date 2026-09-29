@@ -505,7 +505,7 @@ CREATE TABLE public.player_puzzle_state (
     CONSTRAINT player_puzzle_state_level_check CHECK ((level = ANY (ARRAY['pawn'::text, 'knight'::text, 'bishop'::text, 'rook'::text, 'queen'::text, 'king'::text])))
 );
 
--- Exactly one row (id = 1). Platform usernames and last-checked timestamps live here; blunders_seen_at / deviations_seen_at are when those lists were last looked at (Home shows them; seen_blunder_boards / seen_deviations hold what was shown).
+-- Exactly one row (id = 1). Platform usernames and last-checked timestamps live here; blunders_seen_at / deviations_seen_at are when those lists were last looked at (Home shows them; seen_blunder_boards / seen_deviations hold what was shown), *_first_seen_at when they were first looked at (a visit marks NEW only if it started after that; migration 006).
 CREATE TABLE public.players (
     id integer NOT NULL,
     blunders_seen_at timestamp with time zone,
@@ -516,7 +516,9 @@ CREATE TABLE public.players (
     created_at timestamp with time zone DEFAULT now(),
     chesscom_last_checked timestamp with time zone,
     lichess_last_checked timestamp with time zone,
-    deviations_seen_at timestamp with time zone
+    deviations_seen_at timestamp with time zone,
+    blunders_first_seen_at timestamp with time zone,
+    deviations_first_seen_at timestamp with time zone
 );
 
 CREATE SEQUENCE public.players_id_seq

@@ -19,9 +19,7 @@ restore accept any FEN and reduce it in SQL.
 **New** (`mark_new`): a board the list has never shown — not in `seen_blunder_boards` and not
 dismissed. The page acknowledges exactly the boards it rendered (`mark_seen`), so a board that
 arrived between the read and the acknowledgement, or that sits on a page never opened, stays
-new; the first look ever (`players.blunders_seen_at` still NULL) marks nothing and acknowledges
-everything then listed, so history is not news. Home reads the same predicate for its count
-and never acknowledges anything.
+new. Home reads the same predicate for its count and never acknowledges anything.
 
 New boards come first, then score order inside each group. An acknowledgement must not move a
 board between the groups while the list is being paged, or page 2's offset would skip what page
@@ -30,6 +28,17 @@ visit is answered with `stay` (the database clock) and every later request of th
 it back; a board acknowledged at or after `stay` still orders and shows as new for that visit.
 The next visit starts a new stay, and what the last one acknowledged falls back into score order.
 `to_acknowledge` and Home's count keep the strict predicate: no seen row at all.
+
+Two things make the marker exact. The first read of a visit and every acknowledgement take the
+same advisory lock (`LOCK_SEEN_BLUNDERS`), and both read the clock under it: an acknowledgement
+still in flight when a visit starts is committed and visible before the visit's `stay` is read,
+and one that starts later has `seen_at` after it, so no board can be unseen at the first read and
+acknowledged before `stay`. And whether a visit marks NEW at all is decided once, from the first
+look ever (`players.blunders_first_seen_at`, `marks_new`): a visit that started before the first
+look — the one that declares history known, page by page — marks nothing on any of its requests
+and acknowledges every active board on any page, each time; the next visit is the first to
+mark. So boards found during the first-look visit are declared known by its next request, and
+only what arrives after its last request is news next time.
 """
 
 from __future__ import annotations
@@ -41,7 +50,7 @@ from typing import Any, LiteralString, cast
 from psycopg import Connection
 
 from core.chess.eligibility import analysable_sql, evidence_sql, window_cte
-from core.constants import BLUNDER_CLASSES, BLUNDER_SCORE_WEIGHTS, PLAYER_ID
+from core.constants import BLUNDER_CLASSES, BLUNDER_SCORE_WEIGHTS, LOCK_SEEN_BLUNDERS, PLAYER_ID
 from core.settings import Settings
 
 Row = dict[str, Any]
@@ -58,7 +67,7 @@ class BlunderFilters:
     last_n_games: int = 0  # > 0 wins over since_days
     time_class: str = "focus"  # one of TIME_CLASSES
     show_dismissed: bool = False
-    mark_new: bool = False  # flag boards never shown; False before the first look
+    mark_new: bool = False  # flag boards never shown; False for the whole first-look visit (`marks_new`)
     stay: datetime | None = None  # the visit's order marker (see the module doc); None starts one
 
 
@@ -344,6 +353,8 @@ def _card(row: dict[str, Any], group: list[dict[str, Any]]) -> dict[str, Any]:
 def positions(conn: Connection[Any], f: BlunderFilters, focus: str, page: int = 0) -> dict[str, Any]:
     """One page of the ranked list, with the counts of both views. `focus` is the
     `time_class_focus` setting, which the 'focus' time class resolves to."""
+    if f.stay is None:  # a visit starts: its marker waits for any acknowledgement in flight
+        conn.execute("SELECT pg_advisory_xact_lock(%s, %s)", (LOCK_SEEN_BLUNDERS, PLAYER_ID))
     p = _page_rows(conn, f, focus, page)
     rows = p.rows
     details = _details(conn, f, focus, [str(r["canonical_fen"]) for r in rows])
@@ -383,19 +394,41 @@ def new_count(conn: Connection[Any], f: BlunderFilters, focus: str) -> int:
 
 
 def seen_at(conn: Connection[Any]) -> datetime | None:
-    """When the list was last looked at; None before the first look."""
+    """When the list was last looked at (Home's date); None before the first look."""
     row = conn.execute("SELECT blunders_seen_at FROM players WHERE id = %s", (PLAYER_ID,)).fetchone()
     if row is None:
         raise RuntimeError("no players row; run `pipeline player set` first")
     return row["blunders_seen_at"]
 
 
+def marks_new(conn: Connection[Any], stay: datetime | None) -> bool:
+    """Whether a visit marks NEW: only one that started after the first look ever. Without a
+    marker the visit is starting now: under the visit lock, so a first look being recorded
+    right now counts, and any recorded first look is before the marker `positions` reads."""
+    if stay is None:
+        conn.execute("SELECT pg_advisory_xact_lock(%s, %s)", (LOCK_SEEN_BLUNDERS, PLAYER_ID))
+    row = conn.execute(
+        "SELECT blunders_first_seen_at IS NOT NULL"
+        " AND (%s::timestamptz IS NULL OR blunders_first_seen_at < %s::timestamptz) AS marks"
+        " FROM players WHERE id = %s",
+        (stay, stay, PLAYER_ID),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("no players row; run `pipeline player set` first")
+    return bool(row["marks"])
+
+
 def mark_seen(conn: Connection[Any], boards: list[str]) -> datetime:
     """The page has shown these boards (board keys, as `to_acknowledge` gave them). Only
-    those become known; anything found since the page read its list stays new. `seen_at` is
-    the wall clock, like `stay`, so the two compare inside one transaction as well."""
+    those become known; anything found since the page read its list stays new. Under the
+    visit lock, and every clock read after it, so `seen_at` and the first look sort against a
+    visit's `stay` the way the visit saw the rows (the module docstring)."""
+    conn.execute("SELECT pg_advisory_xact_lock(%s, %s)", (LOCK_SEEN_BLUNDERS, PLAYER_ID))
     row = conn.execute(
-        "UPDATE players SET blunders_seen_at = now() WHERE id = %s RETURNING blunders_seen_at", (PLAYER_ID,)
+        "UPDATE players SET blunders_seen_at = clock_timestamp(),"
+        " blunders_first_seen_at = coalesce(blunders_first_seen_at, clock_timestamp())"
+        " WHERE id = %s RETURNING blunders_seen_at",
+        (PLAYER_ID,),
     ).fetchone()
     if row is None:
         raise RuntimeError("no players row; run `pipeline player set` first")
