@@ -179,17 +179,29 @@ export default function GameReview() {
   const [modeSettled, setModeSettled] = useState(false);
   // A field the player has already changed is never overwritten by the initial read, which can
   // land after the game did; and a save's failure reverts only the selection it was for — a
-  // newer one has its own generation.
+  // newer one has its own generation. What it reverts TO is the last value the server confirmed
+  // (the initial read, or the latest save that resolved), never the value before the click: two
+  // refused saves in a row would otherwise leave the control on the first one's optimistic value.
+  // The read still records the confirmed value when a save is already in flight (it reports the
+  // row before that save); only a save that has resolved outranks it. Correctness of the refs
+  // relies on setReviewPref resolving calls in order and only once each call's own patch is
+  // written (games.ts): an older call's `.then` may run first, but the newest one runs last.
   const modeTouched = useRef(false);
   const storedTouched = useRef(0);
   const timerTouched = useRef(0);
+  const confirmedStored = useRef<ReviewMode>("learn");
+  const confirmedTimer = useRef(true);
+  const storedSaved = useRef(false);
+  const timerSaved = useRef(false);
   useEffect(() => {
     let alive = true;
     getReviewPrefs()
       .then((p) => {
         if (!alive) return;
+        if (!storedSaved.current) confirmedStored.current = p.review_default_mode;
         if (!storedTouched.current) setStoredMode(p.review_default_mode);
         if (!modeTouched.current) setMode(p.review_default_mode);
+        if (!timerSaved.current) confirmedTimer.current = p.review_show_timer;
         if (!timerTouched.current) setShowTimer(p.review_show_timer);
         setModeSettled(true);
       })
@@ -216,31 +228,34 @@ export default function GameReview() {
   }, []);
   const makeDefault = useCallback(() => {
     const target = mode;
-    const previous = storedMode;
     const gen = ++storedTouched.current;
     setStoredMode(target);
     setReviewPref({ review_default_mode: target })
-      .then(() => setPrefError(false))
+      .then(() => {
+        storedSaved.current = true;
+        confirmedStored.current = target;
+        setPrefError(false);
+      })
       .catch(() => {
-        if (gen === storedTouched.current) setStoredMode(previous);
+        if (gen === storedTouched.current) setStoredMode(confirmedStored.current);
         setPrefError(true);
       });
-  }, [mode, storedMode]);
+  }, [mode]);
   /** Off means untimed: nothing is measured or sent, and NULL is what lands in the column. */
-  const toggleTimer = useCallback(
-    (next: boolean) => {
-      const previous = showTimer;
-      const gen = ++timerTouched.current;
-      setShowTimer(next);
-      setReviewPref({ review_show_timer: next })
-        .then(() => setPrefError(false))
-        .catch(() => {
-          if (gen === timerTouched.current) setShowTimer(previous);
-          setPrefError(true);
-        });
-    },
-    [showTimer],
-  );
+  const toggleTimer = useCallback((next: boolean) => {
+    const gen = ++timerTouched.current;
+    setShowTimer(next);
+    setReviewPref({ review_show_timer: next })
+      .then(() => {
+        timerSaved.current = true;
+        confirmedTimer.current = next;
+        setPrefError(false);
+      })
+      .catch(() => {
+        if (gen === timerTouched.current) setShowTimer(confirmedTimer.current);
+        setPrefError(true);
+      });
+  }, []);
 
   const { data, isLoading, error, refetch } = useApi(() => (idValid ? getGameReview(numericId) : Promise.reject(new Error("Invalid game id"))), [numericId]);
   const notAnalysable = error !== null && /not_analysable/.test(error);
