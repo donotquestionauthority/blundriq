@@ -643,7 +643,7 @@ describe("Practice page", () => {
     nextDrop = { from: "a1", to: "a8" };
     fireEvent.click(screen.getAllByText("drop")[0]);
     expect(await screen.findByText(/Couldn't save your attempt/)).toBeInTheDocument();
-    expect(screen.getByText("Replay")).toBeDisabled();
+    expect(await screen.findByText("Replay")).toBeDisabled();
     fireEvent.click(screen.getByText("Replay"));
     fireEvent.click(screen.getAllByText("drop")[0]);
     await flush();
