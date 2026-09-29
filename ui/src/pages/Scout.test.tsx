@@ -191,6 +191,22 @@ describe("Scout page", () => {
     expect(screen.queryByTestId("line-games")).not.toBeInTheDocument();
   });
 
+  it("asks the repertoire about a position card's board, never about a decision node's (the opponent's move)", async () => {
+    const state = { profiles: [profile()], positions: [position()], nodes: [node()], dismissed: [] as string[] };
+    const calls = stubFetch({ ...routes(state), "/repertoire/coverage": () => ({ status: 200, body: { status: "none", transposed: null, book_move: null, played_is_book: null, book: null, chapter: null, line_name: null, line_id: null, line_ply: null, more_lines: 0 } }) });
+    renderPage();
+    const cards = await screen.findAllByTestId("position-card");
+    fireEvent.click(cards[0]); // the node
+    const dialog = await screen.findByRole("dialog", { name: "Position" });
+    await within(dialog).findByTestId("replies-line");
+    expect(within(dialog).queryByText("Not in your repertoire")).toBeNull();
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.click(cards[1]); // a position: its own list, the player to move
+    expect(await screen.findByText("Not in your repertoire")).toBeInTheDocument();
+    const asked = calls.filter((c) => c.path === "/repertoire/coverage");
+    expect(asked.map((c) => c.query.get("fen"))).toEqual([position().fen]);
+  });
+
   it("adds an opponent through the form and refetches; a taken name shows the reason", async () => {
     const state = { profiles: [profile()], positions: [], nodes: [], dismissed: [] as string[] };
     const calls = stubFetch(routes(state));

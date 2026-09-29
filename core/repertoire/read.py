@@ -352,8 +352,9 @@ def coverage(conn: Connection[Any], fen: str, move: str | None = None) -> Row:
     `line_ply` are the projection's selected occurrence when it selected one; for `conflict`
     and `unreadable` they are the tie-break minimum over every occurrence of the board — any
     matching line beats none for the walk-through, and the status still says the lines
-    disagree. `played_is_book` compares `move` (a SAN legal in `fen`; ValueError otherwise)
-    with the book move, None when either is missing."""
+    disagree (`transposed` then says whether that occurrence is the board by text).
+    `played_is_book` compares `move` (a SAN legal in `fen`; ValueError otherwise) with the
+    book move, None when either is missing."""
     board = chess.Board(fen)
     played: str | None = None
     if move is not None:
@@ -364,12 +365,14 @@ def coverage(conn: Connection[Any], fen: str, move: str | None = None) -> Row:
     occurrences = rep_lines(conn, [fen], book_color="by_turn", with_stats=False).get(fen) or []
     entry = project_ply(fen, occurrences)
     representative: Row | None = None
+    transposed = entry["transposed"]
     if entry["line_id"] is None and occurrences:
         representative = min(occurrences, key=tie_break)
+        transposed = representative.get("occurrence_fen") != fen
     book_move = entry["book_move"]
     return {
         "status": entry["status"],
-        "transposed": entry["transposed"],
+        "transposed": transposed,
         "book_move": book_move,
         "played_is_book": (played == book_move) if played is not None and book_move is not None else None,
         "book": representative["book"] if representative else entry["book"],

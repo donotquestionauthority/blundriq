@@ -179,7 +179,29 @@ def test_coverage_names_a_line_to_walk_through_even_where_the_lines_disagree(
     c = read.coverage(clean, fen, "c3")
     assert (c["status"], c["book_move"], c["played_is_book"]) == (read.STATUS_CONFLICT, None, None)
     # The tie-break minimum over the board's occurrences: "Main" sorts before "Quiet".
-    assert (c["line_id"], c["line_name"], c["line_ply"], c["more_lines"]) == (1, "Main", 6, 1)
+    assert (c["line_id"], c["line_name"], c["line_ply"], c["more_lines"], c["transposed"]) == (1, "Main", 6, 1, False)
+    by_transposition = h.spine(None, ["Nf3", "Nc6", "e4", "e5", "Bc4", "Bc5"])[6]
+    t = read.coverage(clean, by_transposition)
+    assert (t["status"], t["line_id"], t["transposed"]) == (read.STATUS_CONFLICT, 1, True)
+
+
+def test_coverage_names_a_line_to_walk_through_where_the_stored_move_is_unreadable(
+    clean: psycopg.Connection[DictRow],
+) -> None:
+    """A line whose stored token is not a move at its own board (the null move a course export
+    can carry) makes the ply unreadable; the board is still in the book, so a line is still
+    named for the walk-through."""
+    h.player(clean)
+    h.book(clean, 1, "Italian", "white")
+    h.chapter(clean, 1, 1, "Giuoco")
+    fens = h.spine(None, ["e4", "e5", "Nf3", "Nc6"])
+    h.line(clean, 1, 1, "Zed", ["e4", "e5", "Nf3", "Nc6", "Bc4"], fens=fens + [fens[4]])
+    clean.execute("UPDATE repertoire_lines SET moves = %s::jsonb WHERE id = 1", ('["e4", "e5", "Nf3", "Nc6", "--"]',))
+    h.line(clean, 2, 1, "Alpha", ["e4", "e5", "Nf3", "Nc6", "Bb5"])
+    clean.commit()
+    c = read.coverage(clean, fens[4], "Bc4")
+    assert (c["status"], c["book_move"], c["played_is_book"]) == (read.STATUS_UNREADABLE, None, None)
+    assert (c["line_id"], c["line_name"], c["line_ply"], c["more_lines"], c["transposed"]) == (2, "Alpha", 4, 1, False)
 
 
 def test_coverage_of_a_board_outside_the_repertoire_is_none_with_no_line(clean: psycopg.Connection[DictRow]) -> None:

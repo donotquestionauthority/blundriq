@@ -35,6 +35,8 @@ function Verdict({ c, move }: { c: RepertoireCoverage; move: string | null }) {
 
 export function RepertoireBadge({ fen, move }: { fen: string; move: string | null }) {
   const cov = useCoverage(fen, move);
+  // Nothing while loading: the walk-through below unmounts with it, so stepping to another card
+  // covered by the same line starts it closed, at the new card's ply.
   if (cov.status !== "known") return null;
   const c = cov.data;
   if (c.status === "none") return <p className="text-xs text-zinc-500">Not in your repertoire</p>;

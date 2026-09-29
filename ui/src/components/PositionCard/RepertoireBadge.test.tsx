@@ -70,7 +70,6 @@ describe("RepertoireBadge", () => {
     served = coverage({ status: "end_of_line", book_move: null, played_is_book: null });
     render(<RepertoireBadge fen={AFTER_E5} move="Nf3" />);
     expect(await screen.findByTestId("repertoire-coverage")).toHaveTextContent("— the line ends here");
-    unmount();
   });
 
   it("names the book move even with no move to judge, and the disagreement when the lines conflict", async () => {

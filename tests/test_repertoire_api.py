@@ -150,7 +150,11 @@ def test_coverage_route(client: TestClient) -> None:
     )
     assert client.get("/repertoire/coverage", params={"fen": fens[4]}).json()["played_is_book"] is None
     assert client.get("/repertoire/coverage", params={"fen": h.spine(None, ["d4"])[1]}).json()["status"] == "none"
-    for bad in ("rnbqkbnr/pppppppp w", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"):
+    for bad in (
+        "rnbqkbnr/pppppppp w",
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR",
+        "bqnbrkrn/pppppppp/8/8/8/8/PPPPPPPP/BQNBRKRN w KQkq - 0 1",  # a 960 start: castling the placement cannot have
+    ):
         assert client.get("/repertoire/coverage", params={"fen": bad}).status_code == 400
     for bad_move in ("Nf6", "--", "0000"):
         assert client.get("/repertoire/coverage", params={"fen": fens[4], "move": bad_move}).status_code == 400

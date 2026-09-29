@@ -225,7 +225,8 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
           </div>
         )}
 
-        <RepertoireBadge key={`coverage:${d.fen}`} fen={d.fen} move={queriedMove} />
+        {/* Not on a decision node: its board is the opponent's move, and "what does my repertoire play here" has no answer there. */}
+        {!node && <RepertoireBadge fen={d.fen} move={queriedMove} />}
 
         <button type="button" data-testid="explore-launch" onClick={() => canExplore && setExploreSeed({ fen: d.fen, orientation: d.color })} disabled={!canExplore} title={canExplore ? undefined : "This position cannot be explored"} className="w-full rounded border border-sky-300 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-800 disabled:opacity-40 dark:border-sky-800 dark:bg-sky-900/30 dark:text-sky-300">
           Explore from here
