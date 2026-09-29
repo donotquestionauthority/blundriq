@@ -227,7 +227,18 @@ def hourly_steps() -> dict[str, Step]:
 
 
 def _run_all(args: argparse.Namespace) -> int:
-    """The hourly order. A failed step stops the chain (its alert already went out)."""
+    """The hourly order. A failed step stops the chain (its alert already went out).
+
+    The alert secrets are read before the first step, like the API reads its own at
+    startup: a run that could fail without anyone hearing about it does not start. The
+    message names the variable (never a value) and is printed in full as an operator error.
+    """
+    from core import secrets
+
+    try:
+        secrets.alerts()
+    except secrets.MissingSecret as exc:
+        raise notify.OperatorError(f"{exc}; the hourly run does not start without its alert secrets") from exc
     args.alert = True
     args.limit = args.analyze_limit
     for name, step in hourly_steps().items():

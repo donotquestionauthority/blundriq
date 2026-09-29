@@ -23,8 +23,15 @@ TOKEN_MARKER = "token-marker-2b8e1d"
 BAD_DSN = "postgres" + f"ql://user:{TOKEN_MARKER}" + f"@{HOST_MARKER}.invalid:5432/x?connect_timeout=1"
 
 
+ALERT_VARS = ("RESEND_API_KEY", "ALERT_EMAIL", "ALERT_FROM")
+
+
 def _capture_alerts(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int | None, str]]:
+    """The hourly chain refuses to start without its alert secrets, so every `run` here
+    sets fake ones (the send itself is captured, never made)."""
     sent: list[tuple[str, int | None, str]] = []
+    for name in ALERT_VARS:
+        monkeypatch.setenv(name, f"test-{name.lower()}" if name != "ALERT_EMAIL" else "alerts@example.com")
     monkeypatch.setattr(notify, "send_failure", lambda step, run_id, error: sent.append((step, run_id, error)) or True)
     return sent
 
@@ -107,6 +114,56 @@ def test_unreachable_database_fails_in_one_clean_line(
     assert sent == [("import", None, "OperationalError")]
 
 
+@pytest.mark.parametrize("missing", ALERT_VARS)
+def test_the_hourly_run_refuses_to_start_without_its_alert_secrets(
+    clean: psycopg.Connection[DictRow],
+    app_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    missing: str,
+) -> None:
+    """Alerts were silently dead for weeks once because the repository secret was misnamed:
+    send_failure returns False on a missing secret by design. The hourly run now reads its
+    alert secrets before its first step, like the API reads its own at startup, so a
+    missing or misnamed one is a red run that names the variable, and no step runs."""
+    conn = clean
+    conn.execute("INSERT INTO players (id) VALUES (%s)", (PLAYER_ID,))
+    conn.commit()
+    sent = _capture_alerts(monkeypatch)
+    monkeypatch.delenv(missing)
+    steps_run: list[str] = []
+
+    def spy(_conn: Any, _args: argparse.Namespace) -> dict[str, Any]:
+        steps_run.append("import")
+        return {}
+
+    monkeypatch.setattr(cli, "hourly_steps", lambda: {"import": spy})
+    code = cli.main(["run"])
+    out = capsys.readouterr()
+    assert code == 1
+    assert f"pipeline run: required environment variable {missing} is not set" in out.err
+    assert "does not start without its alert secrets" in out.err
+    assert "Traceback" not in out.err and sent == [] and steps_run == []
+    row = conn.execute("SELECT count(*) AS n FROM pipeline_runs").fetchone()
+    assert row and row["n"] == 0  # nothing recorded: the run never began
+
+
+def test_a_single_step_runs_without_alert_secrets(
+    clean: psycopg.Connection[DictRow],
+    app_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Only the unattended chain needs a way to alert; a hand-run step reports to its console."""
+    conn = clean
+    conn.execute("INSERT INTO players (id) VALUES (%s)", (PLAYER_ID,))
+    conn.commit()
+    for name in ALERT_VARS:
+        monkeypatch.delenv(name, raising=False)
+    assert cli.main(["housekeep"]) == 0
+    capsys.readouterr()
+
+
 def test_uncaught_command_error_prints_no_traceback(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -128,6 +185,7 @@ def test_the_hourly_chain_generates_puzzles_after_analysis(
     conn = clean
     conn.execute("INSERT INTO players (id) VALUES (%s)", (PLAYER_ID,))  # no usernames: nothing to fetch
     conn.commit()
+    _capture_alerts(monkeypatch)
     monkeypatch.setattr(cli, "_step_analyze", lambda _conn, _args: {"pending": 0, "analyzed": 0, "failed": 0})
     assert cli.main(["run"]) == 0
     capsys.readouterr()
