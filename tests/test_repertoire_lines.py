@@ -101,3 +101,119 @@ def test_stats_never_count_a_chess960_game(db: psycopg.Connection[DictRow]) -> N
     h.result(db, 8, book_id=1, chapter_id=1, ply=4, by="me", expected="Bc4", played="d4", fen=fens[4], line_ids=[1])
     row = read.rep_lines(db, [fens[4]], book_color="white")[fens[4]][0]
     assert (row["deviated_by_me"], row["me_dev_played"]) == (1, "d4")
+
+
+# --- coverage: one board, for a card ---------------------------------------------
+
+
+def _coverage_repertoire(conn: psycopg.Connection[DictRow]) -> None:
+    """A White book: the Italian main line, an alternative that agrees through move 3 and
+    plays d3 where the main line plays c3, so the board after 3...Bc5 is a conflict."""
+    h.player(conn)
+    h.book(conn, 1, "Italian", "white")
+    h.chapter(conn, 1, 1, "Giuoco")
+    h.line(conn, 1, 1, "Main", ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3"])
+    h.line(conn, 2, 1, "Quiet", ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "d3"])
+    conn.commit()
+
+
+def test_coverage_says_whether_the_played_move_is_the_book_move(clean: psycopg.Connection[DictRow]) -> None:
+    _coverage_repertoire(clean)
+    fens = h.spine(None, ["e4", "e5", "Nf3", "Nc6", "Bc4"])
+    at_two = fens[2]  # after 1.e4 e5: both lines play Nf3
+    off = read.coverage(clean, at_two, "Nc3")
+    assert (off["status"], off["book_move"], off["played_is_book"], off["transposed"]) == (
+        read.STATUS_MATCH,
+        "Nf3",
+        False,
+        False,
+    )
+    assert (off["book"], off["chapter"], off["line_name"], off["line_id"], off["line_ply"], off["more_lines"]) == (
+        "Italian",
+        "Giuoco",
+        "Main",
+        1,
+        2,
+        1,
+    )
+    on = read.coverage(clean, at_two, "Nf3")
+    assert on["played_is_book"] is True
+    assert read.coverage(clean, at_two)["played_is_book"] is None
+    with pytest.raises(ValueError):
+        read.coverage(clean, at_two, "Nf6")  # not legal here
+    with pytest.raises(ValueError):
+        read.coverage(clean, at_two, "--")  # python-chess parses the null move without complaint
+
+
+def test_coverage_by_transposition_and_at_the_end_of_a_line(clean: psycopg.Connection[DictRow]) -> None:
+    _coverage_repertoire(clean)
+    # The same board reached by a different move order: the counters differ, the board is the line's.
+    transposed = h.spine(None, ["Nf3", "Nc6", "e4", "e5"])[4]
+    assert transposed != h.spine(None, ["e4", "e5", "Nf3", "Nc6"])[4]
+    c = read.coverage(clean, transposed, "Bc4")
+    assert (c["status"], c["transposed"], c["book_move"], c["played_is_book"], c["line_id"]) == (
+        read.STATUS_AGREE,
+        True,
+        "Bc4",
+        True,
+        1,
+    )
+    # A line that stops after the opponent's move: its last board is the player's turn with nothing prescribed.
+    h.line(clean, 3, 1, "Stub", ["d4", "d5"])
+    clean.commit()
+    end = read.coverage(clean, h.spine(None, ["d4", "d5"])[2], "c4")
+    assert (end["status"], end["book_move"], end["played_is_book"], end["line_id"], end["line_ply"]) == (
+        read.STATUS_END_OF_LINE,
+        None,
+        None,
+        3,
+        2,
+    )
+
+
+def test_coverage_names_a_line_to_walk_through_even_where_the_lines_disagree(
+    clean: psycopg.Connection[DictRow],
+) -> None:
+    _coverage_repertoire(clean)
+    fen = h.spine(None, ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5"])[6]
+    c = read.coverage(clean, fen, "c3")
+    assert (c["status"], c["book_move"], c["played_is_book"]) == (read.STATUS_CONFLICT, None, None)
+    # The tie-break minimum over the board's occurrences: "Main" sorts before "Quiet".
+    assert (c["line_id"], c["line_name"], c["line_ply"], c["more_lines"]) == (1, "Main", 6, 1)
+
+
+def test_coverage_of_a_board_outside_the_repertoire_is_none_with_no_line(clean: psycopg.Connection[DictRow]) -> None:
+    _coverage_repertoire(clean)
+    c = read.coverage(clean, h.spine(None, ["d4"])[1], "d5")
+    assert c == {
+        "status": read.STATUS_NONE,
+        "transposed": None,
+        "book_move": None,
+        "played_is_book": None,
+        "book": None,
+        "chapter": None,
+        "line_name": None,
+        "line_id": None,
+        "line_ply": None,
+        "more_lines": 0,
+    }
+
+
+def test_coverage_reads_the_book_of_the_side_to_move(clean: psycopg.Connection[DictRow]) -> None:
+    """The White book holds the board after 1.e4 too (its lines carry the opponent's reply), but
+    a Black-to-move board is a Black card: only a Black book covers it."""
+    _coverage_repertoire(clean)
+    fen = h.spine(None, ["e4"])[1]
+    assert read.coverage(clean, fen)["status"] == read.STATUS_NONE
+    h.book(clean, 2, "Defence", "black")
+    h.chapter(clean, 2, 2, "Open")
+    h.line(clean, 3, 2, "Reply", ["e4", "e5"])
+    clean.commit()
+    c = read.coverage(clean, fen, "c5")
+    assert (c["status"], c["book"], c["book_move"], c["played_is_book"], c["line_id"]) == (
+        read.STATUS_MATCH,
+        "Defence",
+        "e5",
+        False,
+        3,
+    )

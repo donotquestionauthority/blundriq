@@ -34,7 +34,8 @@ Chess.com / Lichess APIs
 
   Deviations (api) reads game_repertoire_results by pattern (book, chapter, ply, expected move) ──► seen_deviations;
            each card's board is read back through core/repertoire/read.py (the lines through it, the one move
-           they agree on)
+           they agree on). Every card overlay asks GET /repertoire/coverage the same question for its board
+           (read.coverage: in the repertoire or not, the book move against the played one, a line to walk through)
 
   Repertoire (api) reads books › chapters › lines; a toggle flips one flag and rematches the games it can touch
            (core/repertoire/books.py), and switching on is gated: what would disagree with an active line is
