@@ -61,7 +61,8 @@ const position = (over: Partial<BlunderPosition> = {}): BlunderPosition => ({
 });
 
 const OTHER = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2";
-const page = (positions: BlunderPosition[], over: Partial<BlundersResponse> = {}): BlundersResponse => ({ positions, active_count: positions.length, dismissed_count: 1, new_count: positions.filter((p) => p.is_new).length, to_acknowledge: positions.filter((p) => p.is_new).map((p) => p.fen), page: 0, page_size: 50, total_pages: 1, ...over });
+const STAY = "2026-09-29T12:00:00+00:00";
+const page = (positions: BlunderPosition[], over: Partial<BlundersResponse> = {}): BlundersResponse => ({ positions, active_count: positions.length, dismissed_count: 1, new_count: positions.filter((p) => p.is_new).length, to_acknowledge: positions.filter((p) => p.is_new).map((p) => p.fen), stay: STAY, page: 0, page_size: 50, total_pages: 1, ...over });
 
 type Reply = { status: number; body: unknown };
 function stubFetch(routes: Record<string, (method: string, body: Record<string, unknown> | null, query: URLSearchParams) => Reply | Promise<Reply>>) {
@@ -112,6 +113,8 @@ describe("Blunders helpers", () => {
     expect(buildQuery(f, 0)).toBe("since_days=20&min_occurrences=2&time_class=focus&classifications=blunder&classifications=miss&classifications=mistake&page=0");
     expect(buildQuery({ ...f, last_n_games: 200, show_dismissed: true, time_class: "blitz" }, 2)).toContain("last_n_games=200&min_occurrences=2&time_class=blitz");
     expect(buildQuery({ ...f, last_n_games: 200 }, 0)).not.toContain("since_days");
+    expect(buildQuery(f, 0)).not.toContain("stay");
+    expect(buildQuery(f, 1, STAY)).toContain(`stay=${encodeURIComponent(STAY)}&page=1`);
   });
   it("names the most severe class present and maps a row onto the card", () => {
     expect(topClass({ classifications: { mistake: 3, miss: 1 } })).toBe("miss");
@@ -152,11 +155,15 @@ describe("Blunders page", () => {
     expect(screen.getByText("Italian Game")).toBeInTheDocument();
     expect(calls.filter((c) => c.path === "/blunders")[0].query.toString()).toBe(buildQuery(defaultFilters(SETTINGS), 0));
 
+    // The first response's `stay` rides on every later request of the visit: paging, filters.
     fireEvent.click(screen.getByText("Next →"));
     await vi.waitFor(() => expect(lastList(calls)?.query.get("page")).toBe("1"));
+    expect(calls.filter((c) => c.path === "/blunders")).toHaveLength(2); // learning the marker is not a refetch
+    expect(lastList(calls)?.query.get("stay")).toBe(STAY);
     fireEvent.change(screen.getByLabelText("Window"), { target: { value: "n200" } });
     await vi.waitFor(() => expect(lastList(calls)?.query.get("last_n_games")).toBe("200"));
     expect(lastList(calls)?.query.get("page")).toBe("0");
+    expect(lastList(calls)?.query.get("stay")).toBe(STAY);
     expect(lastList(calls)?.query.has("since_days")).toBe(false);
     fireEvent.change(screen.getByLabelText("Time class"), { target: { value: "blitz" } });
     await vi.waitFor(() => expect(lastList(calls)?.query.get("time_class")).toBe("blitz"));
@@ -477,6 +484,7 @@ describe("Blunders page", () => {
     expect(await screen.findByText("2 / 2")).toBeInTheDocument(); // the second page has rendered
     fireEvent.click(screen.getByLabelText("Dismiss"));
     await vi.waitFor(() => expect(lastList(calls)?.query.get("page")).toBe("0"));
+    expect(lastList(calls)?.query.get("stay")).toBe(STAY); // the refetch after a dismissal stays in the visit
     expect(await screen.findByText("50 positions · 1 dismissed")).toBeInTheDocument();
     expect(screen.getAllByTestId("position-card")).toHaveLength(1);
   });

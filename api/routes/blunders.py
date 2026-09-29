@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -25,6 +26,7 @@ def _filters(
     last_n_games: int = Query(0, ge=0, le=20000),
     time_class: TimeClass = Query("focus"),
     show_dismissed: bool = Query(False),
+    stay: datetime | None = Query(None),
 ) -> blunders.BlunderFilters:
     unknown = [c for c in classifications if c not in BLUNDER_CLASSES]
     if unknown:
@@ -36,6 +38,7 @@ def _filters(
         last_n_games=last_n_games,
         time_class=time_class,
         show_dismissed=show_dismissed,
+        stay=stay,
     )
 
 

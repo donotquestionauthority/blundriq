@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query
@@ -22,6 +23,7 @@ def _filters(
     last_n_games: int = Query(0, ge=0, le=20000),
     time_class: TimeClass = Query("focus"),
     color: str | None = Query(None, pattern="^(white|black)$"),
+    stay: datetime | None = Query(None),
 ) -> deviations.DeviationFilters:
     return deviations.DeviationFilters(
         min_occurrences=min_occurrences,
@@ -29,6 +31,7 @@ def _filters(
         last_n_games=last_n_games,
         time_class=time_class,
         color=color,
+        stay=stay,
     )
 
 

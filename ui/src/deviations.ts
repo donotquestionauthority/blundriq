@@ -49,6 +49,10 @@ export interface DeviationsResponse {
   total: number;
   new_count: number;
   to_acknowledge: PatternKey[];
+  /** The visit's order marker: the database clock when the visit's first list was read. Sent back
+   *  on every later request of the visit, so a board acknowledged during the visit keeps its
+   *  place at the top and its NEW chip until the next visit (core/deviations.py). */
+  stay: string;
   page: number;
   page_size: number;
   total_pages: number;
@@ -62,13 +66,14 @@ export interface DeviationFilters {
   color: "white" | "black" | null;
 }
 
-export function buildQuery(f: DeviationFilters, page: number): string {
+export function buildQuery(f: DeviationFilters, page: number, stay: string | null = null): string {
   const q = new URLSearchParams();
   if (f.last_n_games > 0) q.set("last_n_games", String(f.last_n_games));
   else if (f.since_days) q.set("since_days", String(f.since_days));
   q.set("min_occurrences", String(f.min_occurrences));
   q.set("time_class", f.time_class);
   if (f.color) q.set("color", f.color);
+  if (stay) q.set("stay", stay);
   q.set("page", String(page));
   return q.toString();
 }
@@ -112,6 +117,6 @@ export function toCard(p: DeviationPattern): PositionCardData {
   };
 }
 
-export const getDeviations = (f: DeviationFilters, page: number) => api.get<DeviationsResponse>(`/deviations?${buildQuery(f, page)}`);
+export const getDeviations = (f: DeviationFilters, page: number, stay: string | null = null) => api.get<DeviationsResponse>(`/deviations?${buildQuery(f, page, stay)}`);
 /** The page has shown a response (its `to_acknowledge`, possibly empty). */
 export const markSeen = (patterns: PatternKey[]) => api.post<{ seen_at: string }>("/deviations/seen", { patterns });

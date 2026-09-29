@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
@@ -53,6 +55,12 @@ def test_deviations_list_and_seen(client: TestClient) -> None:
     assert client.get("/home").json()["new_deviations"] == 0
     assert client.get("/deviations", params={"time_class": "nope"}).status_code == 422
     assert client.get("/deviations", params={"color": "red"}).status_code == 422
+    # The visit's order marker round-trips; garbage is refused like any other parameter.
+    r = client.get("/deviations", params={"time_class": "all"}).json()
+    assert datetime.fromisoformat(r["stay"]).tzinfo is not None
+    again = client.get("/deviations", params={"time_class": "all", "stay": r["stay"]})
+    assert again.status_code == 200 and again.json()["stay"] == r["stay"]
+    assert client.get("/deviations", params={"stay": "yesterday"}).status_code == 422
 
 
 def test_books_sections_and_toggles(client: TestClient) -> None:

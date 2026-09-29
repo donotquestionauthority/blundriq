@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 import psycopg
@@ -106,6 +107,31 @@ def test_new_is_a_pattern_the_list_has_never_shown(db: psycopg.Connection[DictRo
     assert deviations.new_count(db, deviations.default_filters(config, mark_new=True), "all") == 1
     deviations.mark_seen(db, [(1, 1, 4, "Nxe5"), (9, 9, 9, "made up")])  # a key that exists nowhere is ignored
     assert _list(db, mark_new=True)["new_count"] == 0
+
+
+def test_new_patterns_come_first_and_the_stay_freezes_the_order(db: psycopg.Connection[DictRow]) -> None:
+    """An unseen pattern orders ahead of a seen one with a higher count; acknowledged during the
+    stay it keeps its place and chip, and drops into count order on the next visit."""
+    for gid, days in ((1, 3), (2, 2), (3, 1)):
+        _dev(db, gid, "d4", days_ago=days)  # Bc4 missed three times
+    h.line(db, 3, 1, "Other chapter line", ["e4", "e5", "Nf3", "Nf6", "Nxe5"])
+    for gid, days in ((4, 0.5), (5, 0.25)):  # Nxe5 missed twice
+        fens = h.game(db, gid, ["e4", "e5", "Nf3", "Nf6", "d4"], days_ago=days)
+        h.result(
+            db, gid, book_id=1, chapter_id=1, ply=4, by="me", expected="Nxe5", played="d4", fen=fens[4], line_ids=[3]
+        )
+    deviations.mark_seen(db, [(1, 1, 4, "Bc4")])  # an earlier visit showed the Bc4 pattern
+    first = _list(db, mark_new=True)
+    assert [(c["expected_move"], c["is_new"]) for c in first["positions"]] == [("Nxe5", True), ("Bc4", False)]
+    assert first["to_acknowledge"] == [[1, 1, 4, "Nxe5"]] and first["new_count"] == 1
+    deviations.mark_seen(db, [(1, 1, 4, "Nxe5")])
+    assert deviations.new_count(db, DeviationFilters(time_class="all", mark_new=True), "all") == 0  # Home
+    again = _list(db, mark_new=True, stay=datetime.fromisoformat(first["stay"]))
+    assert [(c["expected_move"], c["is_new"]) for c in again["positions"]] == [("Nxe5", True), ("Bc4", False)]
+    assert again["to_acknowledge"] == [] and again["new_count"] == 1
+    later = _list(db, mark_new=True)
+    assert [(c["expected_move"], c["is_new"]) for c in later["positions"]] == [("Bc4", False), ("Nxe5", False)]
+    assert later["new_count"] == 0
 
 
 def test_home_reports_new_deviations_from_the_same_predicate(db: psycopg.Connection[DictRow]) -> None:

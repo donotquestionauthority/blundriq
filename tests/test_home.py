@@ -69,7 +69,7 @@ def test_a_board_is_new_until_the_page_has_shown_it(db: psycopg.Connection[DictR
     assert sorted(listed["to_acknowledge"]) == sorted([_key(A), _key(B)]) and _new(db) == 2
     blunders.mark_seen(db, [A])  # the page showed A (and, say, B was on a page never opened)
     listed = _list(db)
-    assert [(p["fen"], p["is_new"]) for p in listed["positions"]] == [(A, False), (B, True)]  # score order holds
+    assert [(p["fen"], p["is_new"]) for p in listed["positions"]] == [(B, True), (A, False)]  # new first
     assert listed["to_acknowledge"] == [_key(B)] and listed["new_count"] == 1 and _new(db) == 1
     blunders.mark_seen(db, [_key(B)])
     assert _new(db) == 0 and all(not p["is_new"] for p in _list(db)["positions"])
@@ -109,9 +109,7 @@ def test_the_first_look_marks_nothing_and_acknowledges_everything_listed(db: psy
     assert _new(db) == 1
 
 
-def test_pages_are_stable_under_acknowledgement(db: psycopg.Connection[DictRow]) -> None:
-    """Acknowledging page 1 must not move an unseen board ahead of page 2's offset: forward
-    paging with an acknowledgement after each page reaches every board exactly once."""
+def _many_boards(n: int) -> list[str]:
     import chess
 
     fens: list[str] = []
@@ -123,10 +121,16 @@ def test_pages_are_stable_under_acknowledgement(db: psycopg.Connection[DictRow])
             b2 = b1.copy()
             b2.push(reply)
             fens.append(b2.fen())
-            if len(fens) == blunders.PAGE_SIZE + 3:
-                break
-        if len(fens) == blunders.PAGE_SIZE + 3:
-            break
+            if len(fens) == n:
+                return fens
+    raise AssertionError("not enough boards")
+
+
+def test_pages_are_stable_under_acknowledgement(db: psycopg.Connection[DictRow]) -> None:
+    """New boards come first, and acknowledging page 1 must not move an unseen board ahead of
+    page 2's offset: forward paging with the response's `stay` sent back and an acknowledgement
+    after each page reaches every board exactly once, every one shown NEW."""
+    fens = _many_boards(blunders.PAGE_SIZE + 3)
     gid = 0
     for fen in fens:  # every board recurs in two games
         for _ in range(2):
@@ -137,9 +141,11 @@ def test_pages_are_stable_under_acknowledgement(db: psycopg.Connection[DictRow])
     assert _new(db) == len(fens)
     seen: list[str] = []
     page = 0
+    stay: datetime | None = None
     while True:
-        r = blunders.positions(db, BlunderFilters(ALL, time_class="all", mark_new=True), "rapid_plus", page)
-        assert all(p["is_new"] for p in r["positions"])
+        r = blunders.positions(db, BlunderFilters(ALL, time_class="all", mark_new=True, stay=stay), "rapid_plus", page)
+        stay = datetime.fromisoformat(r["stay"])
+        assert all(p["is_new"] for p in r["positions"]) and r["new_count"] == len(fens)
         seen += [p["fen"] for p in r["positions"]]
         blunders.mark_seen(db, r["to_acknowledge"])
         if page >= r["total_pages"] - 1:
@@ -147,6 +153,36 @@ def test_pages_are_stable_under_acknowledgement(db: psycopg.Connection[DictRow])
         page += 1
     assert len(seen) == len(set(seen)) == len(fens)
     assert _new(db) == 0
+    # The next visit starts a new stay: nothing is new any more, and the header count says so.
+    r = blunders.positions(db, BlunderFilters(ALL, time_class="all", mark_new=True), "rapid_plus", 0)
+    assert not any(p["is_new"] for p in r["positions"]) and r["new_count"] == 0
+
+
+def test_the_stay_freezes_the_order_and_the_chips_for_the_visit(db: psycopg.Connection[DictRow]) -> None:
+    """Unseen boards order ahead of seen ones whatever their score; a board acknowledged during
+    the stay keeps its place and its chip, and only drops back into score order on the next
+    visit. Home's count is strict: it is spent by the acknowledgement at once."""
+    for gid, fen in ((1, A), (2, A), (3, A), (4, B), (5, B)):  # A outscores B
+        _game(db, gid, days_ago=gid)
+        _blunder(db, gid, fen)
+    blunders.mark_seen(db, [_key(A)])  # an earlier visit showed A; B is unseen
+    first = _list(db)
+    assert [(p["fen"], p["is_new"]) for p in first["positions"]] == [(B, True), (A, False)]
+    assert first["to_acknowledge"] == [_key(B)] and first["new_count"] == 1 and _new(db) == 1
+    blunders.mark_seen(db, first["to_acknowledge"])
+    assert _new(db) == 0  # Home: nothing is waiting
+    again = _list(db, stay=datetime.fromisoformat(first["stay"]))
+    assert [(p["fen"], p["is_new"]) for p in again["positions"]] == [(B, True), (A, False)]  # unchanged
+    assert again["to_acknowledge"] == [] and again["new_count"] == 1  # already recorded; the chip stays
+    later = _list(db)  # the next visit
+    assert [(p["fen"], p["is_new"]) for p in later["positions"]] == [(A, False), (B, False)]
+    assert later["new_count"] == 0
+    # A marker from the future or the past never hides a board or breaks a page; it only widens
+    # or narrows the NEW group for that stay.
+    far = _list(db, stay=datetime.fromisoformat(first["stay"]) + timedelta(days=1))
+    assert [p["fen"] for p in far["positions"]] == [A, B] and far["new_count"] == 0
+    past = _list(db, stay=datetime.fromisoformat(first["stay"]) - timedelta(days=1))
+    assert [p["is_new"] for p in past["positions"]] == [True, True] and past["active_count"] == 2
 
 
 def test_a_dismissed_board_is_neither_new_nor_acknowledged(db: psycopg.Connection[DictRow]) -> None:
@@ -335,6 +371,12 @@ def test_the_route_marks_new_only_after_a_first_look_and_acknowledges_what_it_se
     r = client.get("/blunders", params={"time_class": "all", "classifications": ["blunder"]})
     assert [(p["fen"], p["is_new"]) for p in r.json()["positions"]] == [(B, True), (A, False)]
     assert r.json()["to_acknowledge"] == [_key(B)]
+    assert datetime.fromisoformat(r.json()["stay"]).tzinfo is not None
+    again = client.get(
+        "/blunders", params={"time_class": "all", "classifications": ["blunder"], "stay": r.json()["stay"]}
+    )
+    assert again.status_code == 200 and again.json()["stay"] == r.json()["stay"]
+    assert client.get("/blunders", params={"stay": "yesterday"}).status_code == 422
     assert client.post("/blunders/seen", json={"boards": ["x" * 101]}).status_code == 422
     assert client.post("/blunders/seen", json={"boards": r.json()["to_acknowledge"]}).status_code == 200
     assert client.get("/home").json()["new_blunders"] == 0
