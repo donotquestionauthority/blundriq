@@ -28,8 +28,9 @@ inventory, so nobody re-derives a number that was never derived.
   games) and 20 at depth ≤ 12, pool floors 5/8 (Rob: 2-event pools are noise), cost
   charged once per decision, shape metrics never used for severity — though the old
   code labelled every review knob provisional regardless (next section).
-- Every recurrence count is distinct games, after an endgame reached repeatedly in one
-  game was flagged as recurring.
+- Blunder, deviation and repertoire recurrence counts are distinct games, after an
+  endgame reached repeatedly in one game was flagged as recurring (the weak-motif gate
+  counts miss events).
 
 ## Labelled provisional by their own design
 

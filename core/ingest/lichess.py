@@ -15,7 +15,7 @@ in core/ingest/chesscom.py and hold here too):
   the game id as its prefix. `players.<side>.user.name` is the display casing
   and the profile's `id` is the canonical lowercase form; lookups are
   case-insensitive and tolerant (200, no redirect). A closed account can be
-  200 with `disabled` or `closed` set.
+  200 with `disabled` or `closed` set (not checked here).
 - Timestamps are milliseconds; `lastMoveAt` is preferred over `createdAt` for
   `played_at`. `clocks` are CENTISECONDS remaining for the mover. `speed`
   exists only in the API response, which is why time_class is materialised at

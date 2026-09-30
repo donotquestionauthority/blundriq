@@ -16,11 +16,15 @@ What the old system learned about this API (kept here so it is not relearned):
   API application (in August 2026 the origin itself answered 404 for valid
   players for a while, and the CDN cached it); a 404 with the JSON error
   envelope means the subject does not exist; a closed account is 200 with a
-  `status` field. This importer treats every non-200 alike; the shapes matter
-  when reading a failed run's error.
+  `status` field (not checked here). This importer treats every non-200 alike,
+  and the Scout handle check treats every 404 as a missing account, so an
+  origin 404 reads as "not found" there; the shapes matter when reading a
+  failed run's error.
 - `/pub/player/{u}` wants the canonical lowercase handle: a mixed-case handle
   is a 301, which httpx does not follow here. The Scout profile lookup lowers
-  its handle; the player's own is stored as typed.
+  its handle; the player's own is stored as typed and used as typed in the
+  archives URL, so if that endpoint ever answers a 301 on case the import
+  fails with HTTP 301 until the stored handle is lowercased.
 - The archives list holds only months with games, oldest first, and lists a
   month's games oldest first too; a month is the month a game ENDED
   (`end_time`, whole seconds, so two games can share one). Each archive is one
@@ -32,8 +36,8 @@ What the old system learned about this API (kept here so it is not relearned):
   `lose` is a loss with no stated reason. `time_control` is `base[+inc]` in
   seconds, or `1/N` for daily.
 - The `[%clk]` comment after each move is the mover's REMAINING time; the
-  header's own square brackets are stripped before the clocks are read, and
-  clocks are kept only when there is exactly one per move.
+  header block (whose tags also use square brackets) is split off before the
+  clocks are read, and clocks are kept only when there is exactly one per move.
 - Chess960 PGNs carry [Variant "Chess960"], [SetUp "1"] and a [FEN] whose
   castling field is Shredder-FEN (`GBgb`); every chess960 insert once failed
   on it, so the start FEN is canonicalised to X-FEN at the boundary
