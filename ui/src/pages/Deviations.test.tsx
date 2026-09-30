@@ -102,6 +102,14 @@ describe("Deviations helpers", () => {
     expect(card.games[0]).toMatchObject({ move_played: "d4", best_move: "Bc4" });
     expect(toCard(pattern({ rep_lines: [] })).repLines).toBeNull();
   });
+
+  it("keys the card by the pattern, not its board: two patterns on one board are two cards", () => {
+    const a = toCard(pattern());
+    const b = toCard(pattern({ chapter_id: 2, expected_move: "Bb5" }));
+    expect(a.fen).toBe(b.fen);
+    expect(a.key).toBe("1:1:4:Bc4");
+    expect(b.key).toBe("1:2:4:Bb5");
+  });
 });
 
 describe("the recommended move's three authorities", () => {
@@ -143,6 +151,19 @@ describe("Deviations page", () => {
     fireEvent.change(screen.getByLabelText("Window"), { target: { value: "d30" } });
     await vi.waitFor(() => expect(lastList(calls)?.query.get("since_days")).toBe("30"));
     expect(lastList(calls)?.query.has("last_n_games")).toBe(false);
+  });
+
+  it("lists two patterns that share a board as two cards, with no duplicate-key warning", async () => {
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    stubFetch({
+      "/settings": () => ({ status: 200, body: SETTINGS }),
+      "/deviations": () => ({ status: 200, body: page([pattern(), pattern({ chapter_id: 2, chapter: "Evans", expected_move: "Bb5", count: 2 })]) }),
+    });
+    renderPage();
+    expect(await screen.findByText("2×")).toBeInTheDocument();
+    expect(screen.getAllByTestId("position-card")).toHaveLength(2);
+    expect(warn.mock.calls.flat().some((m) => String(m).includes("same key"))).toBe(false);
+    warn.mockRestore();
   });
 
   it("opens a card: the expected move is labelled Expected, the record and the repertoire lines show, and there is no explanation panel", async () => {

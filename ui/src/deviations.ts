@@ -43,6 +43,7 @@ export interface DeviationPattern {
 
 /** A pattern key as the server names it: [book_id, chapter_id, ply, expected_move]. */
 export type PatternKey = [number, number, number, string];
+export const patternKey = (p: Pick<DeviationPattern, "book_id" | "chapter_id" | "ply" | "expected_move">): PatternKey => [p.book_id, p.chapter_id, p.ply, p.expected_move];
 
 export interface DeviationsResponse {
   positions: DeviationPattern[];
@@ -97,6 +98,7 @@ export function defaultFilters(s: Record<string, unknown>): DeviationFilters {
  *  explanation panel: a deviation is not a blunder row. */
 export function toCard(p: DeviationPattern): PositionCardData {
   return {
+    key: patternKey(p).join(":"),
     fen: p.deviation_fen ?? "start",
     color: p.color,
     times: p.count,
