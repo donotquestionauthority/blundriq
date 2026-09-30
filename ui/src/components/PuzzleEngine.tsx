@@ -7,7 +7,9 @@
  * accepted at each node (not just the stored line) and the opponent replies with the map's
  * canonical defence. Solve = mate delivered.
  *
- * Promotion is auto-queen. Underpromotion cannot be entered; a known limitation.
+ * Promotion: a pawn move to the last rank is not played on the drop. The board snaps it back,
+ * the squares are held, and the chooser under the board applies the chosen piece as the real
+ * move; from/to squares cannot tell a queen from a knight, and the line is graded on the piece.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chess } from "chess.js";
@@ -15,11 +17,13 @@ import type { Move, Square } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import { BranchCompareView } from "./BranchCompareView";
 import { ExploreLayer } from "./ExploreLayer";
+import { PromotionChooser } from "./PromotionChooser";
+import type { PromotionPiece } from "./PromotionChooser";
 import { LineReaderPanel } from "./PositionCard/LineReaderPanel";
 import { SolverSimilarModal } from "./PositionCard/SolverSimilarModal";
 import { useSimilarPositions } from "../hooks/useSimilarPositions";
 import { HIGHLIGHT, SQUARES } from "../utils/board";
-import { branchCompareTarget, mapKey, moveUci, parsesAsFen, sanResolvesToMove, similarTarget, uciToMove } from "../utils/chess";
+import { branchCompareTarget, legalMove, mapKey, moveUci, parsesAsFen, sanResolvesToMove, similarTarget, uciToMove } from "../utils/chess";
 import type { AcceptanceMap } from "../practice";
 
 type PuzzleState = "playing" | "wrong" | "solved";
@@ -105,6 +109,8 @@ export function PuzzleEngine({
   const [rightSquares, setRightSquares] = useState<Record<string, React.CSSProperties>>({});
   const [statusMessage, setStatusMessage] = useState("Your turn — find the best move");
   const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
+  // A pawn move to the last rank waiting for its piece; the board shows the position before it.
+  const [promotionPending, setPromotionPending] = useState<{ from: Square; to: Square } | null>(null);
   const [solutionShown, setSolutionShown] = useState(false);
   const completeCalled = useRef(false);
   // Compare similar positions: what else the opponent could have played before the latest decision
@@ -177,6 +183,7 @@ export function PuzzleEngine({
     setWrongSquares({});
     setRightSquares({});
     setSelectedSquare(null);
+    setPromotionPending(null);
     setStatusMessage("Your turn — find the best move");
     setSolutionShown(false);
     completeCalled.current = false;
@@ -239,20 +246,25 @@ export function PuzzleEngine({
     return () => clearTimeout(timer);
   }, [moveIndex, puzzleState, isUserTurn, game, activeSolutionLine, movesPlayed, onComplete, finishLineMode, mapMode, acceptanceMap]);
 
-  const handleDrop = useCallback(
-    (sourceSquare: Square, targetSquare: Square): boolean => {
+  // The one path every player move takes, whichever way it was entered: play it on a copy of
+  // the board, then grade it. Returns whether the board should show the move.
+  const playMove = useCallback(
+    (sourceSquare: Square, targetSquare: Square, promotion: PromotionPiece): boolean => {
       if (puzzleState !== "playing" || submissionLocked) return false;
       if (!isUserTurn) return false;
       if (moveIndex >= activeSolutionLine.length) return false;
 
       const expectedMove = activeSolutionLine[moveIndex];
       const tempGame = new Chess(game.fen());
-      let result: Move;
+      let result: Move | null;
       try {
-        result = tempGame.move({ from: sourceSquare, to: targetSquare, promotion: "q" });
+        result = legalMove(tempGame, { from: sourceSquare, to: targetSquare, promotion });
       } catch {
         return false;
       }
+      if (!result) return false;
+      // A move that was actually made supersedes a held promotion; a miss (an illegal drop) does not.
+      setPromotionPending(null);
 
       const acceptCorrect = (finalMessage: string | null) => {
         setGame(tempGame);
@@ -315,6 +327,35 @@ export function PuzzleEngine({
     [game, moveIndex, activeSolutionLine, puzzleState, isUserTurn, movesPlayed, onComplete, finishLineMode, lastMove, mateInfo, mapMode, acceptanceMap, submissionLocked],
   );
 
+  // A drop (or a click pair). A pawn reaching the last rank is held for the chooser instead of
+  // being played: the board snaps it back and nothing is graded until a piece is chosen.
+  const handleDrop = useCallback(
+    (sourceSquare: Square, targetSquare: Square): boolean => {
+      if (puzzleState !== "playing" || submissionLocked || !isUserTurn) return false;
+      const promotes = game.moves({ square: sourceSquare, verbose: true }).some((m) => m.to === targetSquare && m.promotion);
+      if (promotes) {
+        setPromotionPending({ from: sourceSquare, to: targetSquare });
+        setSelectedSquare(null);
+        return false;
+      }
+      return playMove(sourceSquare, targetSquare, "q");
+    },
+    [game, puzzleState, isUserTurn, submissionLocked, playMove],
+  );
+
+  const choosePromotion = useCallback(
+    (piece: PromotionPiece) => {
+      if (!promotionPending) return;
+      const { from, to } = promotionPending;
+      setPromotionPending(null); // whatever the outcome: the choice was made
+      playMove(from, to, piece);
+    },
+    [promotionPending, playMove],
+  );
+  // The chooser is only meaningful on the board it was opened on, with the move still the
+  // player's to make; it is dropped with the reset that changes either.
+  const promotionOpen = promotionPending !== null && puzzleState === "playing" && isUserTurn && !submissionLocked;
+
   // Click-to-move: first click selects, second attempts the move with the same validation as a drop.
   const handleSquareClick = useCallback(
     (square: Square) => {
@@ -340,6 +381,7 @@ export function PuzzleEngine({
     setWrongSquares({});
     setRightSquares({});
     setSelectedSquare(null);
+    setPromotionPending(null);
     setStatusMessage("Your turn — find the best move");
     setSolutionShown(false);
     completeCalled.current = false;
@@ -475,6 +517,7 @@ export function PuzzleEngine({
 
       {/* Always rendered at a fixed height so the board never shifts between states. */}
       <div className="flex min-h-[40px] w-full flex-wrap items-center justify-center gap-3">
+        {promotionOpen && <PromotionChooser onChoose={choosePromotion} />}
         {puzzleState === "wrong" && (
           <>
             <button type="button" onClick={handleRetry} disabled={submissionLocked} className={btnAccent}>

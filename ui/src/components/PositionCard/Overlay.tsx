@@ -249,7 +249,7 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
         {pgn && <CopyBlock label="PGN to position" text={pgn} />}
         <CopyBlock label="FEN" text={d.fen} />
 
-        {d.repLines?.length ? <RepLinesPanel key={d.fen} lines={d.repLines} /> : null}
+        {d.repLines?.length ? <RepLinesPanel key={d.key ?? d.fen} lines={d.repLines} /> : null}
 
         {d.games.length > 0 ? <GamesTable games={d.games} bestLabel={best.label} title={d.oppGames ? "My games" : "Games"} /> : !node && <p className="py-2 text-center text-xs text-zinc-500">No game history for this position.</p>}
         {d.oppGames && (d.oppGames.length > 0 ? <GamesTable games={d.oppGames} bestLabel={best.label} title="Their games" /> : <p className="py-2 text-center text-xs text-zinc-500">None of their games reach this position.</p>)}

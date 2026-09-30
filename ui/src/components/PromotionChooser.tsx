@@ -12,7 +12,7 @@ const PIECE_NAME = { q: "queen", r: "rook", b: "bishop", n: "knight" } as const;
 
 export function PromotionChooser({ onChoose }: { onChoose: (p: PromotionPiece) => void }) {
   return (
-    <div className="mt-2 flex items-center justify-center gap-2">
+    <div className="flex items-center justify-center gap-2">
       <span className="text-sm text-zinc-500">Promote to:</span>
       {(["q", "r", "b", "n"] as const).map((p) => (
         <button

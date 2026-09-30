@@ -32,7 +32,7 @@ export function PositionList({ items, accent, headerRight, overlayActions, overl
       </div>
       <div className="space-y-2">
         {items.map((item, i) => (
-          <div key={item.fen} data-testid="position-card" className={`cursor-pointer overflow-hidden rounded-lg border border-l-4 border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 ${accent?.(item) ?? ""}`} onClick={() => openAt(i)}>
+          <div key={item.key ?? item.fen} data-testid="position-card" className={`cursor-pointer overflow-hidden rounded-lg border border-l-4 border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 ${accent?.(item) ?? ""}`} onClick={() => openAt(i)}>
             <CardInner d={item} headerRight={headerRight?.(item)} boardSize={boardSize} onBoardClick={() => openAt(i)} />
           </div>
         ))}

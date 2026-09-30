@@ -17,6 +17,9 @@ export interface PositionCardGame {
 }
 
 export interface PositionCardData {
+  /** What makes this card one of a kind in its list, when that is not the board: two deviation
+   *  patterns (different lines, different expected moves) can share a representative board. */
+  key?: string;
   fen: string;
   color: "white" | "black";
   times: number;

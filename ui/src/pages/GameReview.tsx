@@ -113,7 +113,11 @@ function LearnPanel({ learn, reveal, engineAvailable, promptInFlow }: { learn: L
               {LEARN_COPY.justShowMe}
             </button>
           </div>
-          {learn.promotionPending && <PromotionChooser onChoose={learn.choosePromotion} />}
+          {learn.promotionPending && (
+            <div className="mt-2">
+              <PromotionChooser onChoose={learn.choosePromotion} />
+            </div>
+          )}
         </>
       ) : (
         <>
@@ -761,7 +765,11 @@ function ReviewBody(p: {
               {LEARN_COPY.justShowMe}
             </button>
           </div>
-          {learn.promotionPending && <PromotionChooser onChoose={learn.choosePromotion} />}
+          {learn.promotionPending && (
+            <div className="mt-2">
+              <PromotionChooser onChoose={learn.choosePromotion} />
+            </div>
+          )}
         </div>
       )}
 
