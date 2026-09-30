@@ -13,9 +13,13 @@ inventory, so nobody re-derives a number that was never derived.
   (one piece, from six misclassified positions), and the eval-tolerance "found" test
   that replaced `move == best`, all ratified by Rob.
 - The puzzle mix's hybrid supply rule (rotation buckets fill, SRS buckets serve only
-  what is due, no debt) and the shift of first-class share down / remaining up (five
-  themes at 30 % made every batch look the same).
-- Weak-motif weighting by raw miss count (Rob, over the design's severity weighting).
+  what is due), each batch targeting its percentages independently — the old system's
+  trailing-window catch-up was removed because repaying a shortfall flooded the queue —
+  and the shift of first-class share down / remaining up (five themes at 30 % made every
+  batch look the same).
+- Weak-motif weighting by raw miss count (Rob, over the design's severity weighting) in
+  the old system's capped pool; this serve keeps the frequency principle as an ordering
+  only (see the divergences below).
 - Corpus: the −325 default offset (Rob's paired accounts), the 1050–2700 import range,
   the 500-per-cell cap (database size), the top-K candidate pool (150 distinct puzzles
   ever served under `LIMIT 1`), and the theme classes (first class = what the tagger
@@ -43,7 +47,7 @@ weak-motif target 20 and theme cap 40 %; the coverage thresholds; the tier width
 beyond `normal`; the per-time-class rating offsets; bucket width 100; K = 40 rather
 than another K; `scout_bayesian_prior_strength`.
 
-## What the export had already moved, and one divergence to know about
+## What the export had already moved, and the divergences to know about
 
 Two seeded defaults differed from the live values at export (admin edits; the rebuild
 keeps the live values): `srs_advance_threshold` 2 → 1 (May 2026, the month Rob recorded
@@ -55,6 +59,16 @@ the per-time-class offsets were read by Scout's opponent comparison and were nev
 calibrated against the corpus. `core/puzzles/serve.py` applies the time-class value
 when the latest game has one. At Rob's ratings the difference is inside the tier band
 (rapid −250 vs default −325); it is recorded here rather than changed.
+
+The old system kept a materialised pool of weak-motif puzzles, `weak_motif_target_count`
+deep, each theme's share capped at `weak_motif_theme_cap_pct` and weighted by its miss
+count. This serve has no pool: `_weak_theme_order` ranks the first-class themes by
+misses (at or above `weak_motif_min_occurrences`) and the first-class bucket
+round-robins one candidate per theme in that order, so one weak theme can supply the
+whole bucket. The two knobs, and `puzzle_mix_window`, are retained in the settings row
+with no consumer, as are the six `coverage_*` fields of the unported Stats page. Their
+descriptions say so. Removing them is a migration of the settings row; restoring the
+weighting is a serving change. Neither is this note's decision.
 
 ## Not a home for future values
 

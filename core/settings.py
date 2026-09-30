@@ -206,23 +206,33 @@ class Settings(BaseModel):
     reply_cap: int = Field(default=4, ge=1, le=20, description="Maximum opponent replies listed per position.")
 
     # --- Puzzle mix & serving ---------------------------------------------
-    # The five buckets are a hybrid (core/constants.py): the three corpus rotation buckets
-    # always fill their share; the two SRS buckets serve only what is due and their
-    # shortfall goes to the rotation buckets, so a due puzzle is never repeated to pad a
-    # percentage, and a bucket nothing can supply contributes 0 with no debt carried
-    # forward. The shares are targets over the last puzzle_mix_window puzzles SHOWN (not
-    # solved), which is how each batch corrects toward them. The seeded split was
-    # 25/30/15/10/20; the live values had first-class and corpus mates down and remaining
-    # up (25/20/35/10/10), the direction the corpus-variety memo asked for after "the same
-    # types over and over" turned out to be arithmetic: five first-class themes at 30 % of
-    # every 12-puzzle batch, against 22 themes in the remaining bucket. 12 and 50 have no
-    # recorded reason. Weak-motif weight is raw miss count per theme (Rob's ruling over the
-    # design's severity weighting: the app's theme is frequency), capped so one weakness
-    # cannot crowd the queue. The coverage thresholds were set at build with only their
-    # meaning written down.
+    # The five buckets are a hybrid (core/constants.py, core/puzzles/serve.py): the three
+    # corpus rotation buckets always fill their share; the two SRS buckets serve only what
+    # is due, and a bucket nothing can supply drops out of that batch, its share renormalised
+    # over the rest. Every batch targets the configured percentages independently, with no
+    # memory of earlier batches: the old system once measured the realised mix over a
+    # trailing window of puzzles shown and "repaid" a bucket's shortfall in later batches,
+    # and the repayment was a flood, so catch-up was removed and `puzzle_mix_window`
+    # survived there only as a housekeeping retention floor. Nothing reads it here; it is
+    # kept so the settings row round-trips. The seeded split was 25/30/15/10/20; the live
+    # values had first-class and corpus mates down and remaining up (25/20/35/10/10), the
+    # direction the corpus-variety memo asked for after "the same types over and over"
+    # turned out to be arithmetic: five first-class themes at 30 % of every 12-puzzle batch,
+    # against 22 themes in the remaining bucket. 12 has no recorded reason.
+    # Weak motifs: the old system materialised a pool of weak-motif puzzles weighted by raw
+    # miss count per theme (Rob's ruling over the design's severity weighting: the app's
+    # theme is frequency), capped so one weakness could not crowd the queue; that is where
+    # `weak_motif_target_count` and `weak_motif_theme_cap_pct` come from. This serve does
+    # not weight: it orders the first-class themes most-missed first (misses at or above
+    # `weak_motif_min_occurrences`, else every theme alphabetically) and round-robins one
+    # candidate per theme, so a sole weak theme can take the whole first-class share.
+    # The two old knobs have no consumer here and are kept for the round-trip only.
+    # The six `coverage_*` fields drove the old Stats page's weakness / strength / mastered
+    # verdicts, which are not ported (backlog: Stats is Rob's call); nothing reads them. They
+    # were set at build with only their meaning written down.
     puzzle_mix_batch_size: int = Field(default=12, ge=1, le=50, description="Puzzles per practice batch.")
     puzzle_mix_window: int = Field(
-        default=50, ge=5, le=500, description="Most recent puzzles shown over which the realised mix is measured."
+        default=50, ge=5, le=500, description="Not used by this implementation (the old mix catch-up window)."
     )
     puzzle_mix_your_puzzles_pct: int = Field(
         default=25, ge=0, le=100, description="% of a batch from the player's own blunders/deviations."
@@ -247,10 +257,10 @@ class Settings(BaseModel):
         default=2, ge=1, le=50, description="Occurrences before a motif counts as a weakness."
     )
     weak_motif_target_count: int = Field(
-        default=20, ge=1, le=200, description="How many weak-motif puzzles to keep available."
+        default=20, ge=1, le=200, description="Not used by this implementation (the old weak-motif pool size)."
     )
     weak_motif_theme_cap_pct: int = Field(
-        default=40, ge=1, le=100, description="Cap on one theme's share of weak-motif puzzles."
+        default=40, ge=1, le=100, description="Not used by this implementation (the old weak-motif theme cap)."
     )
     coverage_practice_min_attempts: int = Field(
         default=3, ge=1, le=50, description="Attempts before a puzzle counts toward coverage."
