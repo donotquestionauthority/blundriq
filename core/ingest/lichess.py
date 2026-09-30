@@ -1,4 +1,31 @@
-"""Lichess API: one NDJSON stream of a player's games, newest first."""
+"""Lichess API: one NDJSON stream of a player's games, newest first.
+
+What the old system learned about this API (the 429 and User-Agent rules are
+in core/ingest/chesscom.py and hold here too):
+
+- Never pass a server-side `max`: eligibility (variant, no moves, a FEN that
+  will not parse) is decided here after the stream arrives, so a server cap
+  would let skipped rows consume it and starve older eligible games. A caller
+  that wants N games stops consuming after N are stored.
+- It is one stream with no archive boundaries, so the importer commits every
+  N games, and a connection dropped mid-stream is an INCOMPLETE import that
+  must not advance the boundary; it says nothing about the platform's health,
+  which did answer. One malformed line is one skipped game, not a failed run.
+- Ids are 8 characters; the 12-character id in a player-perspective URL has
+  the game id as its prefix. `players.<side>.user.name` is the display casing
+  and the profile's `id` is the canonical lowercase form; lookups are
+  case-insensitive and tolerant (200, no redirect). A closed account can be
+  200 with `disabled` or `closed` set (not checked here).
+- Timestamps are milliseconds; `lastMoveAt` is preferred over `createdAt` for
+  `played_at`. `clocks` are CENTISECONDS remaining for the mover. `speed`
+  exists only in the API response, which is why time_class is materialised at
+  import; correspondence games carry no `clock`, so their time control is the
+  speed label. `initialFen` appears only for non-standard starts and has been
+  seen in both X-FEN and Shredder-FEN forms.
+- `status` collapses every draw mechanism to `draw`; `outoftime` is a clock
+  that ran out and `timeout` an opponent who left with a clock running (both
+  are `timeout` here). `winner` is absent on a draw.
+"""
 
 from __future__ import annotations
 

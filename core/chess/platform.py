@@ -6,7 +6,10 @@ abandonment, agreement, repetition, stalemate, insufficient, fifty_move, draw
 
 Time class (chess_games.time_class): bullet, blitz, rapid, classical,
 correspondence, or NULL. Materialised at import because the Lichess speed label
-only exists in the API response.
+only exists in the API response. Chess.com's `timevsinsufficient` is a draw by
+insufficient material claimed against a flag and `lose` a loss with no stated
+reason; Lichess's `outoftime` and `timeout` are both a clock loss. The platform
+quirks behind the rest are in core/ingest/chesscom.py and core/ingest/lichess.py.
 """
 
 from __future__ import annotations

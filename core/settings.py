@@ -12,6 +12,9 @@ are in core/secrets.py, never here.
 
 Defaults below are the values in use on 2026-09-19 (see the phase-0 export),
 so a fresh database behaves like the old one until Rob changes something.
+Where a value has a recorded reason it is in the section comment above its
+field; docs/decisions/008-tuning-values-provenance.md says which values were
+argued for, which were labelled provisional, and which were never explained.
 """
 
 from __future__ import annotations
@@ -75,6 +78,18 @@ class Settings(BaseModel):
     )
 
     # --- Analysis ---------------------------------------------------------
+    # The 50/100/200/300 centipawn ladder was seeded and never argued for. Only the
+    # contested gate has a written reason: a large loss from a position that was already
+    # decided is noise, not a recurring pattern, so the move is dropped rather than
+    # downgraded (core/analysis/game.py). missed_mate_max_moves was tunable 1-5 in the old
+    # system with no case made for 3; the field admits up to 10 here and the generator
+    # clamps at 5. motif_min_material_gain = 1 is the old "SEE > 0" rule
+    # made a knob (precision comes from the winnability gate; raising it suppresses
+    # pawn-only motifs). motif_found_material_tolerance = 3 is one full piece: six real
+    # positions won the material with a slightly worse capturer and read as missed under a
+    # pure eval test, so a bishop taken over a rook counts as found and a pawn over a rook
+    # does not; forks, pins, skewers and discovered attacks keep the eval test, because
+    # their gain is a sequence with no single capture to compare.
     analysis_game_limit: int = Field(
         default=1000, ge=50, le=20000, description="Most recent N games kept under analysis."
     )
@@ -108,6 +123,19 @@ class Settings(BaseModel):
     )
 
     # --- Blunders / Deviations / Scout page defaults -----------------------
+    # blunder_puzzle_min_occurrences (3) and blunders_default_min_occurrences (2) are
+    # separate on purpose. The old repertoire generator hard-coded 3 with no window, the
+    # blunder generator read the page's filter defaults from birth, and a "one setting
+    # everywhere" directive then bound every recurrence gate to those defaults; by the
+    # export one key covered an admin global the generators read (3) and Rob's page filter
+    # (2), and they are two fields here so the page can be widened without minting
+    # puzzles.
+    # Blunder, deviation and repertoire recurrences are counted in DISTINCT games: a
+    # position reached again and again in one game counts once (an endgame was once flagged
+    # as a recurring blunder); the weak-motif gate counts miss events. The page defaults on
+    # Deviations and Scout and `weak_motif_min_occurrences` mirror the Blunders page default
+    # (2), `deviation_puzzle_min_occurrences` the generator gate (3): never diagnose a
+    # weakness off a handful of games. Whether 3 becomes 2 is Rob's call.
     blunders_default_last_n_games: int = Field(
         default=500, ge=10, le=5000, description="Default game window on the Blunders page."
     )
@@ -181,8 +209,33 @@ class Settings(BaseModel):
     reply_cap: int = Field(default=4, ge=1, le=20, description="Maximum opponent replies listed per position.")
 
     # --- Puzzle mix & serving ---------------------------------------------
+    # The five buckets are a hybrid (core/constants.py, core/puzzles/serve.py): the three corpus
+    # rotation buckets fill their share whenever the corpus or owned rows can supply it; the two SRS
+    # buckets serve only what is due; a bucket nothing can supply drops out of that batch, its share
+    # renormalised over the rest, and a residual goes round-robin to whatever still supplies. Every
+    # batch targets the configured percentages independently, with no memory of earlier batches: the
+    # old system once measured the realised mix over a trailing window of puzzles shown and "repaid"
+    # a bucket's shortfall in later batches, and the repayment was a flood, so catch-up was removed
+    # and `puzzle_mix_window` survived there only as a housekeeping retention floor. Nothing reads
+    # it here; it is kept so the settings row round-trips. The seeded split was 25/30/15/10/20; the
+    # live values had first-class and corpus mates down and remaining up (25/20/35/10/10), the
+    # direction the corpus-variety memo asked for after "the same types over and over" turned out to
+    # be arithmetic: five first-class themes at 30 % of every 12-puzzle batch, against 22 themes in
+    # the remaining bucket. 12 has no recorded reason. Weak motifs: the old system materialised a
+    # pool of weak-motif puzzles weighted by raw miss count per theme (Rob's ruling over the
+    # design's severity weighting: the app's theme is frequency), capped so one weakness could not
+    # crowd the queue; that is where `weak_motif_target_count` and `weak_motif_theme_cap_pct` come
+    # from. This serve does not weight: it orders the first-class themes most-missed first (misses
+    # at or above `weak_motif_min_occurrences`, else every theme alphabetically) and round-robins
+    # one candidate per theme, so a sole weak theme can take the whole first-class share. The two
+    # old knobs have no consumer here and are kept for the round-trip only. The six `coverage_*`
+    # fields drove the old Stats page's weakness / strength / mastered verdicts, which are not
+    # ported (backlog: Stats is Rob's call); nothing reads them. They were set at build with only
+    # their meaning written down.
     puzzle_mix_batch_size: int = Field(default=12, ge=1, le=50, description="Puzzles per practice batch.")
-    puzzle_mix_window: int = Field(default=50, ge=5, le=500, description="Recent-game window puzzles are drawn from.")
+    puzzle_mix_window: int = Field(
+        default=50, ge=5, le=500, description="Not used by this implementation (the old mix catch-up window)."
+    )
     puzzle_mix_your_puzzles_pct: int = Field(
         default=25, ge=0, le=100, description="% of a batch from the player's own blunders/deviations."
     )
@@ -206,10 +259,10 @@ class Settings(BaseModel):
         default=2, ge=1, le=50, description="Occurrences before a motif counts as a weakness."
     )
     weak_motif_target_count: int = Field(
-        default=20, ge=1, le=200, description="How many weak-motif puzzles to keep available."
+        default=20, ge=1, le=200, description="Not used by this implementation (the old weak-motif pool size)."
     )
     weak_motif_theme_cap_pct: int = Field(
-        default=40, ge=1, le=100, description="Cap on one theme's share of weak-motif puzzles."
+        default=40, ge=1, le=100, description="Not used by this implementation (the old weak-motif theme cap)."
     )
     coverage_practice_min_attempts: int = Field(
         default=3, ge=1, le=50, description="Attempts before a puzzle counts toward coverage."
@@ -231,6 +284,23 @@ class Settings(BaseModel):
     )
 
     # --- Corpus (Lichess CC0) ---------------------------------------------
+    # Corpus ratings are on the Lichess scale and a Chess.com rating sits below it (about
+    # 250-400 points in the mid-range, ~400 at 800, near 0 by 2200), so a Chess.com game's
+    # rating is raised before the tier window is placed (core/puzzles/serve.py). `default`
+    # = -325 is the puzzle-path calibration: the middle of that gap, anchored on Rob's paired
+    # accounts (~1250 Chess.com <-> ~1600 Lichess; it was -200 before, which read as "too
+    # easy"). The per-time-class values came from Scout's opponent comparison and the old
+    # serve path never read them; this one applies them when the latest game has a time
+    # class (docs/decisions/008). A flat offset is least accurate at the low end. Tiers:
+    # `normal` reproduces the original symmetric +-150 band; the wider bands exist so a
+    # solver stronger than his rating can ask for harder material, and their widths were
+    # not argued for. Import range 1050-2700: the weakest player served (Chess.com 800 ~
+    # Lichess 1200) never needs material below ~1050, and 2700 keeps very_hard (+600)
+    # available up to ~2100. 500 per cell kept a ~50-theme stratified sample of a 6M-row
+    # dump inside a 500 MB database; the serve path reads the loaded corpus's own rating
+    # extent, never the import keys. Pool 40: the old serve took `popularity DESC LIMIT 1`,
+    # so only 150 distinct corpus puzzles were ever served; a uniform pick over the top K
+    # breaks that, and K = 1 is the old behaviour.
     cc0_difficulty_tier: DifficultyTier = Field(
         default="very_hard", description="Corpus puzzle difficulty relative to your rating."
     )
@@ -264,6 +334,13 @@ class Settings(BaseModel):
     )
 
     # --- SRS -------------------------------------------------------------
+    # The ladder's mechanics were written down (core/puzzles/srs.py); its numbers were not:
+    # the doubling curve to 14 days, the 1 h retry, 2-of-3 demotion and 2 hits / 300 games
+    # all shipped without a reason. Rob's recorded observation (May 2026): promotions feel
+    # too slow and the volume just before clearing too high; the advance threshold, seeded
+    # at 2, was 1 at the export, and nothing else moved. The demotion lookback
+    # counts ANALYSED games only, so a burst of imports cannot switch demotion off while
+    # analysis catches up.
     srs_pawn_interval_hours: int = Field(default=24, ge=1, description="Interval at level pawn.")
     srs_knight_interval_hours: int = Field(default=48, ge=1, description="Interval at level knight.")
     srs_bishop_interval_hours: int = Field(default=96, ge=1, description="Interval at level bishop.")
@@ -281,6 +358,21 @@ class Settings(BaseModel):
     srs_king_demotion_min_hits: int = Field(default=2, ge=1, description="Recurrences that un-retire a king puzzle.")
 
     # --- Review ----------------------------------------------------------
+    # From the review design (July 2026): a candidate is a 2-pawn material fall measured at a
+    # SETTLED endpoint (the game ends, or up to 6 capture-resolution plies reach a quiet position),
+    # never at a fixed ply count, and it is a calibrated heuristic, not a proof; the expected-score
+    # leg is the compensation judgment. CONF 15 was validated on ~1,000 of Rob's games (21 of 1,145
+    # events fell in already-lost positions, so no contested guard); 20 at depth <= 12 is the
+    # fast-pass noise floor. Pool floors 5 (line) and 8 (ECO) are Rob's ruling: 2-event pools are
+    # noise at a 1,000-game window, and at 5 he had exactly one qualifying opening pool; below the
+    # floor an event shows under its base route (a defensive lapse, in practice), never
+    # routed-but-hidden. Every review knob was nonetheless labelled provisional, pending a second
+    # rating band and a depth-12-vs-18 sensitivity that were never run; K = 8, the 30-ply cap,
+    # quiesce 6, shed 15, faded 62, the 200-game half-life and the n/(n+3) severity shrink have
+    # nothing else behind them. Faded advantage was nearly empty at Rob's rating (his losses are
+    # sharp) and stays for the profile where it is not. Pricing is mate distance, else the
+    # win-probability sigmoid; the old system's first rung, a lookup over the board, is gone
+    # (docs/decisions/001).
     review_conf_es_drop: int = Field(
         default=15, ge=1, le=100, description="Expected-score drop that confirms a material event."
     )
