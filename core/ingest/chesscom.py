@@ -3,6 +3,41 @@
 `parse_game` is pure (fixture-tested); `fetch_archives` / `fetch_archive` do
 the HTTP. Games with rules other than chess/chess960, or without a PGN, are
 skipped and never stored.
+
+What the old system learned about this API (kept here so it is not relearned):
+
+- A 429 ends the run; nothing retries it. Both platforms ask clients to stop
+  on a 429 (Chess.com warns it may block an application outright, Lichess asks
+  for a full minute), so the next scheduled run is the cooldown. Only a 5xx was
+  ever worth retrying, and a retry adapter that honours Retry-After would make
+  the 429 invisible.
+- User-Agent gating answers 403, not 404, hence one descriptive agent with a
+  contact URL. A 404 with a bare HTML body means the request never reached the
+  API application (in August 2026 the origin itself answered 404 for valid
+  players for a while, and the CDN cached it); a 404 with the JSON error
+  envelope means the subject does not exist; a closed account is 200 with a
+  `status` field. This importer treats every non-200 alike; the shapes matter
+  when reading a failed run's error.
+- `/pub/player/{u}` wants the canonical lowercase handle: a mixed-case handle
+  is a 301, which httpx does not follow here. The Scout profile lookup lowers
+  its handle; the player's own is stored as typed.
+- The archives list holds only months with games, oldest first, and lists a
+  month's games oldest first too; a month is the month a game ENDED
+  (`end_time`, whole seconds, so two games can share one). Each archive is one
+  fetch of roughly 50-200 games. No start time is published; `played_at` is
+  the end time.
+- Ratings at game time are on the archive entry (`white.rating`); the profile
+  endpoint carries no rating at all.
+- The result vocabulary sits on the LOSER's record (core/chess/platform.py);
+  `lose` is a loss with no stated reason. `time_control` is `base[+inc]` in
+  seconds, or `1/N` for daily.
+- The `[%clk]` comment after each move is the mover's REMAINING time; the
+  header's own square brackets are stripped before the clocks are read, and
+  clocks are kept only when there is exactly one per move.
+- Chess960 PGNs carry [Variant "Chess960"], [SetUp "1"] and a [FEN] whose
+  castling field is Shredder-FEN (`GBgb`); every chess960 insert once failed
+  on it, so the start FEN is canonicalised to X-FEN at the boundary
+  (core/chess/board.py). A chess960 entry without the FEN header is skipped.
 """
 
 from __future__ import annotations

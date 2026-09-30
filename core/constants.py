@@ -32,6 +32,10 @@ SCOUT_MIN_MATCH_PLY = 6
 PUZZLE_SOURCES = ("blunder", "deviation", "own_mate", "lichess_cc0", "scout", "custom")
 
 # Lichess CC0 corpus themes served in motif practice (was app_settings.cc0_serve_themes).
+# The bare 'mate' tag is deliberately absent: the player's own missed mates are served from
+# his own games (BUCKET_OWN_MISSED_MATE) and corpus mates arrive by the mateInN and
+# named-mate tags. The dump's metadata tags (length, phase, eval, source, castling,
+# collinearMove) are not motifs and are never served.
 CC0_SERVE_THEMES = (
     "fork",
     "pin",
@@ -102,7 +106,11 @@ SRS_BUCKETS = frozenset({BUCKET_YOUR_PUZZLES, BUCKET_OWN_MISSED_MATE})
 ROTATION_BUCKETS = frozenset({BUCKET_MOTIFS_FIRST_CLASS, BUCKET_MOTIFS_REMAINING, BUCKET_CC0_MATE_ENDGAME})
 
 # Corpus theme classes. A corpus puzzle is routed to the first class it overlaps, in
-# ROTATION_ROUTING_ORDER: a fork that is also a mate is a fork lesson.
+# ROTATION_ROUTING_ORDER: a fork that is also a mate is a fork lesson. The first class is
+# the five tactical themes the motif tagger detects in the player's own games (its sixth,
+# mate, has its own bucket), so they are the only themes a weakness can be measured for and
+# weighted by; the other served themes
+# rotate by rating alone, and one is promoted only together with tagger support for it.
 ROTATION_FIRST_CLASS_THEMES = frozenset({"fork", "pin", "skewer", "hangingPiece", "discoveredAttack"})
 ROTATION_MATE_THEMES = frozenset(
     {
@@ -162,7 +170,9 @@ AI_THINKING_MIN_BUDGET_TOKENS = 1024
 AI_THINKING_HEADROOM_TOKENS = 256
 AI_ADAPTIVE_THINKING_MODELS = frozenset({"claude-sonnet-5"})
 
-# Spaced-repetition ladder. 'king' is mastery (core/puzzles/srs.py).
+# Spaced-repetition ladder. 'king' is mastery (core/puzzles/srs.py). Six levels because
+# there are six pieces; the intervals are settings, and their provenance is in
+# core/settings.py.
 SRS_LEVELS = ("pawn", "knight", "bishop", "rook", "queen", "king")
 
 # Play queue: mint the next batch when this many items or fewer are still pending
@@ -171,5 +181,7 @@ MINT_AHEAD_THRESHOLD = 4
 PENDING_BATCH_DEPTH_CAP = 2
 
 # A repertoire puzzle is served once the player has deviated from its line in this many
-# distinct games, all time.
+# distinct games, all time. This is the old system's hard-coded threshold; the generator's
+# gate is the `deviation_puzzle_min_occurrences` setting, and this constant is the serve
+# side's floor.
 REPERTOIRE_PUZZLE_MIN_EVENTS = 3
