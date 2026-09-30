@@ -265,22 +265,40 @@ class Settings(BaseModel):
         default=40, ge=1, le=100, description="Not used by this implementation (the old weak-motif theme cap)."
     )
     coverage_practice_min_attempts: int = Field(
-        default=3, ge=1, le=50, description="Attempts before a puzzle counts toward coverage."
+        default=3,
+        ge=1,
+        le=50,
+        description="Not used by this implementation (the old Stats coverage: attempts before a puzzle counted).",
     )
     coverage_mastered_success_pct: int = Field(
-        default=80, ge=1, le=100, description="Success % that counts as mastered."
+        default=80,
+        ge=1,
+        le=100,
+        description="Not used by this implementation (the old Stats coverage: success % that counted as mastered).",
     )
     coverage_recent_games_window: int = Field(
-        default=1000, ge=10, le=5000, description="Games considered for coverage."
+        default=1000,
+        ge=10,
+        le=5000,
+        description="Not used by this implementation (the old Stats coverage: games considered).",
     )
     coverage_weakness_min_occurrences: int = Field(
-        default=5, ge=1, le=100, description="Occurrences before a theme is a weakness."
+        default=5,
+        ge=1,
+        le=100,
+        description="Not used by this implementation (the old Stats coverage: occurrences before a weakness).",
     )
     coverage_weakness_miss_rate_pct: int = Field(
-        default=50, ge=1, le=100, description="Miss rate % that marks a weakness."
+        default=50,
+        ge=1,
+        le=100,
+        description="Not used by this implementation (the old Stats coverage: miss rate % marking a weakness).",
     )
     coverage_strength_found_rate_pct: int = Field(
-        default=80, ge=1, le=100, description="Found rate % that marks a strength."
+        default=80,
+        ge=1,
+        le=100,
+        description="Not used by this implementation (the old Stats coverage: found rate % marking a strength).",
     )
 
     # --- Corpus (Lichess CC0) ---------------------------------------------

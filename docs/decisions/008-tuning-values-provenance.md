@@ -67,8 +67,8 @@ count. This serve has no pool: `_weak_theme_order` ranks the first-class themes 
 misses (at or above `weak_motif_min_occurrences`) and the first-class bucket
 round-robins one candidate per theme in that order, so one weak theme can supply the
 whole bucket. The two knobs, and `puzzle_mix_window`, are retained in the settings row
-with no consumer, as are the six `coverage_*` fields of the unported Stats page. Their
-descriptions say so. Removing them is a migration of the settings row; restoring the
+with no consumer, as are the six `coverage_*` fields of the unported Stats page. All nine
+descriptions say "Not used by this implementation". Removing them is a migration of the settings row; restoring the
 weighting is a serving change. Neither is this note's decision.
 
 ## Not a home for future values
