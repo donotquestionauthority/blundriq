@@ -7,6 +7,7 @@ import { deleteAnnotation, getAnnotation, getLineAnnotated, putAnnotation } from
 import type { Annotation, LineNote, LineReaderLine, LineReaderPosition } from "../../repertoire";
 import { HIGHLIGHT, SQUARES } from "../../utils/board";
 import { formatAnnotationText } from "./annotationText";
+import { LineAskPanel } from "./LineAskPanel";
 import { editTargetAt, fullMoveCount, moveListEntries, moveNotation, nextNotePly, noteAnchorPlies, parseNoteSegments, prevNotePly, stickyNoteAt } from "./lineReader";
 
 /**
@@ -232,6 +233,8 @@ export function LineWalkthrough({ lineId, initialPly = 0 }: { lineId: number; in
   const [line, setLine] = useState<LineReaderLine | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [curPly, setCurPly] = useState(0);
+  // Bumped by every successful note save or delete: answers about the old notes are void.
+  const [notesGeneration, setNotesGeneration] = useState(0);
   const boardId = "lw" + useId().replace(/[^a-zA-Z0-9-]/g, "");
 
   useEffect(() => {
@@ -338,8 +341,20 @@ export function LineWalkthrough({ lineId, initialPly = 0 }: { lineId: number; in
       </div>
       <div className="space-y-2 rounded border border-zinc-200 p-3 dark:border-zinc-800">
         <StickyNote line={line} curPly={curPly} onJump={setCurPly} />
-        {target && <NoteEditor key={curPly} fen={target.fen} existingNote={target.existingNote} onMutated={() => void reload()} lineId={lineId} />}
+        {target && (
+          <NoteEditor
+            key={curPly}
+            fen={target.fen}
+            existingNote={target.existingNote}
+            onMutated={() => {
+              setNotesGeneration((g) => g + 1);
+              void reload();
+            }}
+            lineId={lineId}
+          />
+        )}
       </div>
+      <LineAskPanel key={lineId} lineId={lineId} ply={curPly} notesGeneration={notesGeneration} />
     </div>
   );
 }
