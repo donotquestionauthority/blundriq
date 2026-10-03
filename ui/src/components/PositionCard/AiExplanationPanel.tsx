@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { ApiError } from "../../api";
 import { explain, explainDryRun, formatDryRun, getPrompts } from "../../blunders";
 import type { PromptLabel } from "../../blunders";
+import { messageOf } from "./aiMessage";
 
 /** `**bold**` and blank-line paragraphs: all the markup the prompts ask a model for. */
 export function MinimalMarkdown({ text }: { text: string }) {
@@ -17,18 +17,6 @@ export function MinimalMarkdown({ text }: { text: string }) {
       ))}
     </div>
   );
-}
-
-/** A refusal's text. The cap's refusal is an object with a message; everything else is a string. */
-function messageOf(err: unknown): string {
-  if (!(err instanceof ApiError)) return "AI call failed";
-  try {
-    const detail: unknown = JSON.parse(err.message);
-    if (detail && typeof detail === "object" && "message" in detail) return String((detail as { message: unknown }).message);
-  } catch {
-    /* a plain string */
-  }
-  return err.message || "AI call failed";
 }
 
 const button = "rounded border px-3 py-1 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50";

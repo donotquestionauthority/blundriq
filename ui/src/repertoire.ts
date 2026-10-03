@@ -279,6 +279,15 @@ export interface RepertoireCoverage {
 export const getCoverage = (fen: string, move: string | null, signal?: AbortSignal) => api.get<RepertoireCoverage>(`/repertoire/coverage?fen=${encodeURIComponent(fen)}${move ? `&move=${encodeURIComponent(move)}` : ""}`, signal);
 export const getLineAnnotated = (lineId: number) => api.get<LineReaderLine>(`/repertoire/lines/${lineId}/annotated`);
 
+export interface LineExplanation {
+  explanation: string;
+  cached: boolean;
+  model: string;
+  prompt_label: string;
+}
+/** Why the move arriving at `ply` matters, given the whole line and its notes; `question` may be empty. */
+export const explainLineMove = (lineId: number, ply: number, question: string) => api.post<LineExplanation>(`/repertoire/lines/${lineId}/explain`, { ply, question });
+
 /** "Imported: <title> by <author>", or the url, or nothing. */
 export function provenanceLabel(b: RepertoireBook): string | null {
   if (b.source_title && b.source_author) return `${b.source_title} by ${b.source_author}`;

@@ -5,7 +5,8 @@ Repertoire page; a PATCH switching a line on that the gate refuses is 409 `activ
 refusal, and one switching a chapter or book on reports the lines it `held_back`. GET /repertoire/conflicts —
 the Conflicts page. GET|PUT|DELETE /repertoire/annotation, GET /repertoire/lines/{id}/annotated — the note
 editor and the line walk-through, on every card and in Practice. GET /repertoire/coverage — whether a
-card's board is in the repertoire, and the line to walk through. GET /repertoire/similar and
+card's board is in the repertoire, and the line to walk through. POST /repertoire/lines/{id}/explain —
+the walk-through's "why does this move matter" (core/ai.py `explain_line`). GET /repertoire/similar and
 GET /repertoire/branch-compare — the two compare surfaces (literal paths, registered before `/{book_id}`).
 
 Both compare routes re-serialise their FENs through python-chess before anything reads them: every
@@ -24,7 +25,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from api import auth
-from core import db, settings
+from core import ai, db, settings
 from core.repertoire import annotations, books, branch_compare, conflicts, neighbourhood, read
 
 router = APIRouter(prefix="/repertoire", tags=["repertoire"], dependencies=[auth.Authed])
@@ -214,6 +215,21 @@ def delete_annotation(fen: str = Query(max_length=100), line_id: int | None = Qu
     if not removed:
         raise HTTPException(404, "No note for this position")
     return {"detail": "Note deleted"}
+
+
+class LineExplainBody(BaseModel):
+    ply: int = Field(ge=0, le=2000)
+    # Trimmed and limited to ai.QUESTION_MAX_CHARS in core; this bound only caps the body.
+    question: str = Field(default="", max_length=4 * ai.QUESTION_MAX_CHARS)
+    dry_run: bool = False
+
+
+@router.post("/lines/{line_id}/explain")
+def line_explain(line_id: int, body: LineExplainBody) -> dict[str, Any]:
+    try:
+        return ai.explain_line(db.transaction, line_id, body.ply, body.question, dry_run=body.dry_run)
+    except ai.ExplainError as exc:
+        raise HTTPException(exc.status, exc.detail) from exc
 
 
 @router.get("/lines/{line_id}/annotated")

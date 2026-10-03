@@ -1,8 +1,10 @@
-"""AI explanations of a blunder, with a cache and a spending cap.
+"""AI explanations, with a cache and a spending cap.
 
-The request names a blunder by `(chess_game_id, ply)` and a prompt by key. Everything that
-reaches the model is read from the database here, so nothing the browser sends can shape a
-prompt or a cache row.
+Two subjects share one path. A blunder is named by `(chess_game_id, ply)` and a prompt by key;
+a move in a repertoire line is named by `(line_id, ply)` and explained with the one line prompt,
+plus the player's optional question. Everything else that reaches the model is read from the
+database here, so the only thing the browser can put into a prompt or a cache row is that
+question, and it is part of the cache key.
 
 Three rules hold the module together:
 
@@ -37,18 +39,23 @@ from core import prompts, secrets
 from core.chess.eligibility import analysable_sql
 from core.constants import (
     AI_ADAPTIVE_THINKING_MODELS,
+    AI_THINKING_ALWAYS_ON_MODELS,
     AI_THINKING_HEADROOM_TOKENS,
     AI_THINKING_MIN_BUDGET_TOKENS,
     LOCK_AI_BUDGET,
     PLAYER_ID,
 )
-from core.settings import AiPrompt, Settings
+from core.repertoire import annotations
+from core.settings import AiPrompt, Settings, thinking_off_refusal
 from core.settings import load as load_settings
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
-TIMEOUT_SECONDS = 90.0
+# Long enough for a model that thinks first: its thinking shares `max_tokens` with the answer.
+TIMEOUT_SECONDS = 180.0
+LINE_PROMPT_KEY = "line"  # what `ai_calls.prompt_key` records for a line explanation
+QUESTION_MAX_CHARS = 500
 
 Transaction = Callable[[], AbstractContextManager[Connection[Any]]]
 
@@ -79,9 +86,12 @@ def provider_of(model: str) -> str:
 def effective_params(prompt: AiPrompt) -> dict[str, Any]:
     """What is actually sent for this prompt, after the provider's rules.
 
-    Anthropic: thinking on forbids a prefill and an explicit temperature, and needs room
-    after the budget for the answer. Thinking off must be said out loud to a model that
-    thinks by default, or the whole reply is spent thinking and carries no text.
+    Anthropic: thinking on forbids a prefill and an explicit temperature. A budget model needs
+    room after the budget for the answer; an adaptive model takes no budget at all, and its
+    thinking comes out of `max_tokens`. Thinking off must be said out loud to a model that
+    thinks by default, or the whole reply is spent thinking and carries no text; a model that
+    always thinks cannot be told that, so the combination is refused here, before anything
+    reads the cache, claims a slot or calls out.
     OpenAI takes the system prompt, temperature and length; the rest does not exist there,
     so it is not in the hash either and toggling it cannot miss the cache.
     """
@@ -96,8 +106,20 @@ def effective_params(prompt: AiPrompt) -> dict[str, Any]:
             "temperature": None if reasoning else prompt.temperature,
             "max_tokens": prompt.max_tokens,
         }
+    if prompt.model in AI_THINKING_ALWAYS_ON_MODELS and not prompt.thinking_enabled:
+        raise ExplainError(422, thinking_off_refusal(prompt.model))
     params: dict[str, Any] = {"provider": provider, "system_prompt": system}
-    if prompt.thinking_enabled:
+    if prompt.thinking_enabled and prompt.model in AI_ADAPTIVE_THINKING_MODELS:
+        params |= {
+            "temperature": None,
+            "thinking_enabled": True,
+            "thinking_budget_tokens": 0,  # not sent, so not in the hash either
+            "thinking_mode": "adaptive",
+            "prefill": "",
+            "max_tokens": prompt.max_tokens,
+            "thinking": {"type": "adaptive"},
+        }
+    elif prompt.thinking_enabled:
         budget = max(prompt.thinking_budget_tokens, AI_THINKING_MIN_BUDGET_TOKENS)
         params |= {
             "temperature": None,
@@ -134,6 +156,8 @@ def prompt_hash(prompt: AiPrompt) -> str:
     }
     if eff["provider"] == "anthropic":
         canonical |= {k: eff[k] for k in ("thinking_enabled", "thinking_budget_tokens", "prefill")}
+        if "thinking_mode" in eff:  # only on the adaptive path, so every older hash is unchanged
+            canonical["thinking_mode"] = eff["thinking_mode"]
     return hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
 
 
@@ -234,6 +258,95 @@ def _blunder_row(conn: Connection[Any], chess_game_id: int, ply: int) -> dict[st
         )
         row = cur.fetchone()
     return dict(row) if row else None
+
+
+# --- a move in a repertoire line -------------------------------------------------------------
+
+_BRACKET_OPEN_RE = re.compile(r"@@StartBracket@@\s*")
+_BRACKET_CLOSE_RE = re.compile(r"\s*@@EndBracket@@")
+_SAN_REF_RE = re.compile(r"@@SANStart@@(.*?)@@SANEnd@@")
+_SAN_STRAY_RE = re.compile(r"@@SAN(?:Start|End)@@")
+_SPACES_RE = re.compile(r"[ \t]{2,}")
+
+
+def _note_prose(text: str) -> str:
+    """A note's text as the walk-through shows it: move references and brackets unwrapped."""
+    out = _BRACKET_CLOSE_RE.sub(")", _BRACKET_OPEN_RE.sub("(", text))
+    out = _SAN_STRAY_RE.sub("", _SAN_REF_RE.sub(r"\1", out))
+    return _SPACES_RE.sub(" ", out).strip()
+
+
+def _note_text(note: dict[str, Any] | None) -> str:
+    """`"prose" (who wrote it)`, or "" for no note."""
+    if not note or not str(note.get("text") or "").strip():
+        return ""
+    if note.get("source") == "manual":
+        who = "the player's own note"
+    else:
+        who = ", ".join(["the author", *(str(note[k]) for k in ("author", "book_title") if note.get(k))])
+    if note.get("from_chapter"):
+        who += f"; from the chapter {note['from_chapter']}"
+    return f'"{_note_prose(str(note["text"]))}" ({who})'
+
+
+def line_context(line: dict[str, Any], ply: int, question: str) -> dict[str, Any] | None:
+    """The render-ready context for the move arriving at `ply` of `line`
+    (`annotations.line_with_notes`), or None when no move arrives there.
+
+    The index contract: `positions[i].move` leaves `positions[i].fen`, and the note at
+    `positions[i]` is about that move. So the move asked about is `positions[ply - 1].move`,
+    the board before it `positions[ply - 1].fen`, the board after it `positions[ply].fen`, and
+    the note directly on it `positions[ply - 1].annotation`. The note the walk-through was
+    showing is anchored at the largest annotated index below `ply`, or else at the first one at
+    or after it. A note on the final position is about no move and is labelled so."""
+    positions: list[dict[str, Any]] = line["positions"]
+    last = len(positions) - 1
+    if not 1 <= ply <= last:
+        return None
+    fields = str(positions[0]["fen"]).split()
+    white_first = len(fields) > 1 and fields[1] == "w"
+    try:
+        first_number = int(fields[5])
+    except (IndexError, ValueError):
+        first_number = 1
+
+    def label(k: int) -> str:
+        """The move leaving `positions[k]`, numbered; the final position has none."""
+        if k >= last:
+            return "the final position"
+        number = first_number + (k + (0 if white_first else 1)) // 2
+        san = str(positions[k]["move"])
+        return f"{number}. {san}" if (k % 2 == 0) == white_first else f"{number}... {san}"
+
+    rows: list[str] = []
+    for k, position in enumerate(positions):
+        rows.append(f"position {k}: {position['fen']}" + (" (final position)" if k == last else ""))
+        if k < last:
+            rows.append(f"   move: {label(k)}")
+        note = _note_text(position.get("annotation"))
+        if note:
+            rows.append(f"   note on {label(k)}: {note}")
+
+    annotated = [k for k, position in enumerate(positions) if position.get("annotation") is not None]
+    before = [k for k in annotated if k < ply]
+    after = [k for k in annotated if k >= ply]
+    anchor = before[-1] if before else (after[0] if after else None)
+    moves = " ".join(str(positions[k]["move"]) for k in range(last))
+    return {
+        "book_title": str(line.get("book_title") or ""),
+        "chapter_title": str(line.get("chapter_title") or ""),
+        "line_name": str(line.get("line_name") or ""),
+        "color": str(line.get("color") or ""),
+        "moves_numbered": _numbered(moves, white_to_move=white_first, fullmove=first_number),
+        "line_table": "\n".join(rows),
+        "move": label(ply - 1),
+        "fen_before": str(positions[ply - 1]["fen"]),
+        "fen_after": str(positions[ply]["fen"]),
+        "direct_note": _note_text(positions[ply - 1].get("annotation")),
+        "sticky_note": _note_text(positions[anchor].get("annotation")) if anchor is not None else "",
+        "sticky_about": label(anchor) if anchor is not None else "",
+        "question": question,
+    }
 
 
 # --- cache and budget --------------------------------------------------------------------
@@ -343,22 +456,28 @@ def call_provider(model: str, rendered: str, eff: dict[str, Any], client: httpx.
         usage: dict[str, Any]
         if eff["provider"] == "openai":
             text = str(data["choices"][0]["message"]["content"] or "").strip()
+            cut_off = data["choices"][0].get("finish_reason") == "length"
             usage = data.get("usage") or {}
             tokens = (usage.get("prompt_tokens"), usage.get("completion_tokens"))
         else:
             text = "".join(str(b["text"]) for b in data["content"] if b.get("type") == "text").strip()
             if text and eff["prefill"]:
                 text = eff["prefill"] + text
+            cut_off = data.get("stop_reason") == "max_tokens"
             usage = data.get("usage") or {}
             tokens = (usage.get("input_tokens"), usage.get("output_tokens"))
     except (ValueError, KeyError, IndexError, TypeError, AttributeError):
         raise ExplainError(502, "AI provider sent a reply that could not be read") from None
     if not text:
         raise ExplainError(502, "AI provider sent a reply with no text (raise max tokens?)")
+    # A model that thinks spends `max_tokens` on thinking too; a reply cut off there is not an
+    # answer, and caching it would serve the fragment for ever.
+    if cut_off:
+        raise ExplainError(502, "AI provider's reply was cut off at max tokens (raise max tokens)")
     return Reply(text, _int(tokens[0]), _int(tokens[1]))
 
 
-# --- the one entry point -----------------------------------------------------------------
+# --- the shared path ---------------------------------------------------------------------
 
 
 def prompt_labels(settings: Settings) -> list[dict[str, str]]:
@@ -366,6 +485,81 @@ def prompt_labels(settings: Settings) -> list[dict[str, str]]:
     usable = [(k, p) for k, p in sorted(settings.ai_prompts.items()) if p.text.strip() and p.model]
     usable.sort(key=lambda kp: kp[0] != settings.ai_default_prompt)
     return [{"key": k, "label": p.label or k.upper(), "model": p.model} for k, p in usable]
+
+
+@dataclass(frozen=True)
+class _Prepared:
+    """Everything one explanation needs once its transaction has closed."""
+
+    prompt: AiPrompt
+    calls_key: str  # what `ai_calls.prompt_key` records
+    label: str
+    fen: str  # the board the cache row is keyed by
+    context: dict[str, Any]
+    eff: dict[str, Any]
+    rendered: str
+
+
+def _prepare(prompt: AiPrompt, calls_key: str, label: str, fen: str, context: dict[str, Any]) -> _Prepared:
+    """Parameters first (an unsupported model or combination is refused before anything is
+    read or claimed), then the template (a broken one costs nothing)."""
+    eff = effective_params(prompt)
+    try:
+        rendered = prompts.render(prompt.text, context)
+    except TemplateError as exc:
+        raise ExplainError(500, f"prompt template failed to render ({type(exc).__name__})") from None
+    return _Prepared(prompt, calls_key, label, fen, context, eff, rendered)
+
+
+def _run(
+    tx: Transaction,
+    prepare: Callable[[Connection[Any], Settings], _Prepared],
+    *,
+    dry_run: bool,
+    client: httpx.Client | None,
+) -> dict[str, Any]:
+    """Order on a cache miss: prepare → claim a slot → call with no transaction open → record
+    the tokens and cache the answer, or give the slot back. `dry_run` returns what would be
+    sent and touches neither the cache, the caps nor the provider."""
+    with tx() as conn:
+        settings = load_settings(conn)
+        prep = prepare(conn, settings)
+        model = prep.prompt.model
+        if dry_run:
+            return {
+                "dry_run": True,
+                "model": model,
+                "prompt_label": prep.label,
+                "rendered_prompt": prep.rendered,
+                "request_body": request_body(model, prep.rendered, prep.eff),
+                **prep.eff,
+            }
+        p_hash, c_hash = prompt_hash(prep.prompt), context_hash(prep.context)
+        cached = _cached(conn, prep.fen, p_hash, c_hash)
+        if cached is not None:
+            return {"explanation": cached, "cached": True, "model": model, "prompt_label": prep.label}
+        claim_id = _claim(conn, settings, prep.calls_key, model)
+
+    try:
+        if client is None:
+            with httpx.Client(timeout=TIMEOUT_SECONDS) as own:
+                reply = call_provider(model, prep.rendered, prep.eff, own)
+        else:
+            reply = call_provider(model, prep.rendered, prep.eff, client)
+    except BaseException:
+        with tx() as conn:
+            conn.execute("DELETE FROM ai_calls WHERE id = %s", (claim_id,))
+        raise
+
+    try:
+        with tx() as conn:
+            _record(conn, claim_id, reply, prep.fen, p_hash, c_hash, model, prep.label, prep.rendered)
+    except psycopg.Error:
+        pass  # the answer was paid for; failing to cache it must not lose it
+    return {"explanation": reply.text, "cached": False, "model": model, "prompt_label": prep.label}
+
+
+# --- the two entry points ----------------------------------------------------------------
 
 
 def explain(
@@ -377,53 +571,50 @@ def explain(
     dry_run: bool = False,
     client: httpx.Client | None = None,
 ) -> dict[str, Any]:
-    """Explain the blunder at `(chess_game_id, ply)` with the named prompt.
+    """Explain the blunder at `(chess_game_id, ply)` with the named prompt. `tx` opens a
+    transaction (`core.db.transaction`)."""
 
-    `tx` opens a transaction (`core.db.transaction`). Order on a cache miss: render (a broken
-    template costs nothing) → claim a slot → call with no transaction open → record the
-    tokens and cache the answer, or give the slot back. `dry_run` returns what would be
-    sent and touches neither the cache, the caps nor the provider.
-    """
-    with tx() as conn:
-        settings = load_settings(conn)
+    def prepare(conn: Connection[Any], settings: Settings) -> _Prepared:
         prompt = settings.ai_prompts.get(prompt_key)
         if prompt is None or not prompt.text.strip():
             raise ExplainError(404, f"prompt {prompt_key!r} is not configured")
         row = _blunder_row(conn, chess_game_id, ply)
         if row is None:
             raise ExplainError(404, "blunder not found")
-        eff = effective_params(prompt)
-        context = build_context(row, ply)
-        try:
-            rendered = prompts.render(prompt.text, context)
-        except TemplateError as exc:
-            raise ExplainError(500, f"prompt template failed to render ({type(exc).__name__})") from None
         label = prompt.label or prompt_key.upper()
-        if dry_run:
-            return {"dry_run": True, "model": prompt.model, "prompt_label": label, "rendered_prompt": rendered, **eff}
-        p_hash, c_hash = prompt_hash(prompt), context_hash(context)
-        cached = _cached(conn, row["fen"], p_hash, c_hash)
-        if cached is not None:
-            return {"explanation": cached, "cached": True, "model": prompt.model, "prompt_label": label}
-        claim_id = _claim(conn, settings, prompt_key, prompt.model)
+        return _prepare(prompt, prompt_key, label, row["fen"], build_context(row, ply))
 
-    try:
-        if client is None:
-            with httpx.Client(timeout=TIMEOUT_SECONDS) as own:
-                reply = call_provider(prompt.model, rendered, eff, own)
-        else:
-            reply = call_provider(prompt.model, rendered, eff, client)
-    except BaseException:
-        with tx() as conn:
-            conn.execute("DELETE FROM ai_calls WHERE id = %s", (claim_id,))
-        raise
+    return _run(tx, prepare, dry_run=dry_run, client=client)
 
-    try:
-        with tx() as conn:
-            _record(conn, claim_id, reply, row["fen"], p_hash, c_hash, prompt.model, label, rendered)
-    except psycopg.Error:
-        pass  # the answer was paid for; failing to cache it must not lose it
-    return {"explanation": reply.text, "cached": False, "model": prompt.model, "prompt_label": label}
+
+def explain_line(
+    tx: Transaction,
+    line_id: int,
+    ply: int,
+    question: str = "",
+    *,
+    dry_run: bool = False,
+    client: httpx.Client | None = None,
+) -> dict[str, Any]:
+    """Explain the move arriving at `ply` of the repertoire line `line_id` with
+    `ai_line_prompt`, given the whole line and every note on it. `question` is trimmed; an
+    empty one asks why the move matters, and is the answer the cache keeps for free."""
+    question = question.strip()
+    if len(question) > QUESTION_MAX_CHARS:
+        raise ExplainError(422, f"the question is longer than {QUESTION_MAX_CHARS} characters")
+
+    def prepare(conn: Connection[Any], settings: Settings) -> _Prepared:
+        prompt = settings.ai_line_prompt
+        if not prompt.text.strip() or not prompt.model:
+            raise ExplainError(404, "the line prompt is not configured")
+        line = annotations.line_with_notes(conn, line_id)
+        context = line_context(line, ply, question) if line is not None else None
+        if line is None or context is None:
+            raise ExplainError(404, "no move arrives at that ply of the line")
+        label = prompt.label or "Line explanation"
+        return _prepare(prompt, LINE_PROMPT_KEY, label, context["fen_after"], context)
+
+    return _run(tx, prepare, dry_run=dry_run, client=client)
 
 
 def _record(

@@ -73,6 +73,9 @@ def _settings_show(_: argparse.Namespace) -> int:
 def _settings_seed(args: argparse.Namespace) -> int:
     data = json.loads(Path(args.file).read_text())
     values = settings.Settings.model_validate(data)
+    refused = settings.save_errors(values)
+    if refused:
+        raise notify.OperatorError("; ".join(refused))
     with db.connect() as conn:
         settings.save(conn, values)
     print(f"settings saved ({len(data)} keys given, {len(values.model_fields)} fields stored)")

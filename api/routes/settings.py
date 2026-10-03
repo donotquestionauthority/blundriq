@@ -25,6 +25,9 @@ def put_settings(body: dict[str, Any]) -> dict[str, Any]:
         values = settings.Settings.model_validate(body)
     except ValidationError as exc:
         raise HTTPException(422, exc.errors()) from exc
+    refused = settings.save_errors(values)
+    if refused:
+        raise HTTPException(422, "; ".join(refused))
     with db.transaction() as conn:
         settings.save(conn, values)
     return values.model_dump(mode="json")

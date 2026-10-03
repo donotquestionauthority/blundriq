@@ -261,3 +261,26 @@ def test_an_operator_error_is_printed_in_full(
     assert cli.main(["migrate"]) == 1
     err = capsys.readouterr().err
     assert "target table puzzles is not empty" in err and "Traceback" not in err
+
+
+def test_settings_seed_refuses_what_the_preferences_page_refuses(
+    conn: psycopg.Connection[DictRow],
+    app_env: None,
+    tmp_path: Any,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The second way into the settings row checks what PUT /settings checks, and writes nothing."""
+    import json
+
+    from core import settings
+
+    bad = settings.Settings().model_dump(mode="json")
+    bad["ai_prompts"]["a"]["thinking_enabled"] = False  # claude-opus-5-5 always thinks
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(bad))
+    assert cli.main(["settings", "seed", str(path)]) == 1
+    assert "ai_prompts.a: claude-opus-5-5 always thinks; turn thinking on" in capsys.readouterr().err
+    assert conn.execute("SELECT count(*) AS n FROM settings").fetchone() == {"n": 0}
+    bad["ai_prompts"]["a"]["thinking_enabled"] = True
+    path.write_text(json.dumps(bad))
+    assert cli.main(["settings", "seed", str(path)]) == 0
