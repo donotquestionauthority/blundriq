@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from core import settings
 
 
@@ -37,3 +40,28 @@ def test_schema_has_descriptions_for_every_field() -> None:
     props = settings.schema()["properties"]
     missing = [k for k, v in props.items() if not v.get("description")]
     assert not missing, missing
+
+
+GOLDEN_SCHEMA = Path(__file__).resolve().parents[1] / "ui" / "src" / "pages" / "__fixtures__" / "settings-schema.json"
+
+
+def test_the_preferences_tests_render_the_real_schema_and_defaults() -> None:
+    """The UI tests load these files; they must be what GET /settings/schema and a fresh
+    GET /settings serve. Regenerate each with `json.dumps(..., indent=2, sort_keys=True)` of
+    `settings.schema()` and `settings.Settings().model_dump(mode="json")`."""
+    assert json.loads(GOLDEN_SCHEMA.read_text()) == settings.schema()
+    defaults = GOLDEN_SCHEMA.with_name("settings-defaults.json")
+    assert json.loads(defaults.read_text()) == settings.Settings().model_dump(mode="json")
+
+
+def test_every_setting_has_a_shape_the_preferences_form_can_edit() -> None:
+    """The form dispatches on `type`, an `enum`, or an `anyOf` of consts; anything else would
+    fall through to a text box (a model-typed field showed `[object Object]`)."""
+    props = settings.schema()["properties"]
+    unhandled = [
+        k
+        for k, v in props.items()
+        if "type" not in v and "enum" not in v and not any("const" in a for a in v.get("anyOf", []))
+    ]
+    assert not unhandled, unhandled
+    assert props["ai_line_prompt"]["type"] == "object"

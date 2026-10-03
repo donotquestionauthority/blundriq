@@ -27,7 +27,8 @@ from psycopg import Connection
 from psycopg.rows import tuple_row
 from pydantic import BaseModel, Field, field_validator
 
-from core.prompts import DEFAULT_PROMPTS, compile_template
+from core.constants import AI_THINKING_ALWAYS_ON_MODELS
+from core.prompts import DEFAULT_PROMPTS, LINE_PROMPT, compile_template
 
 TimeClass = Literal["bullet", "blitz", "rapid", "classical"]
 DifficultyTier = Literal["easier", "normal", "hard", "very_hard"]
@@ -48,7 +49,9 @@ class AiPrompt(BaseModel):
     thinking_enabled: bool = Field(default=False, description="Extended thinking (Anthropic models).")
     thinking_budget_tokens: int = Field(default=2048, ge=0, le=32000, description="Thinking budget when enabled.")
     prefill: str = Field(default="", description="Assistant prefill, if any.")
-    max_tokens: int = Field(default=512, ge=64, le=8192, description="Longest reply, in tokens.")
+    max_tokens: int = Field(
+        default=512, ge=64, le=32000, description="Longest reply, in tokens (thinking included on adaptive models)."
+    )
 
     @field_validator("text")
     @classmethod
@@ -440,14 +443,45 @@ class Settings(BaseModel):
         description="Explanation prompts by key (a, b, c...). Each is a button on a blunder; edit text and model here.",
     )
     ai_default_prompt: str = Field(default="a", description="Prompt key used by the primary Explain button.")
+    ai_line_prompt: AiPrompt = Field(
+        default_factory=lambda: AiPrompt.model_validate(LINE_PROMPT),
+        description="The walk-through's 'Ask why this move matters' prompt, over one repertoire line (edit as JSON).",
+    )
 
 
 # ---------------------------------------------------------------------------
 
 
+def thinking_off_refusal(model: str) -> str:
+    """The one wording for a prompt whose model cannot run with thinking off."""
+    return f"{model} always thinks; turn thinking on"
+
+
+def save_errors(values: Settings) -> list[str]:
+    """What a save must refuse that loading must still accept. A prompt whose model always
+    thinks cannot have thinking off; that is checked here rather than in `AiPrompt`, because
+    `load` validates the stored row on every request and one bad prompt must cost one refused
+    button, not the whole API. core/ai.py refuses the same combination before any call."""
+    prompts = [(f"ai_prompts.{key}", p) for key, p in sorted(values.ai_prompts.items())]
+    prompts.append(("ai_line_prompt", values.ai_line_prompt))
+    return [
+        f"{field}: {thinking_off_refusal(p.model)}"
+        for field, p in prompts
+        if p.model in AI_THINKING_ALWAYS_ON_MODELS and not p.thinking_enabled
+    ]
+
+
 def schema() -> dict[str, Any]:
-    """JSON schema of the settings model; the Preferences page renders from this."""
-    return Settings.model_json_schema()
+    """JSON schema of the settings model; the Preferences page renders from this. The form
+    dispatches on each property's `type`, and pydantic gives a field typed as a model only a
+    `$ref`, so such a property is marked as the object it is (the `$ref` stays)."""
+    out = Settings.model_json_schema()
+    defs = out.get("$defs", {})
+    for prop in out["properties"].values():
+        ref = prop.get("$ref", "")
+        if "type" not in prop and defs.get(ref.rpartition("/")[2], {}).get("type") == "object":
+            prop["type"] = "object"
+    return out
 
 
 def load(conn: Connection[Any]) -> Settings:

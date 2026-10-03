@@ -227,7 +227,7 @@ def test_explain_over_http_maps_refusals_to_statuses(client: TestClient) -> None
     assert (
         dry.status_code == 200
         and "d3" in dry.json()["rendered_prompt"]
-        and dry.json()["thinking"] == {"type": "disabled"}
+        and dry.json()["thinking"] == {"type": "adaptive"}  # the default Claude buttons think
     )
     assert client.post("/blunders/explain", json={"chess_game_id": 1, "ply": 5, "prompt_key": "a"}).status_code == 404
     assert client.post("/blunders/explain", json={"chess_game_id": 1, "ply": 4, "prompt_key": "zz"}).status_code == 404

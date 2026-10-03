@@ -1,0 +1,911 @@
+{
+  "$defs": {
+    "AiPrompt": {
+      "description": "One explanation prompt. `text` and `system_prompt` are Jinja-style templates over the\nblunder context (fen, color, move_played, cp_loss, post_blunder_line, ...).",
+      "properties": {
+        "label": {
+          "default": "",
+          "description": "Name shown on the explain button.",
+          "title": "Label",
+          "type": "string"
+        },
+        "max_tokens": {
+          "default": 512,
+          "description": "Longest reply, in tokens (thinking included on adaptive models).",
+          "maximum": 32000,
+          "minimum": 64,
+          "title": "Max Tokens",
+          "type": "integer"
+        },
+        "model": {
+          "default": "",
+          "description": "Model id sent to the provider (Anthropic or OpenAI).",
+          "title": "Model",
+          "type": "string"
+        },
+        "prefill": {
+          "default": "",
+          "description": "Assistant prefill, if any.",
+          "title": "Prefill",
+          "type": "string"
+        },
+        "system_prompt": {
+          "default": "",
+          "description": "System prompt.",
+          "title": "System Prompt",
+          "type": "string"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "maximum": 2,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Sampling temperature; null = provider default.",
+          "title": "Temperature"
+        },
+        "text": {
+          "default": "",
+          "description": "User prompt template.",
+          "title": "Text",
+          "type": "string"
+        },
+        "thinking_budget_tokens": {
+          "default": 2048,
+          "description": "Thinking budget when enabled.",
+          "maximum": 32000,
+          "minimum": 0,
+          "title": "Thinking Budget Tokens",
+          "type": "integer"
+        },
+        "thinking_enabled": {
+          "default": false,
+          "description": "Extended thinking (Anthropic models).",
+          "title": "Thinking Enabled",
+          "type": "boolean"
+        }
+      },
+      "title": "AiPrompt",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "ai_default_prompt": {
+      "default": "a",
+      "description": "Prompt key used by the primary Explain button.",
+      "title": "Ai Default Prompt",
+      "type": "string"
+    },
+    "ai_explain_max_per_day": {
+      "default": 50,
+      "description": "Most AI calls per day (cached answers are free). 0 = no cap.",
+      "maximum": 5000,
+      "minimum": 0,
+      "title": "Ai Explain Max Per Day",
+      "type": "integer"
+    },
+    "ai_explain_max_per_hour": {
+      "default": 20,
+      "description": "Most AI calls per hour (cached answers are free). 0 = no cap.",
+      "maximum": 1000,
+      "minimum": 0,
+      "title": "Ai Explain Max Per Hour",
+      "type": "integer"
+    },
+    "ai_line_prompt": {
+      "$ref": "#/$defs/AiPrompt",
+      "description": "The walk-through's 'Ask why this move matters' prompt, over one repertoire line (edit as JSON).",
+      "type": "object"
+    },
+    "ai_prompts": {
+      "additionalProperties": {
+        "$ref": "#/$defs/AiPrompt"
+      },
+      "description": "Explanation prompts by key (a, b, c...). Each is a button on a blunder; edit text and model here.",
+      "title": "Ai Prompts",
+      "type": "object"
+    },
+    "analysis_game_limit": {
+      "default": 1000,
+      "description": "Most recent N games kept under analysis.",
+      "maximum": 20000,
+      "minimum": 50,
+      "title": "Analysis Game Limit",
+      "type": "integer"
+    },
+    "blunder_puzzle_max_player_plies": {
+      "default": 3,
+      "description": "Longest solution, in your own moves, for a blunder puzzle.",
+      "maximum": 6,
+      "minimum": 1,
+      "title": "Blunder Puzzle Max Player Plies",
+      "type": "integer"
+    },
+    "blunder_puzzle_min_occurrences": {
+      "default": 3,
+      "description": "Distinct games a position must be blundered in before it becomes a puzzle.",
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Blunder Puzzle Min Occurrences",
+      "type": "integer"
+    },
+    "blunder_threshold": {
+      "default": 200,
+      "description": "Centipawn loss at or above which a move is a blunder.",
+      "maximum": 1000,
+      "minimum": 50,
+      "title": "Blunder Threshold",
+      "type": "integer"
+    },
+    "blunders_default_classifications": {
+      "default": [
+        "blunder",
+        "miss",
+        "mistake"
+      ],
+      "description": "Classifications shown by default.",
+      "items": {
+        "type": "string"
+      },
+      "title": "Blunders Default Classifications",
+      "type": "array"
+    },
+    "blunders_default_filter_mode": {
+      "default": "days",
+      "description": "Whether the Blunders page opens on a day window or a game-count window.",
+      "enum": [
+        "days",
+        "games"
+      ],
+      "title": "Blunders Default Filter Mode",
+      "type": "string"
+    },
+    "blunders_default_last_n_games": {
+      "default": 500,
+      "description": "Default game window on the Blunders page.",
+      "maximum": 5000,
+      "minimum": 10,
+      "title": "Blunders Default Last N Games",
+      "type": "integer"
+    },
+    "blunders_default_min_occurrences": {
+      "default": 2,
+      "description": "Default minimum occurrences on the Blunders page.",
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Blunders Default Min Occurrences",
+      "type": "integer"
+    },
+    "blunders_default_window_days": {
+      "default": 20,
+      "description": "Default day window on Blunders.",
+      "maximum": 3650,
+      "minimum": 1,
+      "title": "Blunders Default Window Days",
+      "type": "integer"
+    },
+    "branch_compare_max_boards": {
+      "default": 12,
+      "description": "Compare similar positions: most alternative branches shown.",
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Branch Compare Max Boards",
+      "type": "integer"
+    },
+    "branch_min": {
+      "default": 2,
+      "description": "Minimum games for a branch to appear in branch views.",
+      "maximum": 20,
+      "minimum": 1,
+      "title": "Branch Min",
+      "type": "integer"
+    },
+    "cc0_candidate_pool_size": {
+      "default": 40,
+      "description": "Candidates sampled before picking a corpus puzzle.",
+      "maximum": 500,
+      "minimum": 5,
+      "title": "Cc0 Candidate Pool Size",
+      "type": "integer"
+    },
+    "cc0_difficulty_tier": {
+      "default": "very_hard",
+      "description": "Corpus puzzle difficulty relative to your rating.",
+      "enum": [
+        "easier",
+        "normal",
+        "hard",
+        "very_hard"
+      ],
+      "title": "Cc0 Difficulty Tier",
+      "type": "string"
+    },
+    "cc0_import_cap_per_cell": {
+      "default": 500,
+      "description": "Puzzles kept per (theme, rating bucket) cell.",
+      "maximum": 5000,
+      "minimum": 10,
+      "title": "Cc0 Import Cap Per Cell",
+      "type": "integer"
+    },
+    "cc0_import_rating_max": {
+      "default": 2700,
+      "description": "Highest corpus rating imported.",
+      "maximum": 3500,
+      "minimum": 400,
+      "title": "Cc0 Import Rating Max",
+      "type": "integer"
+    },
+    "cc0_import_rating_min": {
+      "default": 1050,
+      "description": "Lowest corpus rating imported.",
+      "maximum": 3000,
+      "minimum": 400,
+      "title": "Cc0 Import Rating Min",
+      "type": "integer"
+    },
+    "cc0_rating_bucket_size": {
+      "default": 100,
+      "description": "Width of a rating bucket.",
+      "maximum": 500,
+      "minimum": 25,
+      "title": "Cc0 Rating Bucket Size",
+      "type": "integer"
+    },
+    "cc0_tier_easier": {
+      "default": [
+        -300,
+        150
+      ],
+      "description": "Rating offset window (lo, hi) for 'easier'.",
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "Cc0 Tier Easier",
+      "type": "array"
+    },
+    "cc0_tier_hard": {
+      "default": [
+        -150,
+        300
+      ],
+      "description": "Rating offset window for 'hard'.",
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "Cc0 Tier Hard",
+      "type": "array"
+    },
+    "cc0_tier_normal": {
+      "default": [
+        -150,
+        150
+      ],
+      "description": "Rating offset window for 'normal'.",
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "Cc0 Tier Normal",
+      "type": "array"
+    },
+    "cc0_tier_very_hard": {
+      "default": [
+        -150,
+        600
+      ],
+      "description": "Rating offset window for 'very_hard'.",
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "Cc0 Tier Very Hard",
+      "type": "array"
+    },
+    "coverage_mastered_success_pct": {
+      "default": 80,
+      "description": "Not used by this implementation (the old Stats coverage: success % that counted as mastered).",
+      "maximum": 100,
+      "minimum": 1,
+      "title": "Coverage Mastered Success Pct",
+      "type": "integer"
+    },
+    "coverage_practice_min_attempts": {
+      "default": 3,
+      "description": "Not used by this implementation (the old Stats coverage: attempts before a puzzle counted).",
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Coverage Practice Min Attempts",
+      "type": "integer"
+    },
+    "coverage_recent_games_window": {
+      "default": 1000,
+      "description": "Not used by this implementation (the old Stats coverage: games considered).",
+      "maximum": 5000,
+      "minimum": 10,
+      "title": "Coverage Recent Games Window",
+      "type": "integer"
+    },
+    "coverage_strength_found_rate_pct": {
+      "default": 80,
+      "description": "Not used by this implementation (the old Stats coverage: found rate % marking a strength).",
+      "maximum": 100,
+      "minimum": 1,
+      "title": "Coverage Strength Found Rate Pct",
+      "type": "integer"
+    },
+    "coverage_weakness_min_occurrences": {
+      "default": 5,
+      "description": "Not used by this implementation (the old Stats coverage: occurrences before a weakness).",
+      "maximum": 100,
+      "minimum": 1,
+      "title": "Coverage Weakness Min Occurrences",
+      "type": "integer"
+    },
+    "coverage_weakness_miss_rate_pct": {
+      "default": 50,
+      "description": "Not used by this implementation (the old Stats coverage: miss rate % marking a weakness).",
+      "maximum": 100,
+      "minimum": 1,
+      "title": "Coverage Weakness Miss Rate Pct",
+      "type": "integer"
+    },
+    "daily_game_target": {
+      "default": 1,
+      "description": "Games per day (standard or 960) that count as 'done'.",
+      "maximum": 50,
+      "minimum": 0,
+      "title": "Daily Game Target",
+      "type": "integer"
+    },
+    "daily_puzzle_target": {
+      "default": 10,
+      "description": "Puzzles per day that count as 'done'.",
+      "maximum": 200,
+      "minimum": 1,
+      "title": "Daily Puzzle Target",
+      "type": "integer"
+    },
+    "deviation_puzzle_min_occurrences": {
+      "default": 3,
+      "description": "Distinct games a line must be deviated from before it becomes a puzzle.",
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Deviation Puzzle Min Occurrences",
+      "type": "integer"
+    },
+    "deviations_default_filter_mode": {
+      "default": "days",
+      "description": "Whether Deviations opens on a day window or a game-count window.",
+      "enum": [
+        "days",
+        "games"
+      ],
+      "title": "Deviations Default Filter Mode",
+      "type": "string"
+    },
+    "deviations_default_last_n_games": {
+      "default": 500,
+      "description": "Default game window on Deviations.",
+      "maximum": 5000,
+      "minimum": 10,
+      "title": "Deviations Default Last N Games",
+      "type": "integer"
+    },
+    "deviations_default_min_occurrences": {
+      "default": 2,
+      "description": "Default minimum occurrences on Deviations.",
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Deviations Default Min Occurrences",
+      "type": "integer"
+    },
+    "deviations_default_min_ply": {
+      "default": 1,
+      "description": "Ignore deviations before this ply.",
+      "maximum": 80,
+      "minimum": 1,
+      "title": "Deviations Default Min Ply",
+      "type": "integer"
+    },
+    "deviations_default_window_days": {
+      "default": 20,
+      "description": "Default day window on Deviations.",
+      "maximum": 3650,
+      "minimum": 1,
+      "title": "Deviations Default Window Days",
+      "type": "integer"
+    },
+    "explore_engine_depth": {
+      "default": 16,
+      "description": "In-browser engine depth on Explore and Review.",
+      "maximum": 30,
+      "minimum": 6,
+      "title": "Explore Engine Depth",
+      "type": "integer"
+    },
+    "games_columns": {
+      "default": [
+        "Date",
+        "Color",
+        "Opponent",
+        "Result",
+        "Repertoire",
+        "Section",
+        "Deviation",
+        "Link"
+      ],
+      "description": "Columns shown on the Games page, in order.",
+      "items": {
+        "type": "string"
+      },
+      "title": "Games Columns",
+      "type": "array"
+    },
+    "games_default_window_days": {
+      "default": 60,
+      "description": "Default day window on the Games page.",
+      "maximum": 3650,
+      "minimum": 1,
+      "title": "Games Default Window Days",
+      "type": "integer"
+    },
+    "inaccuracy_threshold": {
+      "default": 50,
+      "description": "Centipawn loss at or above which a move is an inaccuracy.",
+      "maximum": 300,
+      "minimum": 10,
+      "title": "Inaccuracy Threshold",
+      "type": "integer"
+    },
+    "lichess_rating_offsets": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "default": {
+        "blitz": -200,
+        "bullet": -150,
+        "classical": -275,
+        "correspondence": -200,
+        "default": -325,
+        "rapid": -250
+      },
+      "description": "Offset from platform rating to corpus puzzle rating, per time class.",
+      "title": "Lichess Rating Offsets",
+      "type": "object"
+    },
+    "max_cp_display": {
+      "default": 500,
+      "description": "Clamp for eval display in the UI.",
+      "maximum": 2000,
+      "minimum": 100,
+      "title": "Max Cp Display",
+      "type": "integer"
+    },
+    "miss_contested_gate": {
+      "default": 300,
+      "description": "Minimum eval swing for a miss in a contested position.",
+      "maximum": 1000,
+      "minimum": 0,
+      "title": "Miss Contested Gate",
+      "type": "integer"
+    },
+    "miss_threshold": {
+      "default": 300,
+      "description": "Advantage thrown away that counts as a 'miss' (winning move not played).",
+      "maximum": 1000,
+      "minimum": 50,
+      "title": "Miss Threshold",
+      "type": "integer"
+    },
+    "missed_mate_max_moves": {
+      "default": 3,
+      "description": "Longest mate-in-N that counts as a missed mate.",
+      "maximum": 10,
+      "minimum": 1,
+      "title": "Missed Mate Max Moves",
+      "type": "integer"
+    },
+    "mistake_threshold": {
+      "default": 100,
+      "description": "Centipawn loss at or above which a move is a mistake.",
+      "maximum": 500,
+      "minimum": 20,
+      "title": "Mistake Threshold",
+      "type": "integer"
+    },
+    "motif_found_material_tolerance": {
+      "default": 3,
+      "description": "Material tolerance when deciding a motif was 'found'.",
+      "maximum": 9,
+      "minimum": 0,
+      "title": "Motif Found Material Tolerance",
+      "type": "integer"
+    },
+    "motif_min_material_gain": {
+      "default": 1,
+      "description": "Minimum material gain for a tactic to count as a motif.",
+      "maximum": 9,
+      "minimum": 0,
+      "title": "Motif Min Material Gain",
+      "type": "integer"
+    },
+    "puzzle_mix_batch_size": {
+      "default": 12,
+      "description": "Puzzles per practice batch.",
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Puzzle Mix Batch Size",
+      "type": "integer"
+    },
+    "puzzle_mix_cc0_mate_endgame_pct": {
+      "default": 10,
+      "description": "% from corpus mate patterns.",
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Puzzle Mix Cc0 Mate Endgame Pct",
+      "type": "integer"
+    },
+    "puzzle_mix_motifs_first_class_pct": {
+      "default": 20,
+      "description": "% from the weakest motif class.",
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Puzzle Mix Motifs First Class Pct",
+      "type": "integer"
+    },
+    "puzzle_mix_motifs_remaining_pct": {
+      "default": 35,
+      "description": "% from the remaining motif classes.",
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Puzzle Mix Motifs Remaining Pct",
+      "type": "integer"
+    },
+    "puzzle_mix_own_missed_mate_pct": {
+      "default": 10,
+      "description": "% from the player's own missed mates.",
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Puzzle Mix Own Missed Mate Pct",
+      "type": "integer"
+    },
+    "puzzle_mix_window": {
+      "default": 50,
+      "description": "Not used by this implementation (the old mix catch-up window).",
+      "maximum": 500,
+      "minimum": 5,
+      "title": "Puzzle Mix Window",
+      "type": "integer"
+    },
+    "puzzle_mix_your_puzzles_pct": {
+      "default": 25,
+      "description": "% of a batch from the player's own blunders/deviations.",
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Puzzle Mix Your Puzzles Pct",
+      "type": "integer"
+    },
+    "repertoire_puzzle_lookahead_moves": {
+      "default": 1,
+      "description": "Moves of the line shown after a deviation puzzle.",
+      "maximum": 6,
+      "minimum": 0,
+      "title": "Repertoire Puzzle Lookahead Moves",
+      "type": "integer"
+    },
+    "reply_cap": {
+      "default": 4,
+      "description": "Maximum opponent replies listed per position.",
+      "maximum": 20,
+      "minimum": 1,
+      "title": "Reply Cap",
+      "type": "integer"
+    },
+    "reply_min_freq": {
+      "default": 1,
+      "description": "Minimum frequency for an opponent reply to be listed.",
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Reply Min Freq",
+      "type": "integer"
+    },
+    "review_conf_es_drop": {
+      "default": 15,
+      "description": "Expected-score drop that confirms a material event.",
+      "maximum": 100,
+      "minimum": 1,
+      "title": "Review Conf Es Drop",
+      "type": "integer"
+    },
+    "review_conf_es_drop_depth12": {
+      "default": 20,
+      "description": "Same, for games analysed at depth <= 12.",
+      "maximum": 100,
+      "minimum": 1,
+      "title": "Review Conf Es Drop Depth12",
+      "type": "integer"
+    },
+    "review_default_mode": {
+      "default": "learn",
+      "description": "Mode the game review opens in.",
+      "enum": [
+        "learn",
+        "review"
+      ],
+      "title": "Review Default Mode",
+      "type": "string"
+    },
+    "review_early_k_plies": {
+      "default": 8,
+      "description": "Plies after book exit still counted as 'early'.",
+      "maximum": 40,
+      "minimum": 0,
+      "title": "Review Early K Plies",
+      "type": "integer"
+    },
+    "review_early_ply_cap": {
+      "default": 30,
+      "description": "'Early' cap when no repertoire match exists.",
+      "maximum": 80,
+      "minimum": 1,
+      "title": "Review Early Ply Cap",
+      "type": "integer"
+    },
+    "review_faded_peak_es": {
+      "default": 62,
+      "description": "Peak expected score for a 'faded advantage' event.",
+      "maximum": 100,
+      "minimum": 50,
+      "title": "Review Faded Peak Es",
+      "type": "integer"
+    },
+    "review_material_candidate_drop": {
+      "default": 2,
+      "description": "Material units lost that make a candidate.",
+      "maximum": 9,
+      "minimum": 1,
+      "title": "Review Material Candidate Drop",
+      "type": "integer"
+    },
+    "review_missed_win_shed": {
+      "default": 15,
+      "description": "Expected-score shed that marks a missed win.",
+      "maximum": 100,
+      "minimum": 1,
+      "title": "Review Missed Win Shed",
+      "type": "integer"
+    },
+    "review_pool_floor_eco": {
+      "default": 8,
+      "description": "Minimum events for an ECO-scoped pool.",
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Review Pool Floor Eco",
+      "type": "integer"
+    },
+    "review_pool_floor_line": {
+      "default": 5,
+      "description": "Minimum events for a line-scoped pool.",
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Review Pool Floor Line",
+      "type": "integer"
+    },
+    "review_quiesce_max_plies": {
+      "default": 6,
+      "description": "Capture-resolution extension when settling a candidate.",
+      "maximum": 20,
+      "minimum": 0,
+      "title": "Review Quiesce Max Plies",
+      "type": "integer"
+    },
+    "review_recency_half_life_games": {
+      "default": 200,
+      "description": "Half-life (games) for recency weighting.",
+      "minimum": 10,
+      "title": "Review Recency Half Life Games",
+      "type": "integer"
+    },
+    "review_show_timer": {
+      "default": true,
+      "description": "Time Learn-mode reps.",
+      "title": "Review Show Timer",
+      "type": "boolean"
+    },
+    "scout_bayesian_prior_strength": {
+      "default": 10,
+      "description": "Prior strength for Scout win-rate smoothing.",
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Scout Bayesian Prior Strength",
+      "type": "integer"
+    },
+    "scout_default_last_n_games": {
+      "default": 500,
+      "description": "Default game window on Scout, for both sides.",
+      "maximum": 5000,
+      "minimum": 10,
+      "title": "Scout Default Last N Games",
+      "type": "integer"
+    },
+    "scout_default_min_occurrences": {
+      "default": 2,
+      "description": "Default minimum occurrences on Scout.",
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Scout Default Min Occurrences",
+      "type": "integer"
+    },
+    "similar_max_distance": {
+      "default": 6,
+      "description": "Similar positions: most squares a repertoire position may differ from the card's board by.",
+      "maximum": 8,
+      "minimum": 1,
+      "title": "Similar Max Distance",
+      "type": "integer"
+    },
+    "similar_max_positions": {
+      "default": 12,
+      "description": "Similar positions: most boards shown (each with all of its lines).",
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Similar Max Positions",
+      "type": "integer"
+    },
+    "srs_advance_threshold": {
+      "default": 1,
+      "description": "Correct answers at a level before advancing.",
+      "maximum": 10,
+      "minimum": 1,
+      "title": "Srs Advance Threshold",
+      "type": "integer"
+    },
+    "srs_bishop_interval_hours": {
+      "default": 96,
+      "description": "Interval at level bishop.",
+      "minimum": 1,
+      "title": "Srs Bishop Interval Hours",
+      "type": "integer"
+    },
+    "srs_drop_window": {
+      "default": 3,
+      "description": "Attempts considered for demotion.",
+      "maximum": 10,
+      "minimum": 1,
+      "title": "Srs Drop Window",
+      "type": "integer"
+    },
+    "srs_drop_wrongs": {
+      "default": 2,
+      "description": "Wrongs within the window that demote.",
+      "maximum": 10,
+      "minimum": 1,
+      "title": "Srs Drop Wrongs",
+      "type": "integer"
+    },
+    "srs_king_demotion_lookback_games": {
+      "default": 300,
+      "description": "Games checked for a retired (king) puzzle's pattern recurring.",
+      "minimum": 10,
+      "title": "Srs King Demotion Lookback Games",
+      "type": "integer"
+    },
+    "srs_king_demotion_min_hits": {
+      "default": 2,
+      "description": "Recurrences that un-retire a king puzzle.",
+      "minimum": 1,
+      "title": "Srs King Demotion Min Hits",
+      "type": "integer"
+    },
+    "srs_knight_interval_hours": {
+      "default": 48,
+      "description": "Interval at level knight.",
+      "minimum": 1,
+      "title": "Srs Knight Interval Hours",
+      "type": "integer"
+    },
+    "srs_pawn_interval_hours": {
+      "default": 24,
+      "description": "Interval at level pawn.",
+      "minimum": 1,
+      "title": "Srs Pawn Interval Hours",
+      "type": "integer"
+    },
+    "srs_queen_interval_hours": {
+      "default": 336,
+      "description": "Interval at level queen.",
+      "minimum": 1,
+      "title": "Srs Queen Interval Hours",
+      "type": "integer"
+    },
+    "srs_rook_interval_hours": {
+      "default": 192,
+      "description": "Interval at level rook.",
+      "minimum": 1,
+      "title": "Srs Rook Interval Hours",
+      "type": "integer"
+    },
+    "srs_wrong_retry_hours": {
+      "default": 1,
+      "description": "Hours before a wrong answer is shown again.",
+      "minimum": 0,
+      "title": "Srs Wrong Retry Hours",
+      "type": "integer"
+    },
+    "time_class_focus": {
+      "default": "rapid_plus",
+      "description": "Which time controls feed analysis and puzzle generation. rapid_plus = rapid and slower.",
+      "enum": [
+        "rapid_plus",
+        "all"
+      ],
+      "title": "Time Class Focus",
+      "type": "string"
+    },
+    "timezone": {
+      "default": "America/New_York",
+      "description": "IANA timezone for 'today' in SRS scheduling, daily targets and streaks.",
+      "title": "Timezone",
+      "type": "string"
+    },
+    "weak_motif_min_occurrences": {
+      "default": 2,
+      "description": "Occurrences before a motif counts as a weakness.",
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Weak Motif Min Occurrences",
+      "type": "integer"
+    },
+    "weak_motif_target_count": {
+      "default": 20,
+      "description": "Not used by this implementation (the old weak-motif pool size).",
+      "maximum": 200,
+      "minimum": 1,
+      "title": "Weak Motif Target Count",
+      "type": "integer"
+    },
+    "weak_motif_theme_cap_pct": {
+      "default": 40,
+      "description": "Not used by this implementation (the old weak-motif theme cap).",
+      "maximum": 100,
+      "minimum": 1,
+      "title": "Weak Motif Theme Cap Pct",
+      "type": "integer"
+    }
+  },
+  "title": "Settings",
+  "type": "object"
+}

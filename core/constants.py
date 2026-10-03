@@ -164,11 +164,15 @@ LOCK_SEEN_DEVIATIONS = 3007  # the same for the Deviations list
 CLOCK_DECIDED_TERMINATIONS = ("timeout", "abandonment")
 
 # AI explanations (core/ai.py). Anthropic's floor for a thinking budget; the room kept after
-# the budget for the answer itself; and the models that think unless told not to, where
-# "thinking off" has to be sent explicitly or the reply comes back with no text.
+# the budget for the answer itself. Two separate model properties follow. Adaptive models take
+# only `{"type": "adaptive"}` when thinking is on (they reject a budget) and think unless told
+# not to, so "thinking off" is sent explicitly or the reply comes back with no text. Always-on
+# models are adaptive models that reject "thinking off" outright: that combination is refused
+# when settings are saved and again before any call (core/settings.py `save_errors`).
 AI_THINKING_MIN_BUDGET_TOKENS = 1024
 AI_THINKING_HEADROOM_TOKENS = 256
-AI_ADAPTIVE_THINKING_MODELS = frozenset({"claude-sonnet-5"})
+AI_ADAPTIVE_THINKING_MODELS = frozenset({"claude-sonnet-5", "claude-opus-5-5"})
+AI_THINKING_ALWAYS_ON_MODELS = frozenset({"claude-opus-5-5"})
 
 # Spaced-repetition ladder. 'king' is mastery (core/puzzles/srs.py). Six levels because
 # there are six pieces; the intervals are settings, and their provenance is in
