@@ -3,6 +3,7 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import RepertoireConflicts from "./RepertoireConflicts";
 import type { ConflictLine, ConflictPosition, ConflictsResponse, DuplicateGroup, Refusal } from "../repertoire";
+import { ARROWS } from "../utils/board";
 
 vi.mock("react-chessboard", () => ({
   Chessboard: ({ options }: { options: { id?: string; position?: string; arrows?: { color: string }[] } }) => <div data-testid={`board-${options.id}`} data-position={options.position} data-arrows={(options.arrows ?? []).map((a) => a.color).join(",")} />,
@@ -84,7 +85,7 @@ describe("Repertoire conflicts page", () => {
     expect(contestedCard).toHaveTextContent("2 moves · 2 of 3 lines on");
     expect(within(contestedCard).getByText("Contested")).toBeInTheDocument();
     expect(boardOf(AFTER_E5)).toHaveAttribute("data-position", AFTER_E5);
-    expect(boardOf(AFTER_E5)).toHaveAttribute("data-arrows", "#E69F00,#009E73"); // both moves in play: solid
+    expect(boardOf(AFTER_E5)).toHaveAttribute("data-arrows", `${ARROWS.book}ff,${ARROWS.book}cc`); // both moves in play: the prep colour, a step quieter each
     expect(card(AFTER_NC6)).toBeNull();
     // Expanding shows the move groups with a switch per line and why a line is not in play.
     fireEvent.click(within(contestedCard).getByRole("button", { expanded: false }));
@@ -92,7 +93,7 @@ describe("Repertoire conflicts page", () => {
     expect(screen.getByText("(chapter off)")).toBeInTheDocument();
     expect(screen.getByRole("switch", { name: "Bishop active" })).toHaveAttribute("aria-checked", "true");
     fireEvent.click(screen.getByRole("button", { name: "All (2)" }));
-    expect(boardOf(AFTER_NC6)).toHaveAttribute("data-arrows", "#E69F00,#009E7366"); // the off line's move faded
+    expect(boardOf(AFTER_NC6)).toHaveAttribute("data-arrows", `${ARROWS.book}ff,${ARROWS.book}66`); // the off line's move faded
     expect(screen.getByRole("switch", { name: "Bishop active" })).toBeInTheDocument(); // still expanded
     // Duplicate lines.
     expect(screen.getByText("1.e4 e5 2.Nf3")).toBeInTheDocument();

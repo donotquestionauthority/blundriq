@@ -4,6 +4,7 @@ import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EngineEval } from "../engine/useStockfish";
 import { ExploreLayer } from "./ExploreLayer";
+import { ARROWS } from "../utils/board";
 
 // The board is not under test: the mock shows its arrows and plays the move the test set up.
 let nextDrop = { from: "e2", to: "e4" };
@@ -80,13 +81,13 @@ describe("ExploreLayer", () => {
   it("draws the best-move arrow only when the evaluation is for the board on show", async () => {
     render(<ExploreLayer fen={START} orientation="white" onClose={() => {}} />);
     act(() => push?.({ ready: true, evalState: ev(START) }));
-    expect(arrows()).toEqual([{ startSquare: "e2", endSquare: "e4", color: "#009E73" }]);
+    expect(arrows()).toEqual([{ startSquare: "e2", endSquare: "e4", color: ARROWS.engine }]);
     fireEvent.click(screen.getByText("play")); // the board moves on; the evaluation is stale
     expect(screen.getByTestId("board").getAttribute("data-position")).toBe(AFTER_E4);
     expect(arrows()).toEqual([]);
     expect(screen.getAllByText("–")).toHaveLength(2);
     act(() => push?.({ ready: true, evalState: ev(AFTER_E4, { bestMoveUci: "e7e5", pvUci: ["e7e5"], evalCp: -20 }) }));
-    expect(arrows()).toEqual([{ startSquare: "e7", endSquare: "e5", color: "#009E73" }]);
+    expect(arrows()).toEqual([{ startSquare: "e7", endSquare: "e5", color: ARROWS.engine }]);
     expect(screen.getAllByText("-0.2")).toHaveLength(2);
     await settled();
   });
@@ -145,7 +146,7 @@ describe("ExploreLayer", () => {
     act(() => push?.({ ready: true, evalState: ev(START, { bestMoveUci: "d2d4", pvUci: ["e2e4", "e7e5"] }) }));
     expect(screen.getByText("d4")).toBeInTheDocument();
     expect(screen.getByText("e4 e5")).toBeInTheDocument();
-    expect(arrows()).toEqual([{ startSquare: "d2", endSquare: "d4", color: "#009E73" }]);
+    expect(arrows()).toEqual([{ startSquare: "d2", endSquare: "d4", color: ARROWS.engine }]);
     act(() => push?.({ ready: true, evalState: ev(START, { bestMoveUci: "e2e4", pvUci: [], thinking: true }) }));
     expect(screen.getByText("e4")).toBeInTheDocument(); // SAN, never the raw token
     expect(screen.queryByText("e2e4")).not.toBeInTheDocument();

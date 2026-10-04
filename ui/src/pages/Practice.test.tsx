@@ -61,14 +61,14 @@ type Handler = (method: string, body: unknown) => Reply | Promise<Reply>;
 
 /** A fetch stub routed by path; returns the list of calls for assertions. */
 function stubFetch(routes: Record<string, Handler>) {
-  const calls: Array<{ path: string; method: string; body: Record<string, unknown> | null }> = [];
+  const calls: Array<{ path: string; method: string; body: Record<string, unknown> | null; query: URLSearchParams }> = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string, init?: RequestInit) => {
       const path = url.replace(/^.*\/api/, "").split("?")[0];
       const method = init?.method ?? "GET";
       const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : null;
-      calls.push({ path, method, body });
+      calls.push({ path, method, body, query: new URLSearchParams(url.split("?")[1] ?? "") });
       const h = routes[path];
       if (!h) return { ok: false, status: 404, statusText: "Not Found", json: async () => ({ detail: "no route" }) };
       const r = await h(method, body);
@@ -124,6 +124,121 @@ describe("Practice page", () => {
     const toolbar = screen.getByRole("tablist", { name: "Practice type" }).parentElement!.parentElement!;
     expect(toolbar).toContainElement(panel);
     expect(toolbar.className.split(" ")).toContain("relative");
+  });
+
+  describe("the repertoire filter", () => {
+    const scopes = {
+      books: [
+        {
+          id: 1,
+          title: "Book One",
+          color: "white",
+          count: 3,
+          chapters: [
+            { id: 2, title: "Chapter Two", count: 2, lines: [{ id: 5, title: "Line Five", count: 1 }, { id: 6, title: "Line Six", count: 1 }] },
+            { id: 3, title: "Chapter Three", count: 1, lines: [{ id: 7, title: "Line Seven", count: 1 }] },
+          ],
+        },
+        { id: 4, title: "Book Four", color: "black", count: 1, chapters: [{ id: 8, title: "Chapter Eight", count: 1, lines: [{ id: 9, title: "Line Nine", count: 1 }] }] },
+      ],
+    };
+    const lastSubtype = (calls: ReturnType<typeof stubFetch>) => calls.filter((c) => c.path === "/practice/puzzles").at(-1)!.query.get("subtype");
+    const selectOf = (label: string) => within(screen.getByRole("dialog", { name: "Practice filters" })).getByLabelText(label) as HTMLSelectElement;
+
+    it("narrows Book → Chapter → Line, each choice clearing the levels below it", async () => {
+      const calls = stubFetch({
+        "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1)], 1, 1) }),
+        "/practice/repertoire-scopes": () => ({ status: 200, body: scopes }),
+      });
+      renderPage("/practice?type=repertoire");
+      expect(await screen.findByText("#11")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /Filters/ }));
+      await vi.waitFor(() => expect(selectOf("Book")).not.toBeDisabled());
+      // Motif's theme dropdown is not offered for the Repertoire type.
+      expect(within(screen.getByRole("dialog", { name: "Practice filters" })).queryByLabelText("Subtype")).toBeNull();
+      expect([...selectOf("Book").options].map((o) => o.text)).toEqual(["All books", "Book One (3)", "Book Four (1)"]);
+      expect(selectOf("Chapter")).toBeDisabled();
+      expect(selectOf("Line")).toBeDisabled();
+
+      fireEvent.change(selectOf("Book"), { target: { value: "1" } });
+      await vi.waitFor(() => expect(lastSubtype(calls)).toBe("book:1"));
+      expect([...selectOf("Chapter").options].map((o) => o.text)).toEqual(["All chapters", "Chapter Two (2)", "Chapter Three (1)"]);
+      fireEvent.change(selectOf("Chapter"), { target: { value: "2" } });
+      await vi.waitFor(() => expect(lastSubtype(calls)).toBe("chapter:2"));
+      fireEvent.change(selectOf("Line"), { target: { value: "6" } });
+      await vi.waitFor(() => expect(lastSubtype(calls)).toBe("line:6"));
+      expect([selectOf("Book").value, selectOf("Chapter").value, selectOf("Line").value]).toEqual(["1", "2", "6"]);
+
+      // Clearing a level falls back to the one above it.
+      fireEvent.change(selectOf("Line"), { target: { value: "" } });
+      await vi.waitFor(() => expect(lastSubtype(calls)).toBe("chapter:2"));
+      fireEvent.change(selectOf("Chapter"), { target: { value: "" } });
+      await vi.waitFor(() => expect(lastSubtype(calls)).toBe("book:1"));
+      // A new book clears the chapter and line below it.
+      fireEvent.change(selectOf("Chapter"), { target: { value: "3" } });
+      fireEvent.change(selectOf("Line"), { target: { value: "7" } });
+      await vi.waitFor(() => expect(lastSubtype(calls)).toBe("line:7"));
+      fireEvent.change(selectOf("Book"), { target: { value: "4" } });
+      await vi.waitFor(() => expect(lastSubtype(calls)).toBe("book:4"));
+      expect([selectOf("Book").value, selectOf("Chapter").value, selectOf("Line").value]).toEqual(["4", "", ""]);
+      fireEvent.change(selectOf("Book"), { target: { value: "" } });
+      await vi.waitFor(() => expect(lastSubtype(calls)).toBeNull());
+    });
+
+    it("opens a deep link on its chapter with the book above it selected, and reads a bare id as a line", async () => {
+      stubFetch({
+        "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1)], 1, 1) }),
+        "/practice/repertoire-scopes": () => ({ status: 200, body: scopes }),
+      });
+      const view = renderPage("/practice?type=repertoire&subtype=chapter:3");
+      expect(await screen.findByText("#11")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /Filters \(1\)/ }));
+      await vi.waitFor(() => expect(selectOf("Book").value).toBe("1"));
+      expect(selectOf("Chapter").value).toBe("3");
+      expect(selectOf("Line").value).toBe("");
+      view.unmount();
+
+      renderPage("/practice?type=repertoire&subtype=9");
+      expect(await screen.findByText("#11")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /Filters/ }));
+      await vi.waitFor(() => expect(selectOf("Line").value).toBe("9"));
+      expect([selectOf("Book").value, selectOf("Chapter").value]).toEqual(["4", "8"]);
+    });
+
+    it("a filter the tree no longer holds says so and can be cleared; a tree that fails to load says so", async () => {
+      const calls = stubFetch({
+        "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1)], 1, 1) }),
+        "/practice/repertoire-scopes": () => ({ status: 200, body: scopes }),
+      });
+      const view = renderPage("/practice?type=repertoire&subtype=line:99");
+      expect(await screen.findByText("#11")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /Filters \(1\)/ }));
+      const panel = screen.getByRole("dialog", { name: "Practice filters" });
+      expect(await within(panel).findByText("This filter is no longer in your repertoire.")).toBeInTheDocument();
+      fireEvent.click(within(panel).getByRole("button", { name: "Clear" }));
+      await vi.waitFor(() => expect(lastSubtype(calls)).toBeNull());
+      expect(within(panel).queryByText("This filter is no longer in your repertoire.")).toBeNull();
+      view.unmount();
+
+      stubFetch({
+        "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1)], 1, 1) }),
+        "/practice/repertoire-scopes": () => ({ status: 500, body: { detail: "boom" } }),
+      });
+      renderPage("/practice?type=repertoire");
+      expect(await screen.findByText("#11")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /Filters/ }));
+      expect(await within(screen.getByRole("dialog", { name: "Practice filters" })).findByRole("alert")).toHaveTextContent("Couldn't load your books");
+    });
+
+    it("asks for the tree only while the Repertoire type is showing", async () => {
+      const calls = stubFetch({
+        "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1)], 1, 1) }),
+        "/practice/repertoire-scopes": () => ({ status: 200, body: scopes }),
+      });
+      renderPage();
+      expect(await screen.findByText("#11")).toBeInTheDocument();
+      expect(calls.some((c) => c.path === "/practice/repertoire-scopes")).toBe(false);
+    });
   });
 
   it("appends a new batch keyed by play_batch_id without resetting the cursor, prefetching at remainingAhead+1 <= threshold", async () => {
@@ -506,7 +621,7 @@ describe("Practice page", () => {
     nextDrop = { from: "a1", to: "a8" };
     fireEvent.click(screen.getByText("drop"));
     expect(await screen.findByText(/Couldn't save your attempt/)).toBeInTheDocument();
-    expect(screen.getByText("Replay")).toBeDisabled();
+    expect(await screen.findByText("Replay")).toBeDisabled(); // the button renders a tick after the banner
     fireEvent.click(screen.getByText("Replay"));
     fireEvent.click(screen.getByText("drop"));
     await flush();
@@ -615,7 +730,7 @@ describe("Practice page", () => {
     expect(await screen.findByText(/Couldn't save your attempt/)).toBeInTheDocument();
     const attempts = () => calls.filter((c) => c.path === "/practice/puzzles/11/attempt");
     expect(attempts()[0].body).toMatchObject({ solved: false, moves_played: "Rb1" });
-    expect(screen.getByText("Try Again")).toBeDisabled();
+    expect(await screen.findByText("Try Again")).toBeDisabled(); // the button renders a tick after the banner
     fireEvent.click(screen.getByText("Try Again"));
     nextDrop = { from: "a1", to: "a8" };
     fireEvent.click(screen.getByText("drop"));

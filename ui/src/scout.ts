@@ -171,7 +171,7 @@ export function fenActiveColor(fen: string): "white" | "black" {
  * A Scout position as the shared card. The arrow is the repertoire's move first: `expectedMove`
  * carries the move the lines agree on (labelled "Expected"), and the engine's `bestMove` is
  * given only when the repertoire has none, so `recommended()` never puts the engine ahead of
- * the book here. The blunder tier's played move keeps its vermilion arrow.
+ * the book here. The blunder tier's played move keeps its played arrow.
  */
 export function scoutToCard(p: ScoutPosition): PositionCardData {
   return {

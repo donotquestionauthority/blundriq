@@ -14,6 +14,57 @@ export type ReviewedScope = "to_review" | "all";
 export const OPENING_ALL = "__all__";
 export const OPENING_UNCLASSIFIED = "__unclassified__";
 
+/** The worklist's four settings, kept in its URL so a return from a game, a reload and Back all
+ *  find them again. */
+export interface ReviewSettings {
+  timeClass: ReviewTimeClass;
+  scope: ReviewedScope;
+  opening: string;
+  groupBy: GroupByMode;
+}
+export const REVIEW_DEFAULTS: ReviewSettings = { timeClass: "focus", scope: "to_review", opening: OPENING_ALL, groupBy: "variation" };
+
+/** Settings from the query string: a missing or unrecognised value is the default. The opening is
+ *  the server's to judge (a stale one is a 422 the page recovers from). */
+export function readReviewSettings(params: URLSearchParams): ReviewSettings {
+  const tc = params.get("tc");
+  const scope = params.get("scope");
+  const group = params.get("group");
+  const opening = params.get("opening");
+  return {
+    timeClass: tc != null && Object.hasOwn(REVIEW_TIME_CLASS_LABELS, tc) ? (tc as ReviewTimeClass) : REVIEW_DEFAULTS.timeClass,
+    scope: scope === "all" || scope === "to_review" ? scope : REVIEW_DEFAULTS.scope,
+    opening: opening ? opening : REVIEW_DEFAULTS.opening,
+    groupBy: (GROUP_BY_MODES as readonly string[]).includes(group ?? "") ? (group as GroupByMode) : REVIEW_DEFAULTS.groupBy,
+  };
+}
+
+/** The query string for settings: defaults are left out, so the default view is a bare /review. */
+export function reviewSettingsSearch(s: ReviewSettings): string {
+  const q = new URLSearchParams();
+  if (s.timeClass !== REVIEW_DEFAULTS.timeClass) q.set("tc", s.timeClass);
+  if (s.scope !== REVIEW_DEFAULTS.scope) q.set("scope", s.scope);
+  if (s.opening !== REVIEW_DEFAULTS.opening) q.set("opening", s.opening);
+  if (s.groupBy !== REVIEW_DEFAULTS.groupBy) q.set("group", s.groupBy);
+  const qs = q.toString();
+  return qs ? `?${qs}` : "";
+}
+
+/** What was expanded on the worklist, and under which settings: kept in the worklist's own
+ *  history entry (and carried into a game and back), restored only when the settings agree. */
+export interface ReviewOpenSnapshot {
+  cats: string[];
+  nodes: string[];
+  key: string;
+}
+export const reviewSettingsKey = (s: ReviewSettings) => `${s.timeClass}|${s.scope}|${s.opening}|${s.groupBy}`;
+
+export function readOpenSnapshot(state: unknown, settings: ReviewSettings): ReviewOpenSnapshot | null {
+  const open = (state as { open?: unknown } | null)?.open as Partial<ReviewOpenSnapshot> | undefined;
+  if (!open || open.key !== reviewSettingsKey(settings) || !Array.isArray(open.cats) || !Array.isArray(open.nodes)) return null;
+  return { cats: open.cats.filter((c): c is string => typeof c === "string"), nodes: open.nodes.filter((n): n is string => typeof n === "string"), key: open.key };
+}
+
 export type ReviewBaseRoute = "endgame_technique" | "lapse_defense" | "lapse_offense" | "faded";
 export type ReviewDisplayedRoute = "opening" | ReviewBaseRoute;
 

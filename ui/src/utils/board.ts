@@ -9,20 +9,19 @@ export const HIGHLIGHT = {
   wrong: "rgba(239, 68, 68, 0.5)",
   legalDot: "radial-gradient(rgba(0,0,0,0.25) 22%, transparent 22%)",
   legalRing: "radial-gradient(transparent 51%, rgba(0,0,0,0.3) 51%)",
-  /** The played move's squares when a yellow `bestMissed` arrow is on the same board: the
-   *  yellow fill would carry the opposite meaning in the same colour, so the squares get an
-   *  inset frame instead. A `boxShadow` value, applied as `{ boxShadow: … }`. */
-  lastMoveFrame: "inset 0 0 0 3px rgba(17, 24, 39, 0.80), inset 0 0 0 5px rgba(255, 255, 255, 0.85)",
 } as const;
 
-/** Arrow colours by meaning, from a colour-blind-safe palette (Okabe–Ito). A board never
- *  picks a colour inline: the same meaning is the same colour on every page. */
+/** Arrow colours by meaning. A board never picks a colour inline: the same meaning is the same
+ *  colour on every page. Context is quiet, right is green, the game's mistake is red. */
 export const ARROWS = {
-  opponent: "#0072B2", // the opponent's last move: how this position arose
-  played: "#D55E00", // the move actually played
-  engine: "#009E73", // the engine's best move
-  book: "#E69F00", // the repertoire's move
-  committed: "#CC79A7", // the move committed in a Learn rep
-  bestHint: "#56B4E9", // the engine's best move in the position shown (the game review)
-  bestMissed: "#F0E442", // the engine's best move at the prior ply, not played (the game review)
+  opponent: "#52525b", // the opponent's last move: how this position arose (context)
+  played: "#e11d48", // the move actually played in the game
+  engine: "#16a34a", // the engine's best move, in the position shown or the one before a mistake
+  book: "#7c3aed", // the repertoire's move
+  committed: "#2563eb", // a Learn answer that matches no other move on the board: not graded
 } as const;
+
+/** A colour at reduced strength (an 8-digit hex): the same meaning, said more quietly. */
+export function faded(color: string, alpha = 0x66): string {
+  return `${color}${alpha.toString(16).padStart(2, "0")}`;
+}

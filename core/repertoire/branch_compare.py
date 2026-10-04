@@ -7,7 +7,7 @@ the parent from two sources, merged into one board per branch:
 * R — the effectively-active repertoire of `book_color` (the colour to move in `fen`, derived
   by the route, never defaulted): lines through the parent, the move they give the opponent
   there, the child position and the reply the line prescribes. A line ending at the parent has
-  nothing to branch. The reply is the only producer of the orange arrow on this surface.
+  nothing to branch. The reply is the only producer of the book arrow on this surface.
 * B — the player's own blunders in reply to an opponent move from the parent. The blunder row
   pins the ordinal (`blunders.fen` is the position before the blundered move, so the parent is
   `fen_sequence[ply - 1]`), and the double exact verify (parent element equals the parent,
@@ -19,8 +19,8 @@ the parent from two sources, merged into one board per branch:
   side, or in which they were the player's opponent of the day, never counts: which profiles
   played each option and in how many distinct games. The child's best move is the engine's at
   that board from the player's most recent analysed game reaching it (the same read the Scout
-  cards use), so a scout-only branch draws blue and green when the player has met the position
-  in an analysed game, blue alone when not.
+  cards use), so a scout-only branch draws the opponent and engine arrows when the player has met
+  the position in an analysed game, the opponent arrow alone when not.
 
 Repertoire wins on a board: a branch with a repertoire source carries `blunders: None` by
 construction. The branch whose child board is `fen` is `current` — always present (the

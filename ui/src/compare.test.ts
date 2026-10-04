@@ -36,7 +36,7 @@ const neighbour = (over: Partial<SimilarNeighbour> = {}): SimilarNeighbour => ({
 });
 
 describe("neighbourArrows", () => {
-  it("draws one blue per distinct arriving move and one orange per readable book move, from wire squares", () => {
+  it("draws one opponent arrow per distinct arriving move and one book arrow per readable book move, from wire squares", () => {
     const n = neighbour({ groups: [group(), group({ prep_move: "d3", line_id: 2 }), group({ prep_status: "end_of_line", prep_move: null, line_id: 3 }), group({ prep_status: "unreadable", prep_move: null, prep_raw_token: "Qxh7", line_id: 4 })] });
     const arrows = neighbourArrows(n);
     expect(arrows.filter((a) => a.color === ARROWS.opponent)).toEqual([{ startSquare: "f8", endSquare: "c5", color: ARROWS.opponent }]);
@@ -54,11 +54,11 @@ const sco = { total_games: 3, profiles: [{ name: "x", games: 3 }], best_move_san
 
 describe("branchArrows", () => {
   const colours = (b: CompareBranch) => branchArrows(b).map((a) => a.color);
-  it("repertoire: blue and orange only; a divergent or terminal branch has no reply arrow", () => {
+  it("repertoire: the opponent and book arrows only; a divergent or terminal branch has no reply arrow", () => {
     expect(colours(branch({ repertoire: rep, blunders: null, scout: null }))).toEqual([ARROWS.opponent, ARROWS.book]);
     expect(colours(branch({ repertoire: { ...rep, reply_san: null, reply_squares: null, board_prep_divergent: true }, blunders: null, scout: null }))).toEqual([ARROWS.opponent]);
   });
-  it("blunder-only: blue, the move played, and the best move only when recorded", () => {
+  it("blunder-only: the opponent arrow, the move played, and the best move only when recorded", () => {
     expect(colours(branch({ repertoire: null, blunders: blu, scout: null }))).toEqual([ARROWS.opponent, ARROWS.played, ARROWS.engine]);
     expect(colours(branch({ repertoire: null, blunders: { ...blu, worst: { ...blu.worst, best_move_san: null, best_move_squares: null } }, scout: null }))).toEqual([ARROWS.opponent, ARROWS.played]);
   });
@@ -67,7 +67,7 @@ describe("branchArrows", () => {
     expect(colours(branch({ repertoire: null, blunders: null, scout: { ...sco, best_move_squares: null } }))).toEqual([ARROWS.opponent]);
     expect(colours(branch({ repertoire: rep, blunders: null, scout: sco }))).toEqual([ARROWS.opponent, ARROWS.book]);
   });
-  it("nothing covered: blue alone", () => {
+  it("nothing covered: the opponent arrow alone", () => {
     expect(colours(branch({ repertoire: null, blunders: null, scout: null }))).toEqual([ARROWS.opponent]);
   });
 });

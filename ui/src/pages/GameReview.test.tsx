@@ -434,6 +434,30 @@ describe("fail closed", () => {
   });
 });
 
+describe("the reveal's game move says whether it was a flagged mistake", () => {
+  it("red at a flagged prompt ply, faded at one that lost less than an inaccuracy", async () => {
+    // Ply 2 carries the blunder row: the game's Nf3 is solid red beside the answer.
+    await renderReview(2);
+    await reachCommitStep();
+    await drop("d2", "d4");
+    await flush();
+    expect(arrowColors()).toContain(ARROWS.played);
+    expect(arrowColors()).not.toContain(`${ARROWS.played}66`);
+    cleanup();
+    learnCommit.mockClear();
+    // With every decision prompting, ply 0's 1.e4 has no row: faded.
+    await renderReview(2);
+    fireEvent.click(screen.getByLabelText("Step only through inaccuracies+"));
+    await act(async () => fireEvent.keyDown(window, { key: "ArrowLeft" }));
+    expect(bodyText()).toContain("move 0 / 4");
+    await reachCommitStep();
+    await drop("g1", "f3");
+    await flush();
+    expect(arrowColors()).toContain(`${ARROWS.played}66`);
+    expect(arrowColors()).not.toContain(ARROWS.played);
+  });
+});
+
 describe("commit outcomes", () => {
   it.each([
     [409, "This rep was already recorded. Starting a fresh one."],
@@ -750,6 +774,44 @@ describe("the prep arrow and panel in Review mode", () => {
   });
 });
 
+describe("the arrow legend under a Review board", () => {
+  beforeEach(() => getReviewPrefs.mockResolvedValue({ review_default_mode: "review", review_show_timer: true }));
+  const legend = () => Array.from(screen.queryByTestId("arrow-legend")?.querySelectorAll("[data-legend]") ?? []).map((el) => [el.getAttribute("data-legend"), (el.textContent ?? "").trim(), ((el.querySelector("span[aria-hidden]") as HTMLElement | null)?.style.backgroundColor ?? "")]);
+  const rgb = (hex: string) => `rgb(${parseInt(hex.slice(1, 3), 16)}, ${parseInt(hex.slice(3, 5), 16)}, ${parseInt(hex.slice(5, 7), 16)})`;
+  const entry = (color: string, label: string) => [color, label, rgb(color)];
+
+  it("names each drawn arrow with its swatch, and only the drawn ones", async () => {
+    // Ply 2: an ordinary ply with a book move: the best move now and the prep.
+    await renderReview(2);
+    expect(legend()).toEqual([entry(ARROWS.engine, "best move now"), entry(ARROWS.book, "your prep")]);
+    for (const [color] of legend()) expect(arrowColors()).toContain(color);
+    cleanup();
+    // Ply 3, stepping one ply at a time: the mistake made at ply 2, reviewed after it was played,
+    // so the opponent's arrow is the move before the player's.
+    await renderReview(3);
+    expect(screen.getByTestId("blunder-card")).toBeInTheDocument();
+    expect(legend().slice(0, 3)).toEqual([entry(ARROWS.opponent, "their move before yours"), entry(ARROWS.played, "you played"), entry(ARROWS.engine, "better")]);
+    for (const [color] of legend()) expect(arrowColors()).toContain(color);
+    expect(new Set(legend().map(([c]) => c))).toEqual(new Set(arrowColors()));
+    // With inaccuracies+ the same mistake is reviewed on its decision ply, before the move.
+    fireEvent.click(screen.getByLabelText("Step only through inaccuracies+"));
+    await act(async () => fireEvent.keyDown(window, { key: "ArrowLeft" }));
+    expect(bodyText()).toContain("move 2 / 4");
+    expect(screen.getByTestId("blunder-card")).toBeInTheDocument();
+    expect(legend().slice(0, 3)).toEqual([entry(ARROWS.opponent, "their last move"), entry(ARROWS.played, "you played"), entry(ARROWS.engine, "better")]);
+  });
+
+  it("no arrows, no legend", async () => {
+    const p = reviewPayload();
+    p.game.ply_analysis = p.game.ply_analysis!.map((x) => ({ ...x, best_move: null }));
+    p.repertoire = null;
+    getGameReview.mockResolvedValue(p);
+    await renderReview(2);
+    expect(arrowColors()).toEqual([]);
+    expect(screen.queryByTestId("arrow-legend")).toBeNull();
+  });
+});
+
 describe("stepping, Explore and the exits", () => {
   beforeEach(() => getReviewPrefs.mockResolvedValue({ review_default_mode: "review", review_show_timer: true }));
   it("stepping past the decision reviews the move just played, inaccuracies+ sits on the decision, and the URL carries the ply", async () => {
@@ -759,7 +821,7 @@ describe("stepping, Explore and the exits", () => {
     await act(async () => fireEvent.keyDown(window, { key: "ArrowLeft" }));
     expect(bodyText()).toContain("move 2 / 4");
     expect(screen.queryByTestId("blunder-card")).toBeNull(); // with the skip off, ply 2 reviews ply 1's move: none
-    expect(arrowColors()).toContain(ARROWS.bestHint);
+    expect(arrowColors()).toContain(ARROWS.engine);
     await act(async () => fireEvent.keyDown(window, { key: "ArrowLeft" }));
     expect(bodyText()).toContain("move 1 / 4");
     fireEvent.click(screen.getByLabelText("Step only through inaccuracies+"));
@@ -797,6 +859,12 @@ describe("stepping, Explore and the exits", () => {
     expect(markGameReviewed).toHaveBeenCalledTimes(1);
     await act(async () => fireEvent.keyDown(window, { key: "Escape" }));
     expect(screen.getByTestId("probe").textContent).toBe('/games|{"from":{"pathname":"/games"},"games":{"page":3}}');
+  });
+  it("Close back to the worklist hands its expansion snapshot to the entry it returns to", async () => {
+    const open = { cats: ["opening"], nodes: ["n1"], key: "all|all|__all__|variation" };
+    await renderReview(2, { from: { pathname: "/review", search: "?tc=all&scope=all", open } });
+    fireEvent.click(screen.getByLabelText("Close review"));
+    expect(screen.getByTestId("probe").textContent).toBe(`/review?tc=all&scope=all|${JSON.stringify({ from: { pathname: "/review", search: "?tc=all&scope=all", open }, open })}`);
   });
   it("Close with no origin returns to the worklist", async () => {
     await renderReview(2);

@@ -4,9 +4,9 @@
  * the grid owns `branches` (the alternatives) exactly, so nothing is drawn twice and the cap note
  * counts alternatives only.
  *
- * Arrows per branch, all from wire squares: blue for the opponent's move always; orange for the
- * repertoire's reply (the repertoire is the only source of orange); for a blunder-only branch the
- * move played in vermilion and the engine's best in green; a scout best move in green when it is
+ * Arrows per branch, all from wire squares: the opponent's move always; the repertoire's reply in
+ * the book colour (the repertoire is its only source); for a blunder-only branch the move played
+ * and the engine's best; a scout best move in the engine colour when it is
  * the only source. Self-fetching (there is no earlier fetch to reuse), aborted on close or a change
  * of pair, errors surfaced with Retry. Escape is consumed in the capture phase; hosts also gate
  * their own listeners on the open state.
