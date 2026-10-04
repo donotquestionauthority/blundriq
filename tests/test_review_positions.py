@@ -27,7 +27,7 @@ from psycopg.rows import DictRow, dict_row
 from core import housekeeping, runs, schema
 from core.chess.board import moves_to_fen_sequence
 from core.constants import ANALYSABLE_VARIANTS, OPENING_PREFIX_PLIES, PLAYER_ID, STOCKFISH_DEPTH
-from core.ingest import backfill, chesscom
+from core.ingest import backfill, chesscom, lichess
 from core.ingest.records import GameRecord
 from core.ingest.store import store_game, upsert_game
 from core.review import evals, positions
@@ -45,14 +45,20 @@ MIGRATION = schema.MIGRATIONS_DIR / "007_review_positions.sql"
 
 
 def record(
-    gid: str, moves: list[str], *, days_ago: int = 1, color: str = "black", variant: str = "standard"
+    gid: str,
+    moves: list[str],
+    *,
+    days_ago: int = 1,
+    color: str = "black",
+    variant: str = "standard",
+    played_at: datetime | None = None,
 ) -> GameRecord:
     fens = moves_to_fen_sequence(moves, FEN_960 if variant == "chess960" else None, variant)
     return GameRecord(
         platform="lichess",
         platform_game_id=gid,
         url=f"https://lichess.org/{gid}",
-        played_at=NOW - timedelta(days=days_ago),
+        played_at=played_at or NOW - timedelta(days=days_ago),
         time_control="600+0",
         time_class="rapid",
         opening_name=None,
@@ -186,18 +192,159 @@ def test_housekeeping_leaves_the_prefix_when_it_nulls_the_payload(clean: psycopg
     assert old["opening_keys"] is not None and len(old["opening_keys"]) == OPENING_PREFIX_PLIES + 1
 
 
-# --- the backfill ---------------------------------------------------------------------------
+# --- the history boundary and the backfill --------------------------------------------------
 
 
-def _lichess_line(gid: str, moves: list[str], **over: Any) -> str:
+def _store(conn: psycopg.Connection[DictRow], *records: GameRecord) -> None:
+    with conn.transaction():
+        for rec in records:
+            store_game(conn, rec)
+
+
+def _housekept(conn: psycopg.Connection[DictRow], *gids: str) -> None:
+    """Stored before migration 007 and since housekept: no payload, no prefix."""
+    conn.execute(
+        "UPDATE chess_games SET moves = NULL, fen_sequence = NULL, opening_moves = NULL, opening_keys = NULL"
+        " WHERE platform_game_id = ANY(%s)",
+        (list(gids),),
+    )
+    conn.commit()
+
+
+@pytest.mark.parametrize(
+    ("newest", "months", "start"),
+    [
+        (datetime(2026, 10, 4, 12, tzinfo=UTC), 12, datetime(2025, 10, 4, 12, tzinfo=UTC)),  # the default year
+        (datetime(2026, 3, 31, 10, tzinfo=UTC), 1, datetime(2026, 2, 28, 10, tzinfo=UTC)),  # a 31-day month
+        (datetime(2024, 3, 31, 10, tzinfo=UTC), 1, datetime(2024, 2, 29, 10, tzinfo=UTC)),  # a leap February
+        (datetime(2026, 7, 1, 0, 30, tzinfo=UTC), 2, datetime(2026, 5, 1, 0, 30, tzinfo=UTC)),  # across month starts
+    ],
+)
+def test_the_history_starts_whole_calendar_months_before_the_newest_game(
+    clean: psycopg.Connection[DictRow], newest: datetime, months: int, start: datetime
+) -> None:
+    conn = clean
+    _player(conn)
+    assert positions.history_start(conn, months) is None  # no game, no history
+    _store(
+        conn,
+        record("n1", ["e4"], played_at=newest),
+        record("c960", ["e4"], variant="chess960", played_at=newest + timedelta(days=9)),
+    )
+    assert positions.history_start(conn, months) == start  # a newer Chess960 game does not move it
+    # Counted on the UTC calendar, whatever the session's time zone (New York's 31 March 06:00
+    # would give 28 February 06:00 local, another instant).
+    conn.execute("SELECT set_config('TimeZone', 'America/New_York', false)")
+    assert positions.history_start(conn, months) == start
+
+
+def _cc_game(gid: str, end: datetime, moves: str, **over: Any) -> dict[str, Any]:
+    g: dict[str, Any] = {
+        "url": f"https://www.chess.com/game/live/{gid}",
+        "pgn": (
+            f'[Event "Live Chess"]\n[Site "Chess.com"]\n[White "{ME}"]\n[Black "opp"]\n[Result "0-1"]\n'
+            f'[TimeControl "600"]\n\n{moves} 0-1\n'
+        ),
+        "time_control": "600",
+        "end_time": int(end.timestamp()),
+        "rules": "chess",
+        "white": {"rating": 1500, "result": "resigned", "username": ME},
+        "black": {"rating": 1500, "result": "win", "username": "opp"},
+    }
+    g.update(over)
+    return g
+
+
+def _cc_record(game: dict[str, Any]) -> GameRecord:
+    rec = chesscom.parse_game(game, ME)
+    assert rec is not None
+    return rec
+
+
+def test_the_chesscom_backfill_fills_exactly_the_history_the_positions_count(
+    clean: psycopg.Connection[DictRow],
+) -> None:
+    """Newest game 4 October 2026, 12 months: the history starts 4 October 2025 12:00. Games
+    from 6 October and from that exact instant get their prefix and count; one a minute
+    earlier is outside both."""
+    conn = clean
+    conn.execute("INSERT INTO players (id, chesscom_username) VALUES (%s, %s)", (PLAYER_ID, ME))
+    newest = datetime(2026, 10, 4, 12, tzinfo=UTC)
+    start = datetime(2025, 10, 4, 12, tzinfo=UTC)
+    early = [_cc_game(f"80{i}", datetime(2025, 10, 6, 9 + i, tzinfo=UTC), "1. d4 d5") for i in range(3)]
+    edge = _cc_game("810", start, "1. d4 d5")
+    before = _cc_game("811", start - timedelta(minutes=1), "1. d4 d5")
+    kept = _cc_game("812", datetime(2025, 10, 7, tzinfo=UTC), "1. e4 e5")
+    _store(conn, *(_cc_record(g) for g in (*early, edge, before, kept)), _cc_record(_cc_game("899", newest, "1. c4")))
+    _housekept(conn, "800", "801", "802", "810", "811")
+    kept_keys = _prefix(conn, "812")["opening_keys"]
+    october = [
+        *early,
+        early[0],  # the same game twice in an archive counts once
+        edge,
+        before,
+        _cc_game("812", datetime(2025, 10, 7, tzinfo=UTC), "1. d4 Nf6"),  # a prefix is never overwritten
+        _cc_game("820", datetime(2025, 10, 8, tzinfo=UTC), "1. e4"),  # not stored: the importer's job
+        _cc_game(
+            "821",
+            datetime(2025, 10, 8, tzinfo=UTC),
+            "1. e4",
+            rules="chess960",
+            pgn=(
+                f'[Event "Live Chess"]\n[White "{ME}"]\n[Black "opp"]\n[Result "0-1"]\n[Variant "Chess960"]\n'
+                '[SetUp "1"]\n[FEN "bbqnnrkr/pppppppp/8/8/8/8/PPPPPPPP/BBQNNRKR w HFhf - 0 1"]\n\n1. e4 0-1\n'
+            ),
+        ),
+    ]
+    archives = {
+        f"https://api.chess.com/pub/player/{ME}/games/2025/09": [
+            _cc_game("790", datetime(2025, 9, 30, tzinfo=UTC), "1. d4")
+        ],
+        f"https://api.chess.com/pub/player/{ME}/games/2025/10": october,
+    }
+    asked: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        asked.append(url)
+        if url.endswith("/games/archives"):
+            return httpx.Response(200, json={"archives": list(archives)})
+        return httpx.Response(200, json={"games": archives[url]})
+
+    summary = backfill.backfill_openings(conn, months=12, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert not any(u.endswith("2025/09") for u in asked)  # before the history's month
+    assert summary == {
+        "fetched": 8,  # the game a minute before the history is not even read
+        "updated": 4,
+        "already_had": 1,
+        "not_in_db": 1,
+        "unparseable": 0,
+        "chess960": 1,
+        "not_returned": 0,
+        "failed": 0,
+    }
+    for gid in ("800", "801", "802", "810"):
+        assert _prefix(conn, gid)["opening_moves"] == ["d4", "d5"], gid
+        assert _prefix(conn, gid)["bare"] is True  # moves and fen_sequence stay NULL
+    assert _prefix(conn, "811")["opening_keys"] is None  # one minute before the history
+    assert _prefix(conn, "812")["opening_keys"] == kept_keys
+    # The reader agrees with the backfill: four games reach 1.d4 d5 inside the history.
+    _, rows = positions.eval_candidates(conn, _config(review_position_min_games=3), None)
+    after_d4 = _key(conn, moves_to_fen_sequence(["d4"])[1])
+    assert {r["key"]: r["n"] for r in rows}.get(after_d4) == 4
+    again = backfill.backfill_openings(conn, months=12, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert again["updated"] == 0
+
+
+def _lichess_game(gid: str, moves: list[str], created: datetime, last: datetime, **over: Any) -> dict[str, Any]:
     g: dict[str, Any] = {
         "id": gid,
         "rated": True,
         "variant": "standard",
-        "speed": "rapid",
-        "perf": "rapid",
-        "createdAt": int((NOW - timedelta(days=5)).timestamp() * 1000),
-        "lastMoveAt": int((NOW - timedelta(days=5)).timestamp() * 1000),
+        "speed": "correspondence",
+        "perf": "correspondence",
+        "createdAt": int(created.timestamp() * 1000),
+        "lastMoveAt": int(last.timestamp() * 1000),
         "status": "resign",
         "players": {
             "white": {"user": {"name": "Opp", "id": "opp"}, "rating": 1600},
@@ -205,115 +352,83 @@ def _lichess_line(gid: str, moves: list[str], **over: Any) -> str:
         },
         "winner": "white",
         "moves": " ".join(moves),
-        "clock": {"initial": 600, "increment": 0, "totalTime": 600},
     }
     g.update(over)
-    return json.dumps(g)
+    return g
 
 
-def _stored_bare(conn: psycopg.Connection[DictRow], gid: str, moves: list[str]) -> None:
-    """A game stored before migration 007 and since housekept: no payload, no prefix."""
-    with conn.transaction():
-        store_game(conn, record(gid, moves, days_ago=200))
-    conn.execute(
-        "UPDATE chess_games SET moves = NULL, fen_sequence = NULL, opening_moves = NULL, opening_keys = NULL"
-        " WHERE platform_game_id = %s",
-        (gid,),
-    )
-
-
-def test_the_backfill_writes_only_the_missing_prefix(clean: psycopg.Connection[DictRow]) -> None:
+def test_the_lichess_backfill_fetches_the_missing_games_by_id_whatever_their_creation_time(
+    clean: psycopg.Connection[DictRow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A correspondence game created before the history and finished inside it is fetched: by
+    id, not by a creation-time stream."""
     conn = clean
     conn.execute("INSERT INTO players (id, lichess_username) VALUES (%s, %s)", (PLAYER_ID, ME))
-    _stored_bare(conn, "bare0001", LONG)
-    with conn.transaction():
-        store_game(conn, record("kept0001", ["e4", "e5"]))
-    conn.commit()
-    before = _prefix(conn, "kept0001")["opening_keys"]
-    stream = "\n".join(
-        [
-            _lichess_line("bare0001", LONG),
-            _lichess_line("kept0001", ["d4", "d5"]),  # the platform says otherwise: the row keeps its prefix
-            _lichess_line("new00001", ["c4"]),  # not stored: the importer's job, not this one's
-            _lichess_line("c9600001", ["e4"], variant="chess960", initialFen=FEN_960),
-            _lichess_line("live0001", ["e4"], status="started"),  # ongoing: never read
-            _lichess_line("bad00001", ["e4", "Ke9"]),
-        ]
-    )
-    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, content=stream.encode())))
-    summary = backfill.backfill_openings(conn, months=12, client=client, now=NOW)
+    newest = datetime(2026, 10, 4, 12, tzinfo=UTC)
+    games = {
+        "corr0001": _lichess_game(
+            "corr0001", LONG, datetime(2025, 9, 1, tzinfo=UTC), datetime(2025, 11, 20, tzinfo=UTC)
+        ),
+        "bad00001": _lichess_game(
+            "bad00001", ["e4", "e5"], datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 1, 1, tzinfo=UTC)
+        ),
+        "gone0001": _lichess_game(
+            "gone0001", ["e4"], datetime(2026, 2, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+        ),
+        "old00001": _lichess_game(
+            "old00001", ["e4"], datetime(2025, 9, 1, tzinfo=UTC), datetime(2025, 10, 1, tzinfo=UTC)
+        ),
+    }
+    stored = [lichess.parse_game(g, ME) for g in games.values()]
+    _store(conn, *(r for r in stored if r is not None), record("newest01", ["e4"], played_at=newest))
+    _store(conn, record("c9600001", ["e4"], variant="chess960", played_at=datetime(2026, 3, 1, tzinfo=UTC)))
+    _housekept(conn, *games)
+    games["bad00001"]["moves"] = "e4 Ke9"  # what the platform answers no longer parses
+    del games["gone0001"]  # and this one it no longer returns
+    requests: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST" and request.url.path == "/api/games/export/_ids", request.url
+        ids = request.content.decode().split(",")
+        requests.append(ids)
+        body = "\n".join(json.dumps(games[i]) for i in ids if i in games)
+        return httpx.Response(200, content=body.encode())
+
+    monkeypatch.setattr(lichess, "IDS_PER_REQUEST", 2)
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    summary = backfill.backfill_openings(conn, months=12, client=client)
+    # Asked: the stored games inside the history (from 4 October 2025) without a prefix, oldest
+    # first. Not the one finished on 1 October, not the newest (it has one), not Chess960.
+    assert requests == [["corr0001", "bad00001"], ["gone0001"]]
     assert summary == {
-        "fetched": 5,
+        "fetched": 2,
         "updated": 1,
-        "already_had": 1,
-        "not_in_db": 1,
+        "already_had": 0,
+        "not_in_db": 0,
         "unparseable": 1,
-        "chess960": 1,
+        "chess960": 0,
+        "not_returned": 1,
         "failed": 0,
     }
-    got = _prefix(conn, "bare0001")
-    assert got["bare"] is True  # moves and fen_sequence stay NULL: housekeeping's decision stands
-    assert got["opening_moves"] == LONG[:OPENING_PREFIX_PLIES]
+    corr = _prefix(conn, "corr0001")
+    assert corr["bare"] is True and corr["opening_moves"] == LONG[:OPENING_PREFIX_PLIES]
     expected = conn.execute(
         "SELECT bq_opening_keys(%s::jsonb) AS k", (json.dumps(moves_to_fen_sequence(LONG)),)
     ).fetchone()
-    assert expected and got["opening_keys"] == expected["k"]
-    assert _prefix(conn, "kept0001")["opening_keys"] == before
-    assert conn.execute("SELECT count(*) AS n FROM chess_games WHERE platform_game_id = 'new00001'").fetchone() == {
-        "n": 0
-    }
-    again = backfill.backfill_openings(conn, months=12, client=client, now=NOW)
-    assert again["updated"] == 0 and again["already_had"] == 2
-
-
-def test_the_chesscom_backfill_counts_a_game_twice_in_an_archive_once_and_counts_back_from_the_newest_game(
-    clean: psycopg.Connection[DictRow],
-) -> None:
-    conn = clean
-    conn.execute("INSERT INTO players (id, chesscom_username) VALUES (%s, %s)", (PLAYER_ID, ME))
-    conn.commit()
-    pgn = (
-        f'[Event "Live Chess"]\n[Site "Chess.com"]\n[White "{ME}"]\n[Black "opp"]\n[Result "0-1"]\n'
-        '[TimeControl "600"]\n\n1. e4 d5 2. exd5 Qxd5 0-1\n'
-    )
-    game = {
-        "url": "https://www.chess.com/game/live/7001",
-        "pgn": pgn,
-        "time_control": "600",
-        "end_time": int((NOW - timedelta(days=200)).timestamp()),
-        "rules": "chess",
-        "white": {"rating": 1500, "result": "resigned", "username": ME},
-        "black": {"rating": 1500, "result": "win", "username": "opp"},
-    }
-    rec = chesscom.parse_game(game, ME)
-    assert rec is not None
-    with conn.transaction():
-        store_game(conn, rec)
-    conn.execute("UPDATE chess_games SET opening_moves = NULL, opening_keys = NULL, moves = NULL, fen_sequence = NULL")
-    conn.commit()
-    month = (NOW - timedelta(days=200)).strftime("%Y/%m")
-    archive = f"https://api.chess.com/pub/player/{ME}/games/{month}"
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if str(request.url).endswith("/games/archives"):
-            return httpx.Response(200, json={"archives": [archive]})
-        return httpx.Response(200, json={"games": [game, game]})
-
-    client = httpx.Client(transport=httpx.MockTransport(handler))
-    # A year after the newest game: the history still ends at that game, so its month is fetched.
-    later = NOW + timedelta(days=365)
-    summary = backfill.backfill_openings(conn, months=12, client=client, now=later)
-    assert summary["fetched"] == 2 and summary["updated"] == 1
-    assert summary["already_had"] == 0 and summary["not_in_db"] == 0
-    assert _prefix(conn, "7001")["opening_moves"] == ["e4", "d5", "exd5", "Qxd5"]
+    assert expected and corr["opening_keys"] == expected["k"]
+    assert _prefix(conn, "old00001")["opening_keys"] is None
+    requests.clear()
+    again = backfill.backfill_openings(conn, months=12, client=client)
+    assert again["updated"] == 0 and requests == [["bad00001", "gone0001"]]  # only what is still missing
 
 
 def test_a_platform_that_fails_fails_the_backfill(clean: psycopg.Connection[DictRow]) -> None:
     conn = clean
     conn.execute("INSERT INTO players (id, lichess_username) VALUES (%s, %s)", (PLAYER_ID, ME))
-    conn.commit()
+    _store(conn, record("ok000001", ["e4"]), record("bare0001", ["d4"], days_ago=3))
+    _housekept(conn, "bare0001")
     client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(429)))
-    assert backfill.backfill_openings(conn, months=12, client=client, now=NOW)["failed"] == 1
+    assert backfill.backfill_openings(conn, months=12, client=client)["failed"] == 1
 
 
 # --- position evaluations -------------------------------------------------------------------

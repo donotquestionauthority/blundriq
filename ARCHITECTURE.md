@@ -86,7 +86,7 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `core/schema.py` | Fresh install (`core/sql/schema.sql`) vs upgrade (`core/sql/migrations/`). |
 | `core/chess/eligibility.py` | The Chess960 rule, as one SQL predicate and one Python check. |
 | `core/chess/board.py`, `openings.py`, `platform.py` | Boards and FEN sequences (Chess960-aware); canonical opening names; termination and time-class vocabularies. |
-| `core/ingest/` | Chess.com and Lichess fetch + parse (`chesscom.py`, `lichess.py`), the only `chess_games` writer (`store.py`), the import step (`run.py`), the one-time opening-prefix backfill (`backfill.py`: COPY + one UPDATE per batch, prefix columns only). |
+| `core/ingest/` | Chess.com and Lichess fetch + parse (`chesscom.py`, `lichess.py`), the only `chess_games` writer (`store.py`), the import step (`run.py`), the one-time opening-prefix backfill (`backfill.py`: Review's own history boundary; Chess.com by monthly archive, Lichess by game id; COPY + one UPDATE per batch, prefix columns only). |
 | `core/repertoire/matching.py` | Game-vs-line matching and the match step; rematching after the repertoire changed; the one lock everything that reads the repertoire to publish, or changes it, holds (docs/decisions/007). |
 | `core/repertoire/read.py` | The read side: which effectively-active lines pass through a board (`rep_lines`, by book colour, never defaulted), and the one reduction of many occurrences to a move (`project_ply`, `singular_move`: exact FEN first, canonical moves, fail-closed conflicts). |
 | `core/repertoire/annotations.py` | Notes on positions: the unattached note on a board, notes attached to a line, and the walk-through's projection of a book's notes onto a line. |

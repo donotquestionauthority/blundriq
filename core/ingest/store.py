@@ -26,7 +26,7 @@ def _none_if_empty(value: str | None) -> str | None:
 
 def opening_prefix(g: GameRecord) -> tuple[str | None, str | None]:
     """(moves, fens) as JSON for the opening prefix, or (None, None) for a game that may not
-    have one: a variant the pipeline does not analyse (rule 7) or a game without moves. The
+    have one: a variant the pipeline does not analyse (core.chess.eligibility) or a game without moves. The
     keys are hashed in SQL by bq_opening_keys, which also truncates the positions; the moves
     are truncated here to the same length."""
     if not is_analysable(g.variant) or not g.moves or not g.fen_sequence:

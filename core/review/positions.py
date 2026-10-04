@@ -8,13 +8,14 @@ start position is never a board of its own. Only first occurrences at plies 1 to
 `review_position_max_ply` are kept. Every statistic and every ply-based use (the line shown,
 the board replayed for its FEN, the edges between boards) reads these rows.
 
-The history is `review_history_months` back from the newest of Rob's analysable games (not
-from now, so a break does not age everything at once). A board is a position when at least
+The history is `review_history_months` calendar months back from the newest of Rob's
+analysable games (not from now, so a break does not age everything at once). A board is a position when at least
 `review_position_min_games` of his games reach it as one colour.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, LiteralString, cast
 
 from psycopg import Connection
@@ -28,18 +29,36 @@ from core.settings import Settings
 EVAL_SOURCES = 3
 
 
+def history_start_sql() -> str:
+    """The first instant of the history, as a scalar SQL expression: the newest of Rob's
+    analysable games minus %(months)s CALENDAR months, counted on the UTC calendar so the
+    session's time zone never moves it (a month back from 31 March is 28 or 29 February, as
+    Postgres's interval arithmetic says). NULL when he has no analysable game. Binds %(pid)s
+    and %(months)s. The backfill reads the same expression (`history_start`), so it reaches
+    exactly the games these statistics count."""
+    return f"""(
+        (SELECT max(cg_h.played_at) FROM player_games pg_h JOIN chess_games cg_h ON cg_h.id = pg_h.chess_game_id
+         WHERE pg_h.player_id = %(pid)s AND {analysable_sql("cg_h")}) AT TIME ZONE 'UTC'
+        - make_interval(months => %(months)s)
+    ) AT TIME ZONE 'UTC'"""
+
+
+def history_start(conn: Connection[Any], months: int) -> datetime | None:
+    """`history_start_sql()` evaluated: the inclusive lower bound of `played_at` in the history."""
+    query = cast(LiteralString, f"SELECT {history_start_sql()} AS start")
+    row = conn.execute(query, {"pid": PLAYER_ID, "months": months}).fetchone()
+    return row["start"] if row else None
+
+
 def games_cte() -> str:
-    """`games AS (...)`: Rob's analysable games with a prefix inside the history. Binds
-    %(pid)s and %(months)s."""
+    """`games AS (...)`: Rob's analysable games with a prefix inside the history (from
+    `history_start_sql()`, inclusive). Binds %(pid)s and %(months)s."""
     return f"""
     games AS (
         SELECT cg.id, pg.player_color, cg.opening_keys, cg.played_at
         FROM player_games pg JOIN chess_games cg ON cg.id = pg.chess_game_id
         WHERE pg.player_id = %(pid)s AND {analysable_sql("cg")} AND cg.opening_keys IS NOT NULL
-          AND cg.played_at >= (
-              SELECT max(cg2.played_at) FROM player_games pg2 JOIN chess_games cg2 ON cg2.id = pg2.chess_game_id
-              WHERE pg2.player_id = %(pid)s AND {analysable_sql("cg2")}
-          ) - make_interval(months => %(months)s)
+          AND cg.played_at >= {history_start_sql()}
     )"""
 
 
