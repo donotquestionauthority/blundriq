@@ -282,9 +282,11 @@ export default function Review() {
   useEffect(() => () => nextView(), []);
 
   /** The one writer of this entry: its URL from the settings, its state the expansion under them. */
+  const ownWrite = useRef(false);
   const writeEntry = useCallback(
     (s: ReviewSettings, cats: Iterable<string>, nodes: Iterable<string>) => {
       const open: ReviewOpenSnapshot = { cats: [...cats], nodes: [...nodes], key: reviewSettingsKey(s) };
+      ownWrite.current = true;
       navigate({ pathname: location.pathname, search: reviewSettingsSearch(s) }, { replace: true, state: { open } });
     },
     [navigate, location.pathname],
@@ -308,6 +310,17 @@ export default function Review() {
     recovering.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settingsKey]);
+
+  // A history entry this page did not write (the top bar, Back) is a fresh visit even when its
+  // settings equal the current ones: a notice from an earlier visit goes. The page's own replaces
+  // (expansion, the recovery's write) keep it.
+  const seenEntry = useRef(location.key);
+  useEffect(() => {
+    if (seenEntry.current === location.key) return;
+    seenEntry.current = location.key;
+    if (ownWrite.current) ownWrite.current = false;
+    else setNotice(null);
+  }, [location.key]);
 
   // A focused opening that no longer has review games: back to All openings, everything but the
   // Opening section collapsed (its ids are opening-scoped), one line saying why.

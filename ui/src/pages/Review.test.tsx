@@ -660,6 +660,19 @@ describe("Review keeps its settings in the URL", () => {
     await waitFor(() => expect(screen.queryByText(/no longer has review games/)).toBeNull());
   });
 
+  it("a notice from a recovery does not outlive a top-bar visit with the same settings", async () => {
+    getReviewPage.mockImplementation((_t: string, opening: string) => (opening === "Scandinavian" ? Promise.reject(new ApiError(422, "unknown opening key: 'Scandinavian'")) : Promise.resolve(page())));
+    renderApp("/review?opening=Scandinavian");
+    await screen.findByText(/no longer has review games/);
+    await waitFor(() => expect(where()).toBe("/review"));
+    // The recovery's own write and an expansion change keep the notice.
+    fireEvent.click(screen.getByRole("heading", { name: "Tactical oversights" }));
+    expect(screen.getByText(/no longer has review games/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "page top bar" }));
+    await waitFor(() => expect(screen.queryByText(/no longer has review games/)).toBeNull());
+    expect(where()).toBe("/review");
+  });
+
   it("an open single-pool section comes back open with its games after a game", async () => {
     renderApp();
     fireEvent.click(await screen.findByRole("heading", { name: "Endgame technique" }));
@@ -758,4 +771,3 @@ describe("Review keeps its settings in the URL", () => {
     expect(getPoolEvents).not.toHaveBeenCalled();
   });
 });
-
