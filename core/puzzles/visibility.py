@@ -15,7 +15,8 @@ A repertoire puzzle is visible when its line, chapter and book are all active an
 player has deviated from that line in at least REPERTOIRE_PUZZLE_MIN_EVENTS distinct games,
 all time. It is presented from the furthest deviation the player has made plus the
 configured lookahead, snapped so that the truncated line still ends on the player's move,
-and one puzzle per presented position is served (the most-deviated line wins). Dismissal
+and one puzzle per presented position is served (the most-deviated line wins, among the
+lines of the book, chapter or line the reader asked for). Dismissal
 does not apply to repertoire puzzles: their gate is the repertoire itself.
 
 `occurrence_count` and `source_breakdown` are how often the position turned up in the
@@ -26,7 +27,8 @@ not counted here: that count needs Scout's own indexed shape, and it arrives wit
 
 from __future__ import annotations
 
-from typing import Any, LiteralString, cast
+from dataclasses import dataclass
+from typing import Any, Literal, LiteralString, cast
 
 from psycopg import Connection
 
@@ -151,12 +153,39 @@ _PRESENTATION_PLY = """LEAST(ls.furthest_ply + {n},
           - ((jsonb_array_length(p.solution_line) - 1 - ls.furthest_ply) %% 2))::int"""
 
 
-def repertoire_rows_sql(lookahead_plies: int, *, collapse: bool = True) -> LiteralString:
-    """Full visible repertoire rows. One row per presented position when `collapse`."""
+RepKind = Literal["book", "chapter", "line"]
+
+
+@dataclass(frozen=True)
+class RepScope:
+    """A repertoire filter: every puzzle under one book, one chapter or one line."""
+
+    kind: RepKind
+    id: int
+
+
+# The column each scope kind narrows on, inside `candidates`. A fixed map, so the SQL text is
+# always one of three literals and the id is always a bound parameter.
+_SCOPE_PREDICATE: dict[RepKind, LiteralString] = {
+    "book": "AND bk.id = %(scope_id)s",
+    "chapter": "AND ch.id = %(scope_id)s",
+    "line": "AND rl.id = %(scope_id)s",
+}
+
+
+def repertoire_rows_sql(
+    lookahead_plies: int, *, collapse: bool = True, scope: RepKind | None = None, by_id: bool = False
+) -> LiteralString:
+    """Full visible repertoire rows. One row per presented position when `collapse`.
+
+    `scope` narrows the candidates to one book, chapter or line (binds %(scope_id)s) BEFORE the
+    collapse, so a scope whose puzzle loses the collapse to another scope's puzzle on the same
+    board still has its own representative. `by_id` narrows to one puzzle (binds %(id)s)."""
     n = int(lookahead_plies)
     ply = _PRESENTATION_PLY.format(n=n)
     distinct = "DISTINCT ON (presentation_fen)" if collapse else ""
     order = "ORDER BY presentation_fen, occurrence_count DESC, id ASC" if collapse else "ORDER BY id"
+    narrow = (_SCOPE_PREDICATE[scope] if scope else "") + (" AND p.id = %(id)s" if by_id else "")
     return cast(
         LiteralString,
         f"""WITH line_events AS (
@@ -175,7 +204,7 @@ def repertoire_rows_sql(lookahead_plies: int, *, collapse: bool = True) -> Liter
                p.themes, NULL::jsonb AS acceptance_map, TRUE AS is_repertoire,
                {ply} AS presentation_ply,
                p.solution_fen_sequence->>{ply} AS presentation_fen,
-               p.repertoire_line_id,
+               p.repertoire_line_id, rl.chapter_id, ch.book_id,
                ls.event_count::int AS occurrence_count,
                jsonb_build_object('deviation', ls.event_count) AS source_breakdown,
                (SELECT count(*) FROM puzzle_attempts pa WHERE pa.puzzle_id = p.id AND pa.player_id = %(pid)s)::int
@@ -187,6 +216,7 @@ def repertoire_rows_sql(lookahead_plies: int, *, collapse: bool = True) -> Liter
         JOIN books bk ON bk.id = ch.book_id
         WHERE p.player_id = %(pid)s AND p.active = TRUE AND p.is_repertoire = TRUE
           AND bk.player_id = %(pid)s AND rl.active = TRUE AND ch.active = TRUE AND bk.active = TRUE
+          {narrow}
     )
     SELECT {distinct} * FROM candidates {order}""",
     )
@@ -204,15 +234,22 @@ def normalise(row: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def visible_rows(conn: Connection[Any], *, last_n_games: int, lookahead_plies: int) -> list[dict[str, Any]]:
+def visible_rows(
+    conn: Connection[Any], *, last_n_games: int, lookahead_plies: int, rep_scope: RepScope | None = None
+) -> list[dict[str, Any]]:
     """Every visible puzzle, repertoire rows first. Callers re-sort; the order here only
-    makes the result stable."""
-    params = {"pid": PLAYER_ID, "window": last_n_games}
+    makes the result stable. With `rep_scope`, only the repertoire rows under it, collapsed
+    among themselves (a scoped reader asks for repertoire puzzles and nothing else)."""
+    params: dict[str, Any] = {"pid": PLAYER_ID, "window": last_n_games}
     out: list[dict[str, Any]] = []
     with conn.cursor() as cur:
-        cur.execute(repertoire_rows_sql(lookahead_plies), params)
+        if rep_scope is not None:
+            params["scope_id"] = rep_scope.id
+        cur.execute(repertoire_rows_sql(lookahead_plies, scope=rep_scope.kind if rep_scope else None), params)
         rep = sorted(cur.fetchall(), key=lambda r: (r["attempt_count"], -r["occurrence_count"], r["id"]))
         out.extend(normalise(r) for r in rep)
+        if rep_scope is not None:
+            return out
         cur.execute(
             standard_rows_sql(windowed=last_n_games > 0)
             + " ORDER BY attempt_count ASC, COALESCE(ft.total_count, 0) DESC, p.created_at DESC, p.id DESC",
@@ -255,18 +292,72 @@ def playable(row: dict[str, Any]) -> dict[str, Any]:
 
 def visible_by_id(conn: Connection[Any], puzzle_id: int, *, lookahead_plies: int) -> dict[str, Any] | None:
     """One visible puzzle's full row, or None when it is missing or not visible (the deep
-    link answers 404 for both)."""
+    link answers 404 for both). A repertoire puzzle is visible when it is an eligible
+    candidate: the one-per-position collapse picks a representative for a list, and a
+    narrower filter may pick a different one, so a by-id check never depends on it."""
     params = {"pid": PLAYER_ID, "window": 0, "id": puzzle_id}
     with conn.cursor() as cur:
         cur.execute(standard_rows_sql(windowed=False, extra_where="AND p.id = %(id)s"), params)
         row = cur.fetchone()
         if row is not None:
             return normalise(row)
-        cur.execute(repertoire_rows_sql(lookahead_plies), params)
-        for r in cur.fetchall():
-            if r["id"] == puzzle_id:
-                return normalise(r)
-    return None
+        cur.execute(repertoire_rows_sql(lookahead_plies, collapse=False, by_id=True), params)
+        row = cur.fetchone()
+    return normalise(row) if row is not None else None
+
+
+def repertoire_scopes(conn: Connection[Any], *, lookahead_plies: int) -> list[dict[str, Any]]:
+    """Books, their chapters and those chapters' lines that have a visible repertoire puzzle,
+    each with `count`: how many positions its scope serves, which is how many rows the browse
+    list shows for it (distinct presented positions after its own collapse)."""
+    query = f"""
+        WITH v AS ({repertoire_rows_sql(lookahead_plies, collapse=False)})
+        SELECT v.book_id, bk.title AS book_title, bk.color AS book_color,
+               v.chapter_id, ch.title AS chapter_title,
+               v.repertoire_line_id AS line_id, rl.line_name,
+               count(DISTINCT v.presentation_fen) AS n,
+               GROUPING(v.chapter_id) AS g_chapter, GROUPING(v.repertoire_line_id) AS g_line
+        FROM v
+        JOIN books bk ON bk.id = v.book_id AND bk.player_id = %(pid)s
+        JOIN chapters ch ON ch.id = v.chapter_id
+        JOIN repertoire_lines rl ON rl.id = v.repertoire_line_id
+        GROUP BY GROUPING SETS (
+            (v.book_id, bk.title, bk.color),
+            (v.book_id, bk.title, bk.color, v.chapter_id, ch.title),
+            (v.book_id, bk.title, bk.color, v.chapter_id, ch.title, v.repertoire_line_id, rl.line_name)
+        )
+        ORDER BY g_chapter DESC, g_line DESC, bk.title, v.book_id, ch.title, v.chapter_id,
+                 rl.line_name, v.repertoire_line_id"""
+    with conn.cursor() as cur:
+        cur.execute(query, {"pid": PLAYER_ID})
+        rows = cur.fetchall()
+    # Books arrive first, then chapters, then lines, each in display order.
+    books: list[dict[str, Any]] = []
+    book_chapters: dict[int, list[dict[str, Any]]] = {}
+    chapter_lines: dict[int, list[dict[str, Any]]] = {}
+    for r in rows:
+        n = int(r["n"])
+        if r["g_chapter"]:
+            chapters: list[dict[str, Any]] = []
+            book_chapters[int(r["book_id"])] = chapters
+            books.append(
+                {
+                    "id": int(r["book_id"]),
+                    "title": r["book_title"],
+                    "color": r["book_color"],
+                    "count": n,
+                    "chapters": chapters,
+                }
+            )
+        elif r["g_line"]:
+            lines: list[dict[str, Any]] = []
+            chapter_lines[int(r["chapter_id"])] = lines
+            book_chapters[int(r["book_id"])].append(
+                {"id": int(r["chapter_id"]), "title": r["chapter_title"], "count": n, "lines": lines}
+            )
+        else:
+            chapter_lines[int(r["chapter_id"])].append({"id": int(r["line_id"]), "title": r["line_name"], "count": n})
+    return books
 
 
 _ATTEMPTABLE = cast(

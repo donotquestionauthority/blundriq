@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, LiteralString, cast
@@ -106,20 +107,51 @@ def matches_type(row: dict[str, Any], ptype: str) -> bool:
     return False
 
 
+class BadSubtype(ValueError):
+    """A repertoire SubType that names no book, chapter or line."""
+
+
+_REP_SUBTYPE = re.compile(r"(?:(book|chapter|line):)?([1-9][0-9]{0,9})")
+_REP_COLUMN = {"book": "book_id", "chapter": "chapter_id", "line": "repertoire_line_id"}
+_REP_KIND: dict[str | None, visibility.RepKind] = {"book": "book", "chapter": "chapter", "line": "line", None: "line"}
+
+
+def parse_repertoire_subtype(subtype: str | None) -> visibility.RepScope | None:
+    """'book:3', 'chapter:7', 'line:12', or a bare '12' (a line, the older spelling). None
+    for no filter; anything else raises BadSubtype, whether or not a row would match."""
+    if not subtype:
+        return None
+    m = _REP_SUBTYPE.fullmatch(subtype)
+    if m is None or int(m.group(2)) > 2**31 - 1:
+        raise BadSubtype(subtype)
+    return visibility.RepScope(_REP_KIND[m.group(1)], int(m.group(2)))
+
+
+def rep_scope_for(ptype: str, subtype: str | None) -> visibility.RepScope | None:
+    return parse_repertoire_subtype(subtype) if ptype == "repertoire" else None
+
+
 def matches_subtype(row: dict[str, Any], ptype: str, subtype: str | None) -> bool:
     if not subtype:
         return True
     if ptype in ("motif", "blunder"):
         return subtype in _themes(row)
     if ptype == "repertoire":
-        return str(row.get("repertoire_line_id")) == str(subtype)
+        scope = parse_repertoire_subtype(subtype)
+        return scope is None or row.get(_REP_COLUMN[scope.kind]) == scope.id
     return True
 
 
 def scope_of(ptype: str, subtype: str | None) -> str:
-    """The batch lifecycle key for a filter: 'all', 'motif', 'motif:fork', 'repertoire:12'."""
+    """The batch lifecycle key for a filter: 'all', 'motif', 'motif:fork', 'repertoire:12'
+    (a line, however it was spelled), 'repertoire:chapter:7', 'repertoire:book:3'."""
     if ptype == "all":
         return "all"
+    if ptype == "repertoire":
+        scope = parse_repertoire_subtype(subtype)
+        if scope is None:
+            return ptype
+        return f"repertoire:{scope.id}" if scope.kind == "line" else f"repertoire:{scope.kind}:{scope.id}"
     return f"{ptype}:{subtype}" if subtype else ptype
 
 
@@ -663,7 +695,9 @@ def play_batch(
     scope = scope_of(ptype, subtype)
     now = _now(conn)
     lookahead = lookahead_plies(config)
-    visible = visibility.visible_rows(conn, last_n_games=last_n_games, lookahead_plies=lookahead)
+    visible = visibility.visible_rows(
+        conn, last_n_games=last_n_games, lookahead_plies=lookahead, rep_scope=rep_scope_for(ptype, subtype)
+    )
     _attach(conn, visible)
     by_id = {int(r["id"]): r for r in visible}
     by_bucket: dict[str, list[dict[str, Any]]] = {}
@@ -710,9 +744,14 @@ def play_batch(
     return Served(rows, latest, scope, threshold)
 
 
-def browse(conn: Connection[Any], config: Settings, *, last_n_games: int) -> list[dict[str, Any]]:
-    """Every visible puzzle with its state, sorted; no minting."""
-    visible = visibility.visible_rows(conn, last_n_games=last_n_games, lookahead_plies=lookahead_plies(config))
+def browse(
+    conn: Connection[Any], config: Settings, *, last_n_games: int, rep_scope: visibility.RepScope | None = None
+) -> list[dict[str, Any]]:
+    """Every visible puzzle with its state, sorted; no minting. `rep_scope` lists only the
+    repertoire puzzles under one book, chapter or line, collapsed among themselves."""
+    visible = visibility.visible_rows(
+        conn, last_n_games=last_n_games, lookahead_plies=lookahead_plies(config), rep_scope=rep_scope
+    )
     _attach(conn, visible)
     now = _now(conn)
     visible.sort(key=lambda r: sort_key(r, now))

@@ -326,6 +326,163 @@ def test_one_repertoire_puzzle_per_presented_position(clean: psycopg.Connection[
     assert visibility.visible_by_id(clean, pb, lookahead_plies=2) is not None
 
 
+def _scoped_line(
+    conn: psycopg.Connection[DictRow], moves: list[str], *, line_id: int, chapter_id: int, book_id: int
+) -> None:
+    """A line under its own chapter and book (the plain `_line` puts everything in book 1, chapter 1)."""
+    conn.execute(
+        "INSERT INTO books (id, title, color, player_id) VALUES (%s, %s, 'white', %s) ON CONFLICT (id) DO NOTHING",
+        (book_id, f"Book {book_id}", PLAYER_ID),
+    )
+    conn.execute(
+        "INSERT INTO chapters (id, book_id, title) VALUES (%s, %s, %s) ON CONFLICT (id) DO NOTHING",
+        (chapter_id, book_id, f"Chapter {chapter_id}"),
+    )
+    conn.execute(
+        "INSERT INTO repertoire_lines (id, chapter_id, line_name, moves, fen_sequence)"
+        " VALUES (%s, %s, %s, %s::jsonb, %s::jsonb)",
+        (line_id, chapter_id, f"Line {line_id}", json.dumps(moves), json.dumps(_fens(moves))),
+    )
+
+
+SHARED = ["e4", "e5", "Nf3", "Nc6", "Bb5"]
+
+
+def _shared_board(conn: psycopg.Connection[DictRow]) -> dict[str, int]:
+    """Three lines with the same moves, so their puzzles present the same board: line 1
+    (chapter 1, book 1, 3 deviations), line 2 (chapter 2, book 1, 4) and line 3 (chapter 3,
+    book 2, 5). Globally line 3 wins the one-per-position collapse; inside book 1, line 2."""
+    _player(conn)
+    _scoped_line(conn, SHARED, line_id=1, chapter_id=1, book_id=1)
+    _scoped_line(conn, SHARED, line_id=2, chapter_id=2, book_id=1)
+    _scoped_line(conn, SHARED, line_id=3, chapter_id=3, book_id=2)
+    ids = {f"p{n}": _rep_puzzle(conn, SHARED, n) for n in (1, 2, 3)}
+    game = 0
+    for line_id, times in ((1, 3), (2, 4), (3, 5)):
+        for _ in range(times):
+            game += 1
+            _deviation(conn, game, 2, line_id=line_id)
+    return ids
+
+
+def test_a_repertoire_scope_is_applied_before_the_one_per_position_collapse(
+    clean: psycopg.Connection[DictRow],
+) -> None:
+    ids = _shared_board(clean)
+    p1, p2, p3 = ids["p1"], ids["p2"], ids["p3"]
+    config = _config()
+    # Unfiltered: one row for the board, the globally most-deviated line, exactly as before.
+    assert _ids(visibility.visible_rows(clean, last_n_games=0, lookahead_plies=2)) == [p3]
+    assert _ids(serve.browse(clean, config, last_n_games=0)) == [p3]
+    expected = {
+        "line:1": p1,
+        "1": p1,
+        "chapter:1": p1,  # loses globally and inside its book, still its own chapter's puzzle
+        "chapter:2": p2,
+        "chapter:3": p3,
+        "book:1": p2,  # loses globally, wins inside the book
+        "book:2": p3,
+    }
+    for subtype, pid in expected.items():
+        scope = serve.parse_repertoire_subtype(subtype)
+        assert _ids(serve.browse(clean, config, last_n_games=0, rep_scope=scope)) == [pid], subtype
+        # Each queue starts empty: a puzzle pending in one queue is never minted into another.
+        clean.execute("DELETE FROM player_puzzle_exposure")
+        served = serve.play_batch(clean, config, last_n_games=0, ptype="repertoire", subtype=subtype)
+        assert _ids(served.rows) == [pid], subtype
+        assert all(serve.matches_subtype(r, "repertoire", subtype) for r in served.rows)
+    # The losing chapter's puzzle is reachable by id: deep link, skip and attempt.
+    assert visibility.visible_by_id(clean, p1, lookahead_plies=2) is not None
+    clean.execute("DELETE FROM player_puzzle_exposure")
+    chapter_one = serve.play_batch(clean, config, last_n_games=0, ptype="repertoire", subtype="chapter:1")
+    assert chapter_one.batch_id is not None
+    assert serve.skip(clean, "repertoire:chapter:1", chapter_one.batch_id, p1, config) == "DEFERRED"
+    row = visibility.visible_by_id(clean, p1, lookahead_plies=2)
+    assert row is not None and row["presentation_ply"] is not None
+    ply = int(row["presentation_ply"])
+    assert _attempt(clean, p1, _segment(SHARED, ply), ply)["solved"] is True
+
+
+def test_the_scope_counts_are_the_positions_its_browse_list_shows(clean: psycopg.Connection[DictRow]) -> None:
+    _shared_board(clean)
+    # A fourth line in chapter 1 with its own board: chapter 1 and book 1 now serve two positions.
+    other = ["d4", "d5", "c4", "e6", "Nc3"]
+    _scoped_line(clean, other, line_id=4, chapter_id=1, book_id=1)
+    _rep_puzzle(clean, other, 4)
+    for g in (101, 102, 103):
+        _deviation(clean, g, 2, line_id=4)
+    scopes = visibility.repertoire_scopes(clean, lookahead_plies=2)
+    assert [(b["id"], b["title"], b["count"]) for b in scopes] == [(1, "Book 1", 2), (2, "Book 2", 1)]
+    book_one = scopes[0]
+    assert [(c["id"], c["count"]) for c in book_one["chapters"]] == [(1, 2), (2, 1)]
+    assert [(line["id"], line["title"], line["count"]) for line in book_one["chapters"][0]["lines"]] == [
+        (1, "Line 1", 1),
+        (4, "Line 4", 1),
+    ]
+    config = _config()
+    cases: list[tuple[visibility.RepKind, int]] = [
+        ("book", 1),
+        ("book", 2),
+        ("chapter", 1),
+        ("chapter", 2),
+        ("chapter", 3),
+        ("line", 4),
+    ]
+    for kind, key in cases:
+        listed = serve.browse(clean, config, last_n_games=0, rep_scope=visibility.RepScope(kind, key))
+        node = {
+            ("book", 1): scopes[0],
+            ("book", 2): scopes[1],
+            ("chapter", 1): book_one["chapters"][0],
+            ("chapter", 2): book_one["chapters"][1],
+            ("chapter", 3): scopes[1]["chapters"][0],
+            ("line", 4): book_one["chapters"][0]["lines"][1],
+        }[(kind, key)]
+        assert len(listed) == node["count"], (kind, key)
+    # An inactive chapter takes its count with it.
+    clean.execute("UPDATE chapters SET active = FALSE WHERE id = 2")
+    assert [c["id"] for c in visibility.repertoire_scopes(clean, lookahead_plies=2)[0]["chapters"]] == [1]
+
+
+def test_both_spellings_of_a_line_are_one_queue(clean: psycopg.Connection[DictRow]) -> None:
+    """A batch minted under the older bare-id SubType is the same queue when the line is
+    chosen as 'line:<id>': same batch, same served segment, nothing minted again."""
+    _player(clean)
+    _line(clean, LONG_LINE)
+    pid = _rep_puzzle(clean, LONG_LINE)
+    for g in (1, 2, 3):
+        _deviation(clean, g, 2)
+    config = _config()
+    legacy = serve.play_batch(clean, config, last_n_games=0, ptype="repertoire", subtype="1")
+    assert legacy.scope == "repertoire:1" and _ids(legacy.rows) == [pid]
+    served_ply = legacy.rows[0]["presentation_ply"]
+    snapshot = clean.execute("SELECT presentation_ply FROM player_puzzle_exposure").fetchone()
+    assert snapshot is not None and snapshot["presentation_ply"] == served_ply
+    _deviation(clean, 4, 6)  # today's truncation moves; the pending item keeps what it served
+    assert visibility.presentation_ply(clean, pid, lookahead_plies=2) != served_ply
+    exposures = _count(clean, "player_puzzle_exposure")
+    again = serve.play_batch(clean, config, last_n_games=0, ptype="repertoire", subtype="line:1")
+    assert again.scope == "repertoire:1" and again.batch_id == legacy.batch_id
+    assert _ids(again.rows) == [pid] and again.rows[0]["presentation_ply"] == served_ply
+    assert _count(clean, "player_puzzle_exposure") == exposures
+    assert again.batch_id is not None
+    assert serve.skip(clean, serve.scope_of("repertoire", "line:1"), again.batch_id, pid, config) == "DEFERRED"
+    assert serve.skip(clean, serve.scope_of("repertoire", "1"), again.batch_id, pid, config) == "ALREADY_CONSUMED"
+
+
+def test_repertoire_subtypes_parse_to_one_queue_key_each() -> None:
+    assert serve.scope_of("repertoire", "12") == serve.scope_of("repertoire", "line:12") == "repertoire:12"
+    assert serve.scope_of("repertoire", "chapter:7") == "repertoire:chapter:7"
+    assert serve.scope_of("repertoire", "book:3") == "repertoire:book:3"
+    assert serve.scope_of("repertoire", None) == serve.scope_of("repertoire", "") == "repertoire"
+    assert serve.scope_of("motif", "fork") == "motif:fork"  # other types are untouched
+    for bad in ("chapter:", "x:1", "0", "line:01", "-1", "1.5", "book:99999999999", "line:1:2", " 1"):
+        with pytest.raises(serve.BadSubtype):
+            serve.scope_of("repertoire", bad)
+        with pytest.raises(serve.BadSubtype):
+            serve.matches_subtype({"repertoire_line_id": 1}, "repertoire", bad)
+
+
 def test_the_playable_payload_is_the_solver_s_fields_only(clean: psycopg.Connection[DictRow]) -> None:
     _player(clean)
     pid = _puzzle(clean)

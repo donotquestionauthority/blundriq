@@ -4,6 +4,7 @@ GET  /practice/puzzles              the queue (srs=due), the browse list (all) o
 POST /practice/puzzles/{id}/attempt grade and record one attempt
 POST /practice/skip                 defer a served item
 GET  /practice/puzzles/{id}         the immutable solver payload for `?puzzle=<id>`
+GET  /practice/repertoire-scopes    books, chapters and lines that have a repertoire puzzle, with counts
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ def get_puzzles(
     subtype: str | None = Query(None, max_length=100),
     last_n_games: int = Query(0, ge=0, le=20000),
 ) -> dict[str, Any]:
+    rep_scope = _rep_scope(ptype, subtype)
     with db.transaction() as conn:
         config = settings.load(conn)
         batch_id = scope = threshold = None
@@ -40,7 +42,7 @@ def get_puzzles(
         elif srs_view == "retired":
             rows = serve.retired(conn)
         else:
-            rows = serve.browse(conn, config, last_n_games=last_n_games)
+            rows = serve.browse(conn, config, last_n_games=last_n_games, rep_scope=rep_scope)
         if ptype != "all" and srs_view != "retired":
             rows = [r for r in rows if serve.matches_type(r, ptype) and serve.matches_subtype(r, ptype, subtype)]
         links = attempts.game_links(conn, [str(r["fen"]) for r in rows])
@@ -60,6 +62,21 @@ def get_puzzles(
         "mint_ahead_threshold": threshold,
         "served_themes": list(CC0_SERVE_THEMES),
     }
+
+
+def _rep_scope(ptype: str, subtype: str | None) -> visibility.RepScope | None:
+    """A malformed repertoire SubType is refused before anything is read."""
+    try:
+        return serve.rep_scope_for(ptype, subtype)
+    except serve.BadSubtype as exc:
+        raise HTTPException(422, "subtype must be book:<id>, chapter:<id>, line:<id> or <id>") from exc
+
+
+@router.get("/repertoire-scopes")
+def get_repertoire_scopes() -> dict[str, Any]:
+    with db.transaction() as conn:
+        lookahead = serve.lookahead_plies(settings.load(conn))
+        return {"books": visibility.repertoire_scopes(conn, lookahead_plies=lookahead)}
 
 
 class AttemptBody(BaseModel):
@@ -102,6 +119,7 @@ class SkipBody(BaseModel):
 
 @router.post("/skip")
 def post_skip(body: SkipBody) -> dict[str, str]:
+    _rep_scope(body.ptype, body.subtype)
     with db.transaction() as conn:
         outcome = serve.skip(
             conn, serve.scope_of(body.ptype, body.subtype), body.batch_id, body.puzzle_id, settings.load(conn)
