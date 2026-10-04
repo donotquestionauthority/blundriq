@@ -20,12 +20,14 @@ HOURLY_STEPS = (
     "review",
     "housekeep",
     "position-evals",
+    "review-snapshot",
 )
 
 # The step whose success means the chain ran through, for Home's "last successful run". It is
-# not the last step: position-evals runs after it so that a board it cannot rebuild fails
-# only itself, and such a failure shows in the failed list without making the import, the
-# analysis and the housekeeping that did run look stale.
+# not the last step: position-evals and review-snapshot run after it, so that a board the
+# first cannot rebuild fails only itself, and such a failure shows in the failed list without
+# making the import, the analysis and the housekeeping that did run look stale. The snapshot
+# runs last because it summarises everything before it, the evaluations included.
 CHAIN_THROUGH_STEP = "housekeep"
 
 

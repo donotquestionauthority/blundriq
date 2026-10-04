@@ -1111,6 +1111,16 @@ CREATE TABLE public.position_evals (
     CONSTRAINT position_evals_one_score CHECK (((eval_cp IS NULL) <> (mate_in IS NULL)))
 );
 
+-- The Review page's position sections per (time class, opening), computed hourly by `pipeline review-snapshot`; a request whose fingerprint differs computes them itself.
+CREATE TABLE public.review_snapshots (
+    time_class text NOT NULL,
+    opening text NOT NULL,
+    fingerprint text NOT NULL,
+    body jsonb NOT NULL,
+    computed_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT review_snapshots_pkey PRIMARY KEY (time_class, opening)
+);
+
 -- Which schema version this database is at. Written by `pipeline db init` (fresh) and `pipeline db upgrade`.
 CREATE TABLE public.schema_version (
     version integer NOT NULL,

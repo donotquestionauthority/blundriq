@@ -91,14 +91,16 @@ def init(conn: Connection[Any], directory: Path | None = None) -> int:
     return version
 
 
-def upgrade(conn: Connection[Any], directory: Path | None = None) -> list[int]:
-    """Apply pending migrations in order; returns the numbers applied."""
+def upgrade(conn: Connection[Any], directory: Path | None = None, to: int | None = None) -> list[int]:
+    """Apply pending migrations in order, up to and including `to` when given (a release whose
+    additive migration goes on before the deploy and the rest after it); returns the numbers
+    applied."""
     version = current_version(conn)
     if version is None:
         raise RuntimeError("database has no schema; use init")
     applied: list[int] = []
     for number, path in migration_files(directory):
-        if number <= version:
+        if number <= version or (to is not None and number > to):
             continue
         with conn.cursor() as cur:
             cur.execute(_sql_from_repo_file(path))

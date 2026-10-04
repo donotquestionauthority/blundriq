@@ -145,12 +145,7 @@ def test_a_populated_upgrade_gives_window_games_their_prefix_and_keeps_review_st
             "INSERT INTO review_pool_state (player_id, pool_id, last_shown_at) VALUES (1, 'v1:route:faded', now())"
         )
         c.commit()
-        v7 = tmp_path / "v7"
-        v7.mkdir()
-        for n, path in schema.migration_files():
-            if n <= 7:
-                (v7 / path.name).write_text(path.read_text())
-        assert schema.upgrade(c, v7) == [7]
+        assert schema.upgrade(c, to=7) == [7]
         got = _prefix(c, "inside")
         assert got["opening_moves"] == LONG[:OPENING_PREFIX_PLIES]
         assert got["opening_keys"] == got["window_keys"] and len(got["opening_keys"]) == OPENING_PREFIX_PLIES + 1
@@ -158,8 +153,12 @@ def test_a_populated_upgrade_gives_window_games_their_prefix_and_keeps_review_st
         assert _prefix(c, "c960")["opening_keys"] is None and _prefix(c, "c960")["opening_moves"] is None
         # Between the two Review releases the deployed worklist still reads and writes this table.
         assert c.execute("SELECT pool_id FROM review_pool_state").fetchall() == [{"pool_id": "v1:route:faded"}]
+        # The snapshot table goes on before the new page is deployed; the old page is untouched.
+        assert schema.upgrade(c, to=8) == [8]
+        assert c.execute("SELECT to_regclass('public.review_snapshots') IS NOT NULL AS t").fetchone() == {"t": True}
+        assert c.execute("SELECT pool_id FROM review_pool_state").fetchall() == [{"pool_id": "v1:route:faded"}]
         # The page that no longer reads it is live before the table goes, and nothing else goes with it.
-        assert schema.upgrade(c) == [n for n, _ in schema.migration_files() if n > 7]
+        assert schema.upgrade(c) == [n for n, _ in schema.migration_files() if n > 8]
         assert c.execute("SELECT to_regclass('public.review_pool_state') AS t").fetchone() == {"t": None}
         assert _prefix(c, "inside")["opening_moves"] == LONG[:OPENING_PREFIX_PLIES]
 
@@ -602,7 +601,7 @@ def test_the_engine_score_is_stored_from_whites_point_of_view() -> None:
 def test_position_evals_runs_last_in_the_hour() -> None:
     """After review, and after housekeeping, so a board that fails holds nothing else up."""
     steps = list(runs.HOURLY_STEPS)
-    assert steps[-1] == "position-evals" and steps.index("review") < steps.index("housekeep")
+    assert steps[-2:] == ["position-evals", "review-snapshot"] and steps.index("review") < steps.index("housekeep")
     assert runs.CHAIN_THROUGH_STEP == "housekeep"  # its failure does not make the chain look stale
     from pipeline.cli import hourly_steps
 

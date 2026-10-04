@@ -1,6 +1,6 @@
 """`pipeline` — the one command-line entry point for everything that is not the API.
 
-    pipeline db init | upgrade | version         schema
+    pipeline db init | upgrade [--to N] | version schema
     pipeline settings show | seed FILE | schema  the settings row
     pipeline player set --chesscom U --lichess U the one players row (usernames)
     pipeline import [--platform P] [--all] [--months N]
@@ -11,6 +11,7 @@
     pipeline import-opponents [--profile ID] [--reset-lichess-cursors]   scouted opponents' games
     pipeline review [--workers N]                 retag the window's review events
     pipeline position-evals [--limit N]           evaluate Review positions (hourly: 40; 0 = all)
+    pipeline review-snapshot                      store Review's position sections for every filter
     pipeline backfill-openings [--months N]       opening prefix for games stored before it existed
     pipeline import-corpus --csv FILE             rebuild the Lichess CC0 corpus sample
     pipeline import-repertoire FILE --mode update|scratch [--preserve-manual] [--dry-run]
@@ -43,6 +44,7 @@ from core.puzzles.generate import run as puzzles
 from core.repertoire import importing, matching
 from core.review import evals as position_evals
 from core.review import run as review
+from core.review import snapshot as review_snapshot
 from core.scout import importing as scout_importing
 
 
@@ -53,9 +55,9 @@ def _db_init(_: argparse.Namespace) -> int:
     return 0
 
 
-def _db_upgrade(_: argparse.Namespace) -> int:
+def _db_upgrade(args: argparse.Namespace) -> int:
     with db.connect() as conn:
-        applied = schema.upgrade(conn)
+        applied = schema.upgrade(conn, to=getattr(args, "to", None))
     print("applied: " + (", ".join(str(n) for n in applied) if applied else "nothing to do"))
     return 0
 
@@ -182,6 +184,10 @@ def _step_position_evals(conn: psycopg.Connection[Any], args: argparse.Namespace
     return position_evals.run(conn, settings.load(conn), limit=limit or None)
 
 
+def _step_review_snapshot(conn: psycopg.Connection[Any], _: argparse.Namespace) -> dict[str, Any]:
+    return review_snapshot.build(conn, settings.load(conn))
+
+
 def _step_backfill_openings(conn: psycopg.Connection[Any], args: argparse.Namespace) -> dict[str, Any]:
     months = getattr(args, "months", None)
     if months is None:
@@ -248,6 +254,7 @@ def hourly_steps() -> dict[str, Step]:
         "review": _step_review,
         "housekeep": _step_housekeep,
         "position-evals": _step_position_evals,
+        "review-snapshot": _step_review_snapshot,
     }
     return {name: steps[name] for name in runs.HOURLY_STEPS}
 
@@ -321,7 +328,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_db = sub.add_parser("db", help="schema install and upgrade")
     db_sub = p_db.add_subparsers(dest="cmd", required=True)
     db_sub.add_parser("init").set_defaults(func=_db_init)
-    db_sub.add_parser("upgrade").set_defaults(func=_db_upgrade)
+    p_up = db_sub.add_parser("upgrade")
+    p_up.add_argument("--to", type=int, help="stop after this migration (default: apply every pending one)")
+    p_up.set_defaults(func=_db_upgrade)
     db_sub.add_parser("version").set_defaults(func=_db_version)
 
     p_settings = sub.add_parser("settings", help="the settings row")
@@ -381,6 +390,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit", dest="evals_limit", type=_at_least(0), help="at most N positions (default 40; 0 = all)"
     )
     p_ev.set_defaults(func=_cmd("position-evals", _step_position_evals))
+    p_snap = sub.add_parser("review-snapshot", help="store Review's position sections for every time class and opening")
+    p_snap.set_defaults(func=_cmd("review-snapshot", _step_review_snapshot))
 
     p_bf = sub.add_parser("backfill-openings", help="opening prefix for stored games that have none (re-fetches)")
     p_bf.add_argument("--months", type=_at_least(1), help="how far back (default: review_history_months)")

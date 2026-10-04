@@ -17,7 +17,7 @@ from psycopg import Connection
 
 from core.chess.eligibility import analysable_sql
 from core.constants import CLOCK_DECIDED_TERMINATIONS, PLAYER_ID
-from core.review import habits, positions
+from core.review import habits, positions, snapshot
 from core.review.filters import (
     OPENING_ALL,
     Opening,
@@ -137,19 +137,27 @@ def checked_opening(conn: Connection[Any], config: Settings, time_class: str, ke
 def page(
     conn: Connection[Any], config: Settings, *, time_class: str = "focus", opening: str = OPENING_ALL
 ) -> dict[str, Any]:
-    parsed, options = checked_opening(conn, config, time_class, opening)
-    scope = positions.Scope(config, time_class, parsed)
-    meta = positions.meta(conn, scope)
+    """The page. The position sections come from the hourly snapshot when it still describes the
+    data (`core.review.snapshot`), else they are computed here; habits and lost wins are always
+    read now (they carry the reviewed ticks)."""
+    parsed = parse_opening(opening)
+    stored = snapshot.read(conn, config, time_class, opening)
+    if stored is not None:
+        options: list[Any] = stored["openings"]
+        sections = stored
+    else:
+        parsed, options = checked_opening(conn, config, time_class, opening)
+        sections = snapshot.sections(conn, config, time_class, opening)
+    meta = sections["meta"]
     habit_rows, window_games = habits.habits(conn, config, time_class, parsed)
     lost = select_lost_wins(fetch_events(conn, config, time_class, parsed), config.review_faded_peak_es)
-    as_of = meta.get("as_of")
     return {
-        "positions": positions.ranked_positions(conn, scope),
+        "positions": sections["positions"],
         "habits": habit_rows,
         "lost_wins": {"games": lost, "total": len(lost)},
         "filter": {"time_class": time_class, "opening": opening, "openings": options},
         "meta": {
-            "as_of": as_of.isoformat() if as_of else None,
+            "as_of": meta.get("as_of"),
             "history_months": config.review_history_months,
             "games_counted": int(meta.get("games_counted") or 0),
             "games_without_prefix": int(meta.get("games_without_prefix") or 0),

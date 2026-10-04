@@ -5,8 +5,9 @@ enough to be counted, most-played first. Each board is rebuilt by replaying a so
 prefix moves from the standard start to the board's first-occurrence ply in that game, and must
 hash to the board's key (checked by bq_position_key in SQL, the one key authority); the next
 source is tried when one does not. A board no source rebuilds is a defect: it is counted
-`failed`, nothing is written for it, and the run fails. The step runs last in the hourly chain,
-so a board like that alerts every hour without holding up anything else. Otherwise Stockfish
+`failed`, nothing is written for it, and the run fails. The step runs after housekeeping, so a
+board like that alerts every hour without holding up the import or the analysis (the Review
+snapshot after it waits, and the page computes its sections itself meanwhile). Otherwise Stockfish
 evaluates it at STOCKFISH_DEPTH, the depth the game analyser uses, and the score is stored from
 White's point of view like ply_analysis: centipawns, or a mate distance in moves.
 
