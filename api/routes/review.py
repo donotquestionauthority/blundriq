@@ -1,97 +1,75 @@
-"""GET /review, GET /review/pools/{pool_id}/events, POST /review/pools/{pool_id}/shown — the Review worklist.
+"""GET /review, GET /review/positions/{colour}/{key}, GET /review/habits/{habit_id} — the Review page.
 
-A bad parameter (an unknown opening key, group_by or reviewed_scope) is 422 — the client's
-stale-key recovery reads `unknown opening key` in the detail; a pool id that does not parse or
-names no current node is 404, so nothing is learned from probing ids. The GETs read only; the
-stamp commits once through `db.transaction`.
+Every route reads only and takes the same two filters. A bad parameter is 422: an opening key
+that is not one of the page's options says `unknown opening key` (the client's stale-key
+recovery reads it), a position key must be a signed 64-bit decimal, a habit id must have a
+habit's shape. A position no counted game reaches is 404.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Path, Query
 
 from api import auth
 from core import db, settings
-from core.review import read
+from core.review import habits, position, positions, read
+from core.review.filters import OPENING_ALL, ReviewParamError
 
 router = APIRouter(prefix="/review", tags=["review"], dependencies=[auth.Authed])
 
-PAGE_SIZE = 50
-
 TimeClass = Literal["focus", "all"]
-GroupBy = Literal["variation", "repertoire", "position"]
-ReviewedScope = Literal["to_review", "all"]
-
-
-def _pool_id(pool_id: str) -> str:
-    if len(pool_id) > 256:
-        raise HTTPException(404, "pool not found")
-    return pool_id
+Colour = Literal["white", "black"]
+_BIGINT = (-(2**63), 2**63 - 1)
 
 
 @router.get("")
-def worklist(
+def review_page(
     time_class: TimeClass = Query("focus"),
-    opening: str = Query(read.OPENING_ALL, max_length=200),
-    group_by: GroupBy = Query("variation"),
+    opening: str = Query(OPENING_ALL, max_length=200),
 ) -> dict[str, Any]:
     with db.transaction() as conn:
         try:
-            return read.page(conn, settings.load(conn), time_class=time_class, opening=opening, group_by=group_by)
-        except read.ReviewParamError as exc:
+            return read.page(conn, settings.load(conn), time_class=time_class, opening=opening)
+        except ReviewParamError as exc:
             raise HTTPException(422, str(exc)) from exc
 
 
-@router.get("/pools/{pool_id}/events")
-def pool_events(
-    pool_id: str,
+@router.get("/positions/{colour}/{key}")
+def position_page(
+    colour: Colour,
+    key: str = Path(pattern=r"^-?[0-9]{1,19}$"),
     time_class: TimeClass = Query("focus"),
-    opening: str = Query(read.OPENING_ALL, max_length=200),
-    reviewed_scope: ReviewedScope = Query("to_review"),
+    opening: str = Query(OPENING_ALL, max_length=200),
     page: int = Query(1, ge=1, le=10000),
 ) -> dict[str, Any]:
-    """The drill-down: one row per game, `total` from the same derivation as the page's counts."""
+    board = int(key)
+    if not _BIGINT[0] <= board <= _BIGINT[1]:
+        raise HTTPException(422, "position key out of range")
     with db.transaction() as conn:
+        config = settings.load(conn)
         try:
-            result = read.pool_events(
-                conn,
-                settings.load(conn),
-                _pool_id(pool_id),
-                time_class=time_class,
-                opening=opening,
-                reviewed_scope=reviewed_scope,
-                limit=PAGE_SIZE,
-                offset=(page - 1) * PAGE_SIZE,
-            )
-        except read.ReviewParamError as exc:
+            parsed, _ = read.checked_opening(conn, config, time_class, opening)
+        except ReviewParamError as exc:
             raise HTTPException(422, str(exc)) from exc
-        except read.PoolNotFound as exc:
-            raise HTTPException(404, "pool not found") from exc
-    total = result["total"]
-    return {
-        "events": result["rows"],
-        "total": total,
-        "page": page,
-        "page_size": PAGE_SIZE,
-        "total_pages": max(1, -(-total // PAGE_SIZE)),
-    }
+        result = position.position_page(conn, positions.Scope(config, time_class, parsed), colour, board, page)
+    if result is None:
+        raise HTTPException(404, "no counted game reaches this position")
+    return result
 
 
-@router.post("/pools/{pool_id}/shown", status_code=204)
-def mark_shown(
-    pool_id: str,
+@router.get("/habits/{habit_id}")
+def habit_games(
+    habit_id: str = Path(max_length=60),
     time_class: TimeClass = Query("focus"),
-    opening: str = Query(read.OPENING_ALL, max_length=200),
-) -> Response:
-    """Records that the node was shown, for representative rotation. Validated against the nodes
-    the same filter would emit before anything is written."""
+    opening: str = Query(OPENING_ALL, max_length=200),
+    page: int = Query(1, ge=1, le=10000),
+) -> dict[str, Any]:
     with db.transaction() as conn:
+        config = settings.load(conn)
         try:
-            read.touch_shown(conn, settings.load(conn), _pool_id(pool_id), time_class=time_class, opening=opening)
-        except read.ReviewParamError as exc:
+            parsed, _ = read.checked_opening(conn, config, time_class, opening)
+            return habits.habit_games(conn, config, time_class, parsed, habit_id, page)
+        except ReviewParamError as exc:
             raise HTTPException(422, str(exc)) from exc
-        except read.PoolNotFound as exc:
-            raise HTTPException(404, "pool not found") from exc
-    return Response(status_code=204)

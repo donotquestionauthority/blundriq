@@ -385,19 +385,38 @@ def _es_series(
     authority `sigmoid`, gaps forward-filled. `boards` is unused here; it is what a rung
     over the board would read, and the caller passes it so the series stays a function of
     the position list."""
-    n = len(boards)
+    return _es_over(len(boards), ply_analysis, player_is_white)
+
+
+def _es_over(n: int, ply_analysis: list[Any], player_is_white: bool) -> tuple[list[float], list[str]]:
     es: list[float | None] = [None] * n
     auth = ["sigmoid"] * n
     for i in range(n):
         entry = _entry(ply_analysis, i)
         mim = entry.get("mate_in_moves") if entry else None
         if mim:
-            player_mate = mim if player_is_white else -mim
-            es[i] = 100.0 if player_mate > 0 else 0.0
+            es[i] = position_es(None, mim, player_is_white)
             auth[i] = "mate"
             continue
         es[i] = _win_pct(entry.get("eval") if entry else None, player_is_white)
     return _fill(es), auth
+
+
+def es_curve(ply_analysis: list[Any], player_is_white: bool) -> list[float]:
+    """The detector's expected-score series over a game's stored analysis, one value per
+    position, the player's point of view. Review's per-game turning point reads it, so a move
+    is priced there exactly as the detector prices it."""
+    return _es_over(len(ply_analysis), ply_analysis, player_is_white)[0]
+
+
+def position_es(eval_cp: Any, mate_in: Any, player_is_white: bool) -> float | None:
+    """One position's expected score for the player from a White-POV evaluation: a forced
+    mate (non-zero; 0 is sign-ambiguous) is 100 for the player or 0 against, else the
+    win-probability sigmoid over the centipawns; None when neither is known."""
+    if mate_in:
+        player_mate = mate_in if player_is_white else -mate_in
+        return 100.0 if player_mate > 0 else 0.0
+    return _win_pct(eval_cp, player_is_white)
 
 
 def _sigmoid_series(ply_analysis: list[Any], n: int, player_is_white: bool) -> list[float]:

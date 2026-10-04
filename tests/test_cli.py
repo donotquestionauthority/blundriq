@@ -200,6 +200,7 @@ def test_the_hourly_chain_generates_puzzles_after_analysis(
         "review",
         "housekeep",
         "position-evals",
+        "review-snapshot",
     ]
 
 

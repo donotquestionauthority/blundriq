@@ -27,6 +27,29 @@ OPENING_PREFIX_PLIES = 30
 # Position evaluations (`pipeline position-evals`): how many boards an hourly run evaluates.
 POSITION_EVALS_PER_RUN = 40
 
+# Review's position ranking (core/review/positions.py). A deficit is points below the Elo
+# expectation per game (0..1); both deficits shrink toward zero by n / (n + SHRINK).
+REVIEW_SHRINK_GAMES = 15
+REVIEW_LEAK_THRESHOLD = 0.03  # 3 points per 100 games: a deficit above this is a leak
+REVIEW_RECENT_DAYS = 30  # "recent games": through the position in this many days before the newest game
+REVIEW_STALE_RECENT_GAMES = 3  # fewer recent games than this: not reached lately
+REVIEW_FIXED_MIN_RECENT = 5  # "looks fixed" needs this many recent games...
+REVIEW_FIXED_MIN_EFFECTIVE = 15  # ...and this effective (recency-weighted) sample
+REVIEW_RANKED_MAX = 15  # cards in "Where you're losing points", after carry-down
+REVIEW_FIXED_MAX = 10  # cards in "Fixed?"
+REVIEW_FORCED_SHARE = 0.9  # carry-down steps to a child that this share of the games reach...
+REVIEW_COST_SHARE = 0.8  # ...or that carries this share of the section score
+REVIEW_MONTH_MIN_GAMES = 8  # a 30-day trend bucket with fewer games is left empty
+REVIEW_PLAYABLE_ES = 40  # expected score (0-100) below which a position is "already worse"
+REVIEW_TURN_MIN_DROP = 10  # the smallest one-move expected-score drop that is a turning point
+REVIEW_CHILDREN_MAX = 8  # moves listed under "What happens next"
+
+# Review's mistake habits (core/review/habits.py).
+REVIEW_HABIT_MIN_EVENTS = 3
+REVIEW_HABIT_WORSE = 1.25  # current rate at least this times the window rate: getting worse
+REVIEW_HABIT_BETTER = 0.75  # at most this: improving
+REVIEW_HABIT_MIN_WEIGHT = 30  # below this recency-weighted game count, no trend is claimed
+
 # Move classifications, most severe first, and what one game's worst instance at a board
 # adds to that board's score on the Blunders page.
 BLUNDER_CLASSES = ("miss", "blunder", "mistake", "inaccuracy")

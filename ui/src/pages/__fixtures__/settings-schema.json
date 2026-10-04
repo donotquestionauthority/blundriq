@@ -718,7 +718,7 @@
     },
     "review_pool_floor_eco": {
       "default": 8,
-      "description": "Minimum events for an ECO-scoped pool.",
+      "description": "Not used by this implementation (the old opening pools' ECO floor).",
       "maximum": 50,
       "minimum": 1,
       "title": "Review Pool Floor Eco",
@@ -726,7 +726,7 @@
     },
     "review_pool_floor_line": {
       "default": 5,
-      "description": "Minimum events for a line-scoped pool.",
+      "description": "Not used by this implementation (the old opening pools' line floor).",
       "maximum": 50,
       "minimum": 1,
       "title": "Review Pool Floor Line",
@@ -756,9 +756,17 @@
       "title": "Review Quiesce Max Plies",
       "type": "integer"
     },
+    "review_recency_half_life_days": {
+      "default": 30,
+      "description": "A game's weight halves every this many days, before the newest game.",
+      "maximum": 180,
+      "minimum": 7,
+      "title": "Review Recency Half Life Days",
+      "type": "integer"
+    },
     "review_recency_half_life_games": {
       "default": 200,
-      "description": "Half-life (games) for recency weighting.",
+      "description": "Not used by this implementation (the old worklist's half-life in games).",
       "minimum": 10,
       "title": "Review Recency Half Life Games",
       "type": "integer"

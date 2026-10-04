@@ -7,7 +7,7 @@
  * move (or asks to be shown), and the reveal draws the committed / engine / book / game /
  * opponent arrows with a legend. "Explore from here" mounts the Explore layer over the current
  * board. Landing on a game stamps it reviewed once. Escape or Close returns to where the review
- * was opened from (`location.state.from`), else to the worklist.
+ * was opened from (`location.state.from`), else to the Review page.
  *
  * A game whose moves are no longer stored shows a card naming the window setting. A standard
  * game without stored analysis shows the board and the moves with no eval bar, no arrows and no

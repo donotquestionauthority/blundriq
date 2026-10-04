@@ -384,16 +384,14 @@ class Settings(BaseModel):
     # never at a fixed ply count, and it is a calibrated heuristic, not a proof; the expected-score
     # leg is the compensation judgment. CONF 15 was validated on ~1,000 of Rob's games (21 of 1,145
     # events fell in already-lost positions, so no contested guard); 20 at depth <= 12 is the
-    # fast-pass noise floor. Pool floors 5 (line) and 8 (ECO) are Rob's ruling: 2-event pools are
-    # noise at a 1,000-game window, and at 5 he had exactly one qualifying opening pool; below the
-    # floor an event shows under its base route (a defensive lapse, in practice), never
-    # routed-but-hidden. Every review knob was nonetheless labelled provisional, pending a second
+    # fast-pass noise floor. Every detection knob was labelled provisional, pending a second
     # rating band and a depth-12-vs-18 sensitivity that were never run; K = 8, the 30-ply cap,
-    # quiesce 6, shed 15, faded 62, the 200-game half-life and the n/(n+3) severity shrink have
-    # nothing else behind them. Faded advantage was nearly empty at Rob's rating (his losses are
-    # sharp) and stays for the profile where it is not. Pricing is mate distance, else the
-    # win-probability sigmoid; the old system's first rung, a lookup over the board, is gone
-    # (docs/decisions/001).
+    # quiesce 6, shed 15 and faded 62 have nothing else behind them. Faded advantage was nearly
+    # empty at Rob's rating (his losses are sharp) and stays for the profile where it is not.
+    # Pricing is mate distance, else the win-probability sigmoid; the old system's first rung, a
+    # lookup over the board, is gone (docs/decisions/001). The page reads the stored events by
+    # habit (core/review/habits.py); the two pool floors and the half-life in games belonged to
+    # the old event-pool worklist and nothing reads them.
     review_conf_es_drop: int = Field(
         default=15, ge=1, le=100, description="Expected-score drop that confirms a material event."
     )
@@ -418,10 +416,14 @@ class Settings(BaseModel):
     review_early_ply_cap: int = Field(
         default=30, ge=1, le=80, description="'Early' cap when no repertoire match exists."
     )
-    review_pool_floor_line: int = Field(default=5, ge=1, le=50, description="Minimum events for a line-scoped pool.")
-    review_pool_floor_eco: int = Field(default=8, ge=1, le=50, description="Minimum events for an ECO-scoped pool.")
+    review_pool_floor_line: int = Field(
+        default=5, ge=1, le=50, description="Not used by this implementation (the old opening pools' line floor)."
+    )
+    review_pool_floor_eco: int = Field(
+        default=8, ge=1, le=50, description="Not used by this implementation (the old opening pools' ECO floor)."
+    )
     review_recency_half_life_games: int = Field(
-        default=200, ge=10, description="Half-life (games) for recency weighting."
+        default=200, ge=10, description="Not used by this implementation (the old worklist's half-life in games)."
     )
     # Review's position statistics read the opening prefix every analysable game keeps
     # (core.constants.OPENING_PREFIX_PLIES), over this many months back from the newest game.
@@ -436,6 +438,9 @@ class Settings(BaseModel):
     )
     review_position_max_ply: int = Field(
         default=24, ge=4, le=30, description="Deepest ply (half-move) counted as a position."
+    )
+    review_recency_half_life_days: int = Field(
+        default=30, ge=7, le=180, description="A game's weight halves every this many days, before the newest game."
     )
     review_default_mode: Literal["learn", "review"] = Field(
         default="learn", description="Mode the game review opens in."
