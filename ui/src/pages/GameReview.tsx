@@ -30,6 +30,7 @@ import { appendBookArrow, buildArrows, buildLearnRevealArrows, buildPgn, parsesA
 import type { BoardArrow, RevealArrows } from "../utils/chess";
 import { LEARN_COMMIT_PROMPT, LEARN_COPY, formatElapsed, learnPromptPlies, learnStepPly, useLearnMode } from "./learnMode";
 import type { LearnRep } from "./learnMode";
+import { returnTarget } from "../utils/returnTo";
 
 const CLASS_LABEL: Record<string, string> = { miss: "Miss", blunder: "Blunder", mistake: "Mistake", inaccuracy: "Inaccuracy" };
 /** Tailwind's `lg`, in pixels: the page's layout uses the `lg:` class and the prompt-surface rule
@@ -184,7 +185,6 @@ function LearnPanel({ learn, reveal, engineAvailable, promptInFlow }: { learn: L
 
 // --- the page -------------------------------------------------------------------------------------
 
-type From = { pathname: string; search?: string };
 
 export default function GameReview() {
   const { gameId } = useParams<{ gameId: string }>();
@@ -386,10 +386,8 @@ export default function GameReview() {
   }, [curPly, fenSeq, searchParams, setSearchParams, location.state]);
 
   const exit = useCallback(() => {
-    const state = location.state as { from?: From } | null;
-    const from = state?.from;
-    if (from) navigate(`${from.pathname}${from.search ?? ""}`, { state });
-    else navigate("/review");
+    const back = returnTarget(location.state);
+    navigate(back.to, back.state != null ? { state: back.state } : undefined);
   }, [location.state, navigate]);
 
   // Explore is open for the ply it was opened at: a ply change closes it, since the layer was

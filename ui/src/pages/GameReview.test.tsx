@@ -829,6 +829,12 @@ describe("stepping, Explore and the exits", () => {
     await act(async () => fireEvent.keyDown(window, { key: "Escape" }));
     expect(screen.getByTestId("probe").textContent).toBe('/games|{"from":{"pathname":"/games"},"games":{"page":3}}');
   });
+  it("Close back to the worklist hands its expansion snapshot to the entry it returns to", async () => {
+    const open = { cats: ["opening"], nodes: ["n1"], key: "all|all|__all__|variation" };
+    await renderReview(2, { from: { pathname: "/review", search: "?tc=all&scope=all", open } });
+    fireEvent.click(screen.getByLabelText("Close review"));
+    expect(screen.getByTestId("probe").textContent).toBe(`/review?tc=all&scope=all|${JSON.stringify({ from: { pathname: "/review", search: "?tc=all&scope=all", open }, open })}`);
+  });
   it("Close with no origin returns to the worklist", async () => {
     await renderReview(2);
     fireEvent.click(screen.getByLabelText("Close review"));

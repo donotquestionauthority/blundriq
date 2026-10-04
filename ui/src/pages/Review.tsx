@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Link, useLocation } from "react-router";
+import { Link, useLocation, useNavigate } from "react-router";
 import { useApi } from "../hooks/useApi";
-import { GROUP_BY_LABELS, GROUP_BY_MODES, OPENING_ALL, REVIEW_TIME_CLASS_LABELS, bookRelationLabel, countLabel, getPoolEvents, getReviewPage, isStaleOpeningError, pieceLabelDisplay, pieceOrTheme, prettyToken, touchPoolShown } from "../review";
-import type { GroupByMode, OpeningFamily, OpeningSubgroup, PoolCategory, ReviewGameRow, ReviewPool, ReviewTimeClass, ReviewedScope } from "../review";
+import { GROUP_BY_LABELS, GROUP_BY_MODES, OPENING_ALL, REVIEW_DEFAULTS, REVIEW_TIME_CLASS_LABELS, bookRelationLabel, countLabel, getPoolEvents, getReviewPage, isStaleOpeningError, pieceLabelDisplay, pieceOrTheme, prettyToken, readOpenSnapshot, readReviewSettings, reviewSettingsKey, reviewSettingsSearch, touchPoolShown } from "../review";
+import type { GroupByMode, OpeningFamily, OpeningSubgroup, PoolCategory, ReviewGameRow, ReviewOpenSnapshot, ReviewPool, ReviewSettings, ReviewTimeClass, ReviewedScope } from "../review";
 import { ReviewedScopeToggle } from "../components/ReviewedScopeToggle";
 import { daysAgo } from "../blunders";
 
@@ -27,7 +27,11 @@ import { daysAgo } from "../blunders";
  * after an A → B → A round trip of the same filters — while a page request that outlives a scope
  * change still recovers from a stale opening.
  *
- * Filter, scope and expansion state are per session; nothing is remembered.
+ * The four settings (time class, scope, focus opening, group-by) are the URL's query string, the
+ * defaults left out; what is expanded is this history entry's state, keyed by the settings it was
+ * taken under. A game link carries the snapshot with its way back, so Close and Back both return to
+ * the same view, drill-downs reloaded; the top bar's link, with no state, is the default view
+ * collapsed. Nothing is stored anywhere else.
  */
 
 const select = "rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900";
@@ -85,7 +89,8 @@ function LostWinsList({ rows, scope }: { rows: ReviewGameRow[]; scope: ReviewedS
 /** The one place the link into a game's review is built: the anchor ply, and where to come back to. */
 function GameTable({ rows, showBestMove, scope }: { rows: ReviewGameRow[]; showBestMove: boolean; scope: ReviewedScope }) {
   const location = useLocation();
-  const from = { pathname: location.pathname, search: location.search };
+  // The way back carries this entry's expansion as well, so an explicit Close finds it too.
+  const from = { pathname: location.pathname, search: location.search, open: (location.state as { open?: unknown } | null)?.open };
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-left text-xs">
@@ -234,15 +239,31 @@ function CategorySection({ title, count, open, onToggle, children, severity, con
 
 const CAT = { opening: "opening", oversights: "oversights", endgame: "endgame", faded: "faded", lostWins: "lost_wins" } as const;
 
+const DEFAULT_CATS: readonly string[] = [CAT.opening];
+
 export default function Review() {
-  const [timeClass, setTimeClass] = useState<ReviewTimeClass>("focus");
-  const [opening, setOpening] = useState<string>(OPENING_ALL);
-  const [groupBy, setGroupBy] = useState<GroupByMode>("variation");
-  const [scope, setScope] = useState<ReviewedScope>("to_review");
+  const location = useLocation();
+  const navigate = useNavigate();
+  // The settings live in the URL and the expansion in this history entry's state: both are read
+  // here on every render, and every change writes the entry (replace, never push — a filter or a
+  // toggle is not a Back step). Back, a game's Close and a reload therefore all find them again,
+  // and a top-bar visit (a new entry with no state) starts collapsed.
+  const settings = readReviewSettings(new URLSearchParams(location.search));
+  const { timeClass, opening, groupBy, scope } = settings;
+  const snapshot = readOpenSnapshot(location.state, settings);
+  const openCats = new Set(snapshot ? snapshot.cats : DEFAULT_CATS);
+  const openNodes = new Set(snapshot ? snapshot.nodes : []);
   const [notice, setNotice] = useState<string | null>(null);
-  const [openCats, setOpenCats] = useState<Set<string>>(new Set([CAT.opening]));
-  const [openNodes, setOpenNodes] = useState<Set<string>>(new Set());
   const [eventsByNode, setEventsByNode] = useState<Record<string, NodeEventsState>>({});
+  // The drill-downs asked for in this view, synchronously: state lags a render behind a navigation.
+  const requested = useRef(new Set<string>());
+  const clearEvents = () => {
+    requested.current = new Set();
+    setEventsByNode({});
+  };
+  // The latest settings, for a recovery that lands after the user changed something else.
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
 
   // Two view generations, bumped in event handlers (never during render) whenever what is on
   // screen changes so that an outstanding request no longer describes it. A request captures the
@@ -260,15 +281,38 @@ export default function Review() {
   };
   useEffect(() => () => nextView(), []);
 
+  /** The one writer of this entry: its URL from the settings, its state the expansion under them. */
+  const writeEntry = useCallback(
+    (s: ReviewSettings, cats: Iterable<string>, nodes: Iterable<string>) => {
+      const open: ReviewOpenSnapshot = { cats: [...cats], nodes: [...nodes], key: reviewSettingsKey(s) };
+      navigate({ pathname: location.pathname, search: reviewSettingsSearch(s) }, { replace: true, state: { open } });
+    },
+    [navigate, location.pathname],
+  );
+
+  // A settings change this page did not make (the top bar, Back to another worklist entry) is a
+  // fresh view as well: nothing outstanding may land in it.
+  // As in the handlers, a scope change leaves the page request current (it does not carry the scope).
+  const settingsKey = reviewSettingsKey(settings);
+  const seenSettings = useRef(settings);
+  useEffect(() => {
+    const seen = seenSettings.current;
+    seenSettings.current = settings;
+    if (seen.timeClass !== timeClass || seen.opening !== opening || seen.groupBy !== groupBy) nextView();
+    else if (seen.scope !== scope) nextDrillView();
+    else return;
+    clearEvents();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsKey]);
+
   // A focused opening that no longer has review games: back to All openings, everything but the
   // Opening section collapsed (its ids are opening-scoped), one line saying why.
   const recoverToAllOpenings = useCallback(() => {
     nextView();
-    setOpening(OPENING_ALL);
-    setOpenCats(new Set([CAT.opening]));
-    setOpenNodes(new Set());
+    clearEvents();
+    writeEntry({ ...settingsRef.current, opening: OPENING_ALL }, DEFAULT_CATS, []);
     setNotice("That opening no longer has review games — showing all openings.");
-  }, []);
+  }, [writeEntry]);
 
   const fetchPage = useCallback(async () => {
     const gen = pageGen.current;
@@ -291,6 +335,7 @@ export default function Review() {
   function loadEvents(nodeId: string, page: number) {
     const key = cacheKey(nodeId);
     const gen = viewGen.current;
+    requested.current.add(key);
     setEventsByNode((prev) => ({ ...prev, [key]: { loading: true, error: null, rows: prev[key]?.rows ?? [], total: prev[key]?.total ?? 0, page: prev[key]?.page ?? 0 } }));
     getPoolEvents(nodeId, timeClass, opening, scope, page)
       .then((res) => {
@@ -313,16 +358,34 @@ export default function Review() {
       });
   }
 
+  // An expansion restored from this entry (mount, Back, a game's Close) has no rows yet: fetch them
+  // once the page is here. A restored node is not stamped shown: it is the same look, resumed. A
+  // node opened by a click loads in its handler.
+  useEffect(() => {
+    if (!data || isStale) return;
+    const leaves = new Set<string>();
+    for (const f of data.categories.opening.families) for (const sg of f.subgroups) leaves.add(sg.subgroup_id);
+    for (const pool of [...data.categories.oversights.defense.pools, ...data.categories.oversights.offense.pools]) leaves.add(pool.pool_id);
+    const wanted = [...openNodes].filter((id) => leaves.has(id));
+    for (const [catKey, category] of [
+      [CAT.endgame, data.categories.endgame],
+      [CAT.faded, data.categories.faded],
+    ] as const) {
+      const pools = category.pools.filter((p) => scope === "all" || p.to_review_games > 0);
+      if (openCats.has(catKey) && pools.length === 1) wanted.push(pools[0].pool_id);
+    }
+    for (const id of wanted) if (!requested.current.has(cacheKey(id))) loadEvents(id, 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, isStale, location.key]);
+
   const loadMore = (nodeId: string) => loadEvents(nodeId, (eventsByNode[cacheKey(nodeId)]?.page ?? 1) + 1);
   const stamp = (nodeId: string) => touchPoolShown(nodeId, timeClass, opening).catch(() => undefined);
 
   function setNodeOpen(nodeId: string, willOpen: boolean) {
-    setOpenNodes((prev) => {
-      const next = new Set(prev);
-      if (willOpen) next.add(nodeId);
-      else next.delete(nodeId);
-      return next;
-    });
+    const next = new Set(openNodes);
+    if (willOpen) next.add(nodeId);
+    else next.delete(nodeId);
+    writeEntry(settings, openCats, next);
   }
 
   /** A leaf: opening it loads its first page and stamps it shown. */
@@ -330,7 +393,7 @@ export default function Review() {
     const willOpen = !openNodes.has(nodeId);
     setNodeOpen(nodeId, willOpen);
     if (willOpen) {
-      if (!eventsByNode[cacheKey(nodeId)]) loadEvents(nodeId, 1);
+      if (!requested.current.has(cacheKey(nodeId))) loadEvents(nodeId, 1);
       void stamp(nodeId);
     }
   }
@@ -343,12 +406,10 @@ export default function Review() {
   }
 
   function toggleCat(catKey: string) {
-    setOpenCats((prev) => {
-      const next = new Set(prev);
-      if (next.has(catKey)) next.delete(catKey);
-      else next.add(catKey);
-      return next;
-    });
+    const next = new Set(openCats);
+    if (next.has(catKey)) next.delete(catKey);
+    else next.add(catKey);
+    writeEntry(settings, next, openNodes);
   }
 
   /** A single-pool category expands straight to its games: the header behaves as the leaf would. */
@@ -356,43 +417,35 @@ export default function Review() {
     const willOpen = !openCats.has(catKey);
     toggleCat(catKey);
     if (willOpen) {
-      if (!eventsByNode[cacheKey(poolId)]) loadEvents(poolId, 1);
+      if (!requested.current.has(cacheKey(poolId))) loadEvents(poolId, 1);
       void stamp(poolId);
     }
   }
 
   // A server-param change is a fresh page: ids and memberships are filter-dependent, so everything
   // collapses — except Opening problems, which hosts the controls that were just used.
-  function resetExpansion() {
+  function changeSettings(next: Partial<ReviewSettings>) {
+    setNotice(null);
     nextView();
-    setOpenCats(new Set([CAT.opening]));
-    setOpenNodes(new Set());
-    setEventsByNode({});
+    clearEvents();
+    writeEntry({ ...settings, ...next }, DEFAULT_CATS, []);
   }
-  const changeTimeClass = (next: ReviewTimeClass) => {
-    setNotice(null);
-    setTimeClass(next);
-    resetExpansion();
-  };
-  const changeOpening = (next: string) => {
-    setNotice(null);
-    setOpening(next);
-    resetExpansion();
-  };
-  const changeGroupBy = (next: GroupByMode) => {
-    setNotice(null);
-    setGroupBy(next);
-    resetExpansion();
-  };
+  const changeTimeClass = (next: ReviewTimeClass) => changeSettings({ timeClass: next });
+  const changeOpening = (next: string) => changeSettings({ opening: next });
+  const changeGroupBy = (next: GroupByMode) => changeSettings({ groupBy: next });
   // Scope is client-side: sections stay open, drill-downs collapse and forget their rows so they
   // reload under the new scope. A single-pool category is its own drill-down, so it closes too.
   const changeScope = (next: ReviewedScope) => {
     nextDrillView();
-    setScope(next);
-    setOpenNodes(new Set());
-    setOpenCats((prev) => new Set([...prev].filter((c) => c !== CAT.endgame && c !== CAT.faded)));
-    setEventsByNode({});
+    clearEvents();
+    writeEntry(
+      { ...settings, scope: next },
+      [...openCats].filter((c) => c !== CAT.endgame && c !== CAT.faded),
+      [],
+    );
   };
+  const isDefault = reviewSettingsKey(settings) === reviewSettingsKey(REVIEW_DEFAULTS);
+  const resetFilters = () => changeSettings(REVIEW_DEFAULTS);
 
   const visible = (toReview: number) => scope === "all" || toReview > 0;
   const catVisible = (total: number, toReview: number) => (scope === "all" ? total > 0 : toReview > 0);
@@ -431,6 +484,11 @@ export default function Review() {
           </select>
         </label>
         <ReviewedScopeToggle value={scope} onChange={changeScope} />
+        {!isDefault && (
+          <button type="button" onClick={resetFilters} className="pb-1 text-xs text-zinc-500 underline hover:text-zinc-900 dark:hover:text-zinc-100">
+            Reset filters
+          </button>
+        )}
       </div>
 
       <p className="mt-3 text-xs text-zinc-500">
