@@ -19,7 +19,14 @@ HOURLY_STEPS = (
     "import-opponents",
     "review",
     "housekeep",
+    "position-evals",
 )
+
+# The step whose success means the chain ran through, for Home's "last successful run". It is
+# not the last step: position-evals runs after it so that a board it cannot rebuild fails
+# only itself, and such a failure shows in the failed list without making the import, the
+# analysis and the housekeeping that did run look stale.
+CHAIN_THROUGH_STEP = "housekeep"
 
 
 def start(conn: Connection[Any], step: str) -> int:
@@ -62,7 +69,7 @@ def hourly_status(conn: Connection[Any]) -> dict[str, Any]:
     """What Home shows: when the chain last ran through (its last step succeeded), and every
     hourly step whose most recent run failed, in chain order."""
     row = conn.execute(
-        "SELECT max(finished_at) AS at FROM pipeline_runs WHERE step = %s AND status = 'ok'", (HOURLY_STEPS[-1],)
+        "SELECT max(finished_at) AS at FROM pipeline_runs WHERE step = %s AND status = 'ok'", (CHAIN_THROUGH_STEP,)
     ).fetchone()
     assert row is not None
     by_step = {r["step"]: r for r in latest(conn)}

@@ -18,6 +18,15 @@ VARIANT_STANDARD = "standard"
 VARIANT_CHESS960 = "chess960"
 ANALYSABLE_VARIANTS = (VARIANT_STANDARD,)
 
+# The opening prefix every analysable game keeps after housekeeping nulls its bulk payload:
+# the first OPENING_PREFIX_PLIES moves and the keys of the positions before and after each
+# (one more than the moves). The SQL side is bq_opening_keys (migration 007); a test pins
+# the two together. Review's position statistics read only this prefix.
+OPENING_PREFIX_PLIES = 30
+
+# Position evaluations (`pipeline position-evals`): how many boards an hourly run evaluates.
+POSITION_EVALS_PER_RUN = 40
+
 # Move classifications, most severe first, and what one game's worst instance at a board
 # adds to that board's score on the Blunders page.
 BLUNDER_CLASSES = ("miss", "blunder", "mistake", "inaccuracy")

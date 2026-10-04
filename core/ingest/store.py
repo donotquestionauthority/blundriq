@@ -2,8 +2,9 @@
 
 `upsert_game` merges by (platform, platform_game_id) with a NULL → value
 ratchet: a later import can fill fields the first left empty, never the
-reverse. `upsert_player_game` is insert-or-ignore on (player_id, chess_game_id).
-Callers own the transaction.
+reverse. It also writes the opening prefix (`opening_moves`, `opening_keys`) that
+Review keeps after housekeeping nulls the bulk payload; a Chess960 game gets none.
+`upsert_player_game` is insert-or-ignore on (player_id, chess_game_id). Callers own the transaction.
 """
 
 from __future__ import annotations
@@ -13,8 +14,9 @@ from typing import Any
 
 from psycopg import Connection
 
+from core.chess.eligibility import is_analysable
 from core.chess.openings import canonical_opening
-from core.constants import PLAYER_ID
+from core.constants import OPENING_PREFIX_PLIES, PLAYER_ID
 from core.ingest.records import GameRecord
 
 
@@ -22,18 +24,30 @@ def _none_if_empty(value: str | None) -> str | None:
     return None if value == "" else value
 
 
+def opening_prefix(g: GameRecord) -> tuple[str | None, str | None]:
+    """(moves, fens) as JSON for the opening prefix, or (None, None) for a game that may not
+    have one: a variant the pipeline does not analyse (core.chess.eligibility) or a game without moves. The
+    keys are hashed in SQL by bq_opening_keys, which also truncates the positions; the moves
+    are truncated here to the same length."""
+    if not is_analysable(g.variant) or not g.moves or not g.fen_sequence:
+        return None, None
+    return json.dumps(g.moves[:OPENING_PREFIX_PLIES]), json.dumps(g.fen_sequence[: OPENING_PREFIX_PLIES + 1])
+
+
 def upsert_game(conn: Connection[Any], g: GameRecord) -> int:
     """Insert or merge one chess_games row; returns its id."""
     opening_name = _none_if_empty(g.opening_name)
     opening_eco = _none_if_empty(g.opening_eco)
     family, variation = canonical_opening(opening_name, opening_eco)
+    prefix_moves, prefix_fens = opening_prefix(g)
     row = conn.execute(
         """
         INSERT INTO chess_games (
             platform, platform_game_id, url, played_at, time_control, opening_name, opening_eco,
             moves, fen_sequence, clocks, termination, variant, starting_fen, time_class,
-            canonical_family, canonical_variation
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s)
+            canonical_family, canonical_variation, opening_moves, opening_keys
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s,
+                  %s::jsonb, public.bq_opening_keys(%s::jsonb))
         ON CONFLICT (platform, platform_game_id) DO UPDATE
         SET url          = COALESCE(chess_games.url, EXCLUDED.url),
             played_at    = COALESCE(chess_games.played_at, EXCLUDED.played_at),
@@ -46,7 +60,9 @@ def upsert_game(conn: Connection[Any], g: GameRecord) -> int:
             termination  = COALESCE(chess_games.termination, EXCLUDED.termination),
             variant      = EXCLUDED.variant,
             starting_fen = COALESCE(chess_games.starting_fen, EXCLUDED.starting_fen),
-            time_class   = COALESCE(chess_games.time_class, EXCLUDED.time_class)
+            time_class   = COALESCE(chess_games.time_class, EXCLUDED.time_class),
+            opening_moves = COALESCE(chess_games.opening_moves, EXCLUDED.opening_moves),
+            opening_keys  = COALESCE(chess_games.opening_keys, EXCLUDED.opening_keys)
         RETURNING id, opening_name, opening_eco, canonical_family, canonical_variation
         """,
         (
@@ -66,6 +82,8 @@ def upsert_game(conn: Connection[Any], g: GameRecord) -> int:
             _none_if_empty(g.time_class),
             family,
             variation,
+            prefix_moves,
+            prefix_fens,
         ),
     ).fetchone()
     assert row is not None

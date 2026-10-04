@@ -1,6 +1,6 @@
-"""Default AI explanation prompts: the prompts configured on 2026-09-19, with the two Claude
-buttons moved to claude-opus-5-5 on 2026-10-03. That model always thinks and its thinking
-shares `max_tokens` with the answer, so both have thinking on and room for it.
+"""Default AI explanation prompts. The two Claude defaults use a model that always thinks, and
+its thinking shares `max_tokens` with the answer, so both have thinking on and a `max_tokens`
+that leaves room for it.
 
 These are content, not knobs, so they live here rather than inline in core/settings.py;
 they are still editable on the Preferences page because `ai_prompts` is a settings field

@@ -90,6 +90,44 @@ def stream_games(
         raise FetchError(f"lichess transport error: {type(exc).__name__}") from exc
 
 
+# Lichess answers at most this many ids per export request.
+IDS_PER_REQUEST = 300
+
+
+def export_games(client: httpx.Client, game_ids: list[str]) -> Iterator[dict[str, Any]]:
+    """Yield the raw game dicts for these ids (at most IDS_PER_REQUEST), in the stream's own
+    format. Unlike `stream_games` this selects by id, not by creation time, so a game created
+    long before a boundary but finished after it is reachable. An id the platform does not
+    return is simply absent. A transport failure or a non-200 raises FetchError."""
+    if len(game_ids) > IDS_PER_REQUEST:
+        raise ValueError(f"at most {IDS_PER_REQUEST} ids per request")
+    params = {"moves": "true", "opening": "true", "clocks": "true", "evals": "false"}
+    try:
+        with client.stream(
+            "POST",
+            f"{API}/games/export/_ids",
+            params=params,
+            content=",".join(game_ids),
+            headers={**HEADERS, "Content-Type": "text/plain"},
+            timeout=TIMEOUT,
+        ) as r:
+            if r.status_code == 429:
+                raise FetchError("lichess rate limited (429)")
+            if r.status_code != 200:
+                raise FetchError(f"lichess HTTP {r.status_code} for games export")
+            for line in r.iter_lines():
+                if not line:
+                    continue
+                try:
+                    game = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(game, dict):
+                    yield sub({"g": game}, "g")
+    except httpx.HTTPError as exc:
+        raise FetchError(f"lichess transport error: {type(exc).__name__}") from exc
+
+
 def parse_game(game: dict[str, Any], username: str) -> GameRecord | None:
     variant_raw = text(sub(game, "variant"), "key") or text(game, "variant") or "standard"
     variant = {"standard": "standard", "chess960": "chess960"}.get(variant_raw)

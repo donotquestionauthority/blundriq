@@ -692,6 +692,14 @@
       "title": "Review Faded Peak Es",
       "type": "integer"
     },
+    "review_history_months": {
+      "default": 12,
+      "description": "Months of games counted toward a position's numbers.",
+      "maximum": 36,
+      "minimum": 1,
+      "title": "Review History Months",
+      "type": "integer"
+    },
     "review_material_candidate_drop": {
       "default": 2,
       "description": "Material units lost that make a candidate.",
@@ -722,6 +730,22 @@
       "maximum": 50,
       "minimum": 1,
       "title": "Review Pool Floor Line",
+      "type": "integer"
+    },
+    "review_position_max_ply": {
+      "default": 24,
+      "description": "Deepest ply (half-move) counted as a position.",
+      "maximum": 30,
+      "minimum": 4,
+      "title": "Review Position Max Ply",
+      "type": "integer"
+    },
+    "review_position_min_games": {
+      "default": 10,
+      "description": "Games through a position before it can be ranked.",
+      "maximum": 100,
+      "minimum": 3,
+      "title": "Review Position Min Games",
       "type": "integer"
     },
     "review_quiesce_max_plies": {
