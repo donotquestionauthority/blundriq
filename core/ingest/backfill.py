@@ -2,7 +2,7 @@
 
 Housekeeping nulls `moves` and `fen_sequence` outside the analysis window, so a game that left
 the window before migration 007 has no prefix to derive one from. This re-fetches Rob's own
-games from both platforms for the last `months` months, with the importers' own walkers and
+games from both platforms for `months` months back from his newest game, with the importers' own walkers and
 parsers, and writes ONLY the prefix (`opening_moves`, `opening_keys`) onto rows that already
 exist and have none:
 
@@ -29,6 +29,7 @@ import httpx
 from psycopg import Connection
 
 from core.chess.eligibility import analysable_sql, is_analysable
+from core.constants import PLAYER_ID
 from core.ingest import lichess, walk
 from core.ingest.records import FetchError, GameRecord
 from core.ingest.store import opening_prefix
@@ -95,6 +96,23 @@ def _apply(conn: Connection[Any], records: list[GameRecord | None], summary: Bac
     summary.not_in_db += distinct - n_found
 
 
+def _history_end(conn: Connection[Any], now: datetime) -> datetime:
+    """Where Review's history ends: the newest of Rob's analysable games (core.review.positions
+    counts back from it), or now when he has none. A break in his play must not leave the
+    oldest part of the history without a prefix."""
+    query = cast(
+        LiteralString,
+        f"""
+        SELECT max(cg.played_at) AS newest FROM player_games pg JOIN chess_games cg ON cg.id = pg.chess_game_id
+        WHERE pg.player_id = %s AND {analysable_sql("cg")}
+        """,
+    )
+    row = conn.execute(query, (PLAYER_ID,)).fetchone()
+    newest = row["newest"] if row else None
+    conn.commit()
+    return min(now, newest) if newest is not None else now
+
+
 def backfill_openings(
     conn: Connection[Any],
     *,
@@ -106,7 +124,7 @@ def backfill_openings(
     names = usernames(conn)
     conn.commit()
     client = client or httpx.Client()
-    cutoff = (now or datetime.now(UTC)) - timedelta(days=30 * months)
+    cutoff = _history_end(conn, now or datetime.now(UTC)) - timedelta(days=30 * months)
     if names.get("chesscom"):
         try:
             for records in walk.chesscom_games(client, str(names["chesscom"]), since=cutoff, cutoff=cutoff):

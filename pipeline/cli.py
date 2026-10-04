@@ -183,7 +183,9 @@ def _step_position_evals(conn: psycopg.Connection[Any], args: argparse.Namespace
 
 
 def _step_backfill_openings(conn: psycopg.Connection[Any], args: argparse.Namespace) -> dict[str, Any]:
-    months = getattr(args, "months", None) or settings.load(conn).review_history_months
+    months = getattr(args, "months", None)
+    if months is None:
+        months = settings.load(conn).review_history_months
     return backfill.backfill_openings(conn, months=int(months))
 
 
@@ -244,8 +246,8 @@ def hourly_steps() -> dict[str, Step]:
         "srs-maintain": _step_srs_maintain,
         "import-opponents": _step_import_opponents,
         "review": _step_review,
-        "position-evals": _step_position_evals,
         "housekeep": _step_housekeep,
+        "position-evals": _step_position_evals,
     }
     return {name: steps[name] for name in runs.HOURLY_STEPS}
 
@@ -298,6 +300,16 @@ def _migrate(args: argparse.Namespace) -> int:
     for table, n in counts.items():
         print(f"{table:28s} {n}")
     return 0
+
+
+def _at_least(low: int) -> Callable[[str], int]:
+    def parse(text: str) -> int:
+        value = int(text)
+        if value < low:
+            raise argparse.ArgumentTypeError(f"must be {low} or more")
+        return value
+
+    return parse
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -365,11 +377,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_rev.set_defaults(func=_cmd("review", _step_review))
 
     p_ev = sub.add_parser("position-evals", help="engine evaluation of each Review position that lacks one")
-    p_ev.add_argument("--limit", dest="evals_limit", type=int, help="at most N positions (default 40; 0 = all)")
+    p_ev.add_argument(
+        "--limit", dest="evals_limit", type=_at_least(0), help="at most N positions (default 40; 0 = all)"
+    )
     p_ev.set_defaults(func=_cmd("position-evals", _step_position_evals))
 
     p_bf = sub.add_parser("backfill-openings", help="opening prefix for stored games that have none (re-fetches)")
-    p_bf.add_argument("--months", type=int, help="how far back (default: review_history_months)")
+    p_bf.add_argument("--months", type=_at_least(1), help="how far back (default: review_history_months)")
     p_bf.set_defaults(func=_cmd("backfill-openings", _step_backfill_openings))
 
     p_corpus = sub.add_parser("import-corpus", help="rebuild the Lichess CC0 corpus sample from the published CSV")

@@ -22,7 +22,8 @@ ALTER TABLE public.chess_games
 UPDATE public.chess_games
    SET opening_moves = jsonb_path_query_array(moves, '$[0 to 29]'),
        opening_keys = public.bq_opening_keys(fen_sequence)
- WHERE moves IS NOT NULL AND fen_sequence IS NOT NULL AND variant IN ('standard');
+ WHERE jsonb_typeof(moves) = 'array' AND moves <> '[]'::jsonb AND fen_sequence IS NOT NULL
+   AND variant IN ('standard');
 
 CREATE INDEX ix_chess_games_opening_keys ON public.chess_games USING gin (opening_keys);
 

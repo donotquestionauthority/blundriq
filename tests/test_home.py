@@ -382,6 +382,12 @@ def test_the_page_shows_the_last_full_run_and_the_hourly_steps_that_failed(db: p
     runs.finish(db, rid, {})
     through = home.page(db, Settings())["pipeline"]["last_ok_at"]
     assert through is not None
+    rid = runs.start(db, "position-evals")  # the step after the chain ran through
+    runs.fail(db, rid, "a board did not rebuild")
+    after = home.page(db, Settings())["pipeline"]
+    assert after["last_ok_at"] == through and [f["step"] for f in after["failed"]] == ["position-evals"]
+    rid = runs.start(db, "position-evals")
+    runs.finish(db, rid, {})
     rid = runs.start(db, "analyze")
     runs.fail(db, rid, "worker exploded")
     rid = runs.start(db, "match")

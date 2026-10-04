@@ -23,6 +23,10 @@ from core.chess.eligibility import analysable_sql
 from core.constants import PLAYER_ID
 from core.settings import Settings
 
+# How many games a board may be rebuilt from before it counts as failed: one game whose stored
+# prefix does not replay must not keep the board unevaluated (and the step failing) for ever.
+EVAL_SOURCES = 3
+
 
 def games_cte() -> str:
     """`games AS (...)`: Rob's analysable games with a prefix inside the history. Binds
@@ -63,9 +67,9 @@ def _params(config: Settings) -> dict[str, Any]:
 def eval_candidates(conn: Connection[Any], config: Settings, limit: int | None) -> tuple[int, list[dict[str, Any]]]:
     """(how many positions still lack an evaluation, the first `limit` of them, or all when
     `limit` is None). A position is a board some colour's games reach at least min_games times;
-    the most-played go first, then the lower key. Each row carries the board's source: the
-    lowest-id game reaching it, that game's first-occurrence ply and its prefix moves, from
-    which `core.review.evals` replays the board."""
+    the most-played go first, then the lower key. Each row carries the board's sources: up to
+    EVAL_SOURCES games reaching it, lowest id first, each with its first-occurrence ply of the
+    board and its prefix moves, from which `core.review.evals` replays the board."""
     query = cast(
         LiteralString,
         f"""
@@ -79,19 +83,22 @@ def eval_candidates(conn: Connection[Any], config: Settings, limit: int | None) 
         pending AS (
             SELECT p.key, p.n FROM positions p
             WHERE NOT EXISTS (SELECT 1 FROM position_evals pe WHERE pe.board_key = p.key)
+        ),
+        chosen AS (SELECT key, n FROM pending ORDER BY n DESC, key LIMIT %(limit)s),
+        src AS (
+            SELECT o.key, o.id, o.ply, row_number() OVER (PARTITION BY o.key ORDER BY o.id) AS rn
+            FROM occ o JOIN chosen c ON c.key = o.key
         )
-        SELECT p.key, p.n, (SELECT count(*) FROM pending) AS pending_total, src.id AS game_id, src.ply,
-               cg.opening_moves
-        FROM pending p
-        CROSS JOIN LATERAL (
-            SELECT o.id, o.ply FROM occ o WHERE o.key = p.key ORDER BY o.id LIMIT 1
-        ) src
-        JOIN chess_games cg ON cg.id = src.id
-        ORDER BY p.n DESC, p.key
-        LIMIT %(limit)s
+        SELECT c.key, c.n, (SELECT count(*) FROM pending) AS pending_total,
+               jsonb_agg(jsonb_build_object('ply', s.ply, 'moves', cg.opening_moves) ORDER BY s.rn) AS sources
+        FROM chosen c
+        JOIN src s ON s.key = c.key AND s.rn <= %(sources)s
+        JOIN chess_games cg ON cg.id = s.id
+        GROUP BY c.key, c.n
+        ORDER BY c.n DESC, c.key
         """,
     )
-    rows = conn.execute(query, {**_params(config), "limit": limit}).fetchall()
+    rows = conn.execute(query, {**_params(config), "limit": limit, "sources": EVAL_SOURCES}).fetchall()
     if not rows:  # LIMIT NULL is no limit, so an empty answer means nothing is pending
         return 0, []
     return int(rows[0]["pending_total"]), [dict(r) for r in rows]
