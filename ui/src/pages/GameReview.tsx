@@ -47,6 +47,32 @@ const select = "rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:b
 /** What the repertoire says at the ply, by status. `none` is a statement, not an empty state. The
  *  swatch appears only beside a `book` arrow that is actually on the board — the panel is that
  *  arrow's only legend outside Learn mode. */
+/** What each arrow on a Review board means, in a fixed order, one entry per colour actually
+ *  drawn: nothing is named that is not on the board. */
+const LEGEND_ORDER = [ARROWS.opponent, ARROWS.played, ARROWS.engine, ARROWS.book] as const;
+function legendLabel(color: string, onMistake: boolean): string {
+  if (color === ARROWS.opponent) return "their last move";
+  if (color === ARROWS.played) return "you played";
+  if (color === ARROWS.engine) return onMistake ? "better" : "best move now";
+  return "your prep";
+}
+
+function ArrowLegend({ arrows, onMistake }: { arrows: BoardArrow[]; onMistake: boolean }) {
+  const drawn = new Set(arrows.map((a) => a.color));
+  const entries = LEGEND_ORDER.filter((c) => drawn.has(c));
+  if (entries.length === 0) return null;
+  return (
+    <p className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs text-zinc-500" data-testid="arrow-legend">
+      {entries.map((c) => (
+        <span key={c} data-legend={c} className="inline-flex items-center gap-1.5">
+          <span aria-hidden className="inline-block h-1.5 w-5 rounded-sm" style={{ backgroundColor: c }} />
+          {legendLabel(c, onMistake)}
+        </span>
+      ))}
+    </p>
+  );
+}
+
 function RepertoirePanel({ entry, bookArrowDrawn }: { entry: RepertoireEntry; bookArrowDrawn: boolean }) {
   const provenance = entry.book && entry.chapter && entry.line_name ? `${entry.book} · ${entry.chapter} · ${entry.line_name}` : null;
   return (
@@ -567,6 +593,7 @@ function ReviewBody(p: {
           engineMove: revealEngineSan,
           bookMove: repEntry?.book_move ?? null,
           gameMove: moves?.[curPly] ?? null,
+          gameMoveFlagged: blunderHere != null,
           opponentMove: curPly > 0 ? (moves?.[curPly - 1] ?? null) : null,
         })
       : null;
@@ -574,7 +601,6 @@ function ReviewBody(p: {
   // The arrows. Before a commit the only arrow is the opponent's last move — it is already
   // visible on the board; every other arrow answers the question being asked.
   let arrows: BoardArrow[];
-  let reviewBestMissed = false;
   if (learnHere) {
     if (!learn.revealed) {
       arrows = [];
@@ -586,13 +612,9 @@ function ReviewBody(p: {
   } else if (cardBlunder) {
     arrows = buildArrows({ fen: cardFen, moves, ply: cardPly, movePlayed: cardBlunder.move_played, bestMove: cardBlunder.best_move });
   } else if (plyAnalysis) {
-    const built = reviewArrowsFromPlyAnalysis({ fenSequence: fenSeq, ply: curPly, plyAnalysis, moves });
-    arrows = built.arrows;
-    reviewBestMissed = built.bestMissed;
+    arrows = reviewArrowsFromPlyAnalysis({ fenSequence: fenSeq, ply: curPly, plyAnalysis });
   } else {
-    const built = reviewArrowsForPly({ fenSequence: fenSeq, ply: curPly, blunderAtPly: blunderHere, blunderAtPrevPly: blunderPrev });
-    arrows = built.arrows;
-    reviewBestMissed = built.bestMissed;
+    arrows = reviewArrowsForPly({ fenSequence: fenSeq, ply: curPly, blunderAtPly: blunderHere });
   }
   // The prep arrow on an ordinary ply: before a commit it is an answer, after one the reveal owns
   // it. Parsed against the board on show, the FEN the entry is keyed to.
@@ -610,13 +632,11 @@ function ReviewBody(p: {
       for (const t of learn.legalTargets) squareStyles[t.to] = { ...squareStyles[t.to], background: t.capture ? HIGHLIGHT.legalRing : HIGHLIGHT.legalDot };
     }
   } else {
-    // On a blunder ply the arrows already mark the last move; elsewhere the squares do, framed
-    // rather than filled when a yellow bestMissed arrow would share the colour.
+    // On a blunder ply the arrows already mark the last move; elsewhere the squares do.
     const last = cardBlunder ? null : spineLastMove(fenSeq, moves, curPly);
     if (last) {
-      const style: CSSProperties = reviewBestMissed ? { boxShadow: HIGHLIGHT.lastMoveFrame } : { backgroundColor: HIGHLIGHT.lastMove };
-      squareStyles[last[0]] = { ...style };
-      squareStyles[last[1]] = { ...style };
+      squareStyles[last[0]] = { backgroundColor: HIGHLIGHT.lastMove };
+      squareStyles[last[1]] = { backgroundColor: HIGHLIGHT.lastMove };
     }
   }
 
@@ -647,7 +667,11 @@ function ReviewBody(p: {
           </div>
         </div>
 
-        <div className="mt-4 flex min-h-[36px] flex-wrap items-center justify-center gap-2 sm:gap-3">
+        {/* Learn has its own legend in its panel. The row keeps its height when empty, so the
+            controls below never jump as the arrows change. */}
+        <div className="mt-2 min-h-[20px]">{!learnHere && <ArrowLegend arrows={arrows} onMistake={cardBlunder != null} />}</div>
+
+        <div className="mt-2 flex min-h-[36px] flex-wrap items-center justify-center gap-2 sm:gap-3">
           <button type="button" className={btn} onClick={() => setPly(0)} disabled={curPly === 0} aria-label="First move">
             ⏮
           </button>

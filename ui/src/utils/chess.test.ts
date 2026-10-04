@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Chess } from "chess.js";
-import { lastMoveSquares, legalMove, mapKey, normalizeSan, parsesAsFen, sanResolvesToMove, sanToSquares, spineLastMove, reviewArrowsFromPlyAnalysis, reviewArrowsForPly, buildLearnRevealArrows, appendBookArrow } from "./chess";
+import { lastMoveSquares, legalMove, mapKey, moveArrows, normalizeSan, parsesAsFen, sanResolvesToMove, sanToSquares, spineLastMove, reviewArrowsFromPlyAnalysis, reviewArrowsForPly, buildLearnRevealArrows, appendBookArrow } from "./chess";
 import { ARROWS } from "./board";
 
 describe("normalizeSan", () => {
@@ -95,46 +95,62 @@ describe("the game review's arrows", () => {
     expect(spineLastMove(null, moves, 1)).toBeNull();
   });
 
-  it("from the per-position analysis: bestHint here, bestMissed one ply after a move that was not the engine's", () => {
+  it("an ordinary review ply draws only the best move in the position shown, for either side's move", () => {
     const pa = fenSequence.map((_, i) => ({ best_move: i === 2 ? "Bb5" : i === 3 ? "Bc5" : null }));
-    const at2 = reviewArrowsFromPlyAnalysis({ fenSequence, ply: 2, plyAnalysis: pa, moves });
-    expect(at2.arrows.map((a) => a.color)).toEqual([ARROWS.bestHint]);
-    expect(at2.bestMissed).toBe(false);
-    const at3 = reviewArrowsFromPlyAnalysis({ fenSequence, ply: 3, plyAnalysis: pa, moves });
-    expect(at3.arrows.map((a) => [a.startSquare, a.endSquare, a.color])).toEqual([
-      ["f8", "c5", ARROWS.bestHint],
-      ["f1", "b5", ARROWS.bestMissed],
-    ]);
-    expect(at3.bestMissed).toBe(true);
-    // The move played was the engine's: no bestMissed, whatever the spelling.
-    const agreed = fenSequence.map((_, i) => ({ best_move: i === 2 ? "Nf3+" : null }));
-    expect(reviewArrowsFromPlyAnalysis({ fenSequence, ply: 3, plyAnalysis: agreed, moves }).bestMissed).toBe(false);
+    expect(reviewArrowsFromPlyAnalysis({ fenSequence, ply: 2, plyAnalysis: pa })).toEqual([{ startSquare: "f1", endSquare: "b5", color: ARROWS.engine }]);
+    // Ply 3 follows 2...Nc6, which was not the engine's Bb5-for-White, and 3 follows a move that was
+    // not best: still one arrow, the best move here, never the move missed on the ply before.
+    expect(reviewArrowsFromPlyAnalysis({ fenSequence, ply: 3, plyAnalysis: pa })).toEqual([{ startSquare: "f8", endSquare: "c5", color: ARROWS.engine }]);
+    expect(reviewArrowsFromPlyAnalysis({ fenSequence, ply: 1, plyAnalysis: pa })).toEqual([]);
   });
 
-  it("from blunder rows alone, the same shape", () => {
-    const r = reviewArrowsForPly({ fenSequence, ply: 3, blunderAtPly: null, blunderAtPrevPly: { best_move: "Bb5", move_played: "Nf3" } });
-    expect(r.arrows.map((a) => a.color)).toEqual([ARROWS.bestMissed]);
-    expect(r.bestMissed).toBe(true);
-    expect(reviewArrowsForPly({ fenSequence, ply: 2, blunderAtPly: { best_move: "Bb5" } }).arrows.map((a) => a.color)).toEqual([ARROWS.bestHint]);
+  it("from blunder rows alone, the same single arrow", () => {
+    expect(reviewArrowsForPly({ fenSequence, ply: 3, blunderAtPly: null })).toEqual([]);
+    expect(reviewArrowsForPly({ fenSequence, ply: 2, blunderAtPly: { best_move: "Bb5" } }).map((a) => a.color)).toEqual([ARROWS.engine]);
   });
 
-  it("the Learn reveal draws one arrow per from/to pair and legends every meaning, in precedence order", () => {
-    const r = buildLearnRevealArrows({ fen: fenSequence[2], prevFen: fenSequence[1], committedMove: "Bc4", engineMove: "Bb5", bookMove: "Bc4", gameMove: "Nf3", opponentMove: "e5" });
+  it("the Learn reveal draws one arrow per from/to pair and legends every meaning, in row order", () => {
+    const r = buildLearnRevealArrows({ fen: fenSequence[2], prevFen: fenSequence[1], committedMove: "Bc4", engineMove: "Bb5", bookMove: "Bc4", gameMove: "Nf3", gameMoveFlagged: true, opponentMove: "e5" });
     expect(r.arrows).toHaveLength(4);
     expect(r.rows.map((x) => [x.label, x.move, x.color])).toEqual([
-      ["You played · Your prep plays", "Bc4", ARROWS.committed],
+      // The answer was the prep move: it is drawn in the prep colour, labelled as the answer first.
+      ["You played · Your prep plays", "Bc4", ARROWS.book],
       ["Stockfish plays", "Bb5", ARROWS.engine],
       ["You played in the game", "Nf3", ARROWS.played],
       ["Opponent's last move", "e5", ARROWS.opponent],
     ]);
+    expect(r.arrows.map((a) => a.color)).toEqual([ARROWS.book, ARROWS.engine, ARROWS.played, ARROWS.opponent]);
     // A slot that is not legal here, or absent, draws nothing; the promotion piece rides in the SAN.
-    expect(buildLearnRevealArrows({ fen: fenSequence[2], committedMove: "O-O", engineMove: "--" }).rows).toEqual([]);
+    expect(buildLearnRevealArrows({ fen: fenSequence[2], committedMove: "O-O", engineMove: "--", gameMoveFlagged: true }).rows).toEqual([]);
     expect(r.rows.every((x) => x.drawn)).toBe(true);
+  });
+
+  it("an answer takes the colour of what it matched, and is ungraded blue only when it matches nothing", () => {
+    const base = { fen: fenSequence[2], prevFen: fenSequence[1], engineMove: "Bb5", bookMove: "Bc4", gameMove: "Nf3", gameMoveFlagged: true, opponentMove: "e5" };
+    const answer = (committedMove: string) => buildLearnRevealArrows({ ...base, committedMove }).rows.find((x) => x.slots.includes("committed"))!;
+    expect([answer("Bb5").label, answer("Bb5").color]).toEqual(["You played · Stockfish plays", ARROWS.engine]);
+    expect([answer("Bc4").label, answer("Bc4").color]).toEqual(["You played · Your prep plays", ARROWS.book]);
+    expect([answer("Nf3").label, answer("Nf3").color]).toEqual(["You played · You played in the game", ARROWS.played]);
+    expect([answer("d4").label, answer("d4").color]).toEqual(["You played", ARROWS.committed]);
+    // The engine's colour wins over the prep's when the answer is both.
+    const both = buildLearnRevealArrows({ ...base, bookMove: "Bb5", committedMove: "Bb5" });
+    expect(both.rows[0].color).toBe(ARROWS.engine);
+    expect(both.arrows.find((a) => a.endSquare === "b5")!.color).toBe(ARROWS.engine);
+  });
+
+  it("the game move is red at a flagged ply and faded red at one that lost less than an inaccuracy", () => {
+    const base = { fen: fenSequence[2], prevFen: fenSequence[1], engineMove: "Bb5", gameMove: "Nf3", committedMove: "d4" };
+    const game = (flagged: boolean) => buildLearnRevealArrows({ ...base, gameMoveFlagged: flagged }).rows.find((x) => x.slots.includes("played"))!.color;
+    expect(game(true)).toBe(ARROWS.played);
+    expect(game(false)).toBe(`${ARROWS.played}66`);
+    // An answer that repeats an unflagged game move takes that faded colour too.
+    const repeat = buildLearnRevealArrows({ ...base, committedMove: "Nf3", gameMoveFlagged: false });
+    expect(repeat.arrows.map((a) => a.color)).toContain(`${ARROWS.played}66`);
   });
 
   it("the reveal merges labels only for the same move: another promotion piece is its own row, undrawn", () => {
     const fen = "8/1P6/8/k7/8/8/8/7K w - - 0 1";
-    const r = buildLearnRevealArrows({ fen, committedMove: "b8=N", engineMove: "b8=Q", gameMove: "b8=Q" });
+    const r = buildLearnRevealArrows({ fen, committedMove: "b8=N", engineMove: "b8=Q", gameMove: "b8=Q", gameMoveFlagged: true });
     expect(r.arrows).toHaveLength(1);
     expect(r.arrows[0].color).toBe(ARROWS.committed);
     expect(r.rows.map((x) => [x.label, x.move, x.drawn])).toEqual([
@@ -142,7 +158,7 @@ describe("the game review's arrows", () => {
       ["Stockfish plays · You played in the game", "b8=Q", false],
     ]);
     // The same piece spelled two ways is one move, one row.
-    const same = buildLearnRevealArrows({ fen, committedMove: "b8Q", engineMove: "b8=Q" });
+    const same = buildLearnRevealArrows({ fen, committedMove: "b8Q", engineMove: "b8=Q", gameMoveFlagged: true });
     expect(same.rows).toHaveLength(1);
     expect(same.rows[0].label).toBe("You played · Stockfish plays");
   });
@@ -155,5 +171,21 @@ describe("the game review's arrows", () => {
     expect(added.arrows.map((a) => a.color)).toEqual([ARROWS.engine, ARROWS.book]);
     expect(appendBookArrow(base, fenSequence[2], null)).toEqual({ arrows: base, drew: false });
     expect(appendBookArrow(base, fenSequence[2], "O-O").drew).toBe(false);
+  });
+});
+
+describe("moveArrows", () => {
+  const start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+  it("draws several prep moves in the one book colour, a step quieter each, and a move out of play faded", () => {
+    const arrows = moveArrows(start, [
+      { move: "e4", inPlay: true },
+      { move: "d4", inPlay: true },
+      { move: "c4", inPlay: true },
+      { move: "Nf3", inPlay: true },
+      { move: "g3", inPlay: false },
+    ]);
+    expect(arrows.map((a) => a.color)).toEqual([`${ARROWS.book}ff`, `${ARROWS.book}cc`, `${ARROWS.book}a8`, `${ARROWS.book}a8`, `${ARROWS.book}66`]);
+    // A named colour is kept, and faded when out of play.
+    expect(moveArrows(start, [{ move: "e4", inPlay: true, color: ARROWS.played }, { move: "d4", inPlay: false, color: ARROWS.played }]).map((a) => a.color)).toEqual([ARROWS.played, `${ARROWS.played}66`]);
   });
 });

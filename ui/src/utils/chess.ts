@@ -1,6 +1,6 @@
 import { Chess } from "chess.js";
 import type { Move } from "chess.js";
-import { ARROWS } from "./board";
+import { ARROWS, faded } from "./board";
 
 /**
  * Normalize a SAN token for equivalence comparison. Mirrors the Python normalize_san; the two
@@ -143,7 +143,7 @@ export function buildArrows(p: { fen: string; moves?: string[] | null; ply?: num
 }
 
 /** A decision node's arrows: one per opponent reply, its opacity scaled by how often they chose
- *  it, under a blue arrow for the move that led here when the coverage agrees on one. A reply that
+ *  it, under an opponent arrow for the move that led here when the coverage agrees on one. A reply that
  *  is not legal on the board draws nothing. */
 export function decisionNodeArrows(p: { fen: string; replies: { move: string; cnt: number }[] | null | undefined; leadIn?: string | null; leadPreFen?: string | null }): BoardArrow[] {
   const arrows: BoardArrow[] = [];
@@ -247,17 +247,21 @@ export function numbered(moves: string[]): string {
   return moves.map((m, i) => (i % 2 === 0 ? `${i / 2 + 1}.${m}` : m)).join(" ") || "—";
 }
 
-/** One colour per distinct move, in a fixed order, so the same board reads the same twice. */
-const MOVE_COLOURS = [ARROWS.book, ARROWS.engine, ARROWS.played, ARROWS.opponent];
+/** The strength of the i-th prescribed move in the book colour: full, then a step quieter per
+ *  move, never as quiet as a move that is not in play. */
+const MOVE_STRENGTHS = [0xff, 0xcc, 0xa8];
 
-/** Arrows for the moves prescribed at `fen`, in the order given, each in its own colour unless
- *  one is named; a move that is not in play is drawn faded. A move that is not legal on the
- *  board draws nothing. */
+/** Arrows for the moves prescribed at `fen`, in the order given: each in the colour it names, or
+ *  else in the book colour at decreasing strength (they are all prep moves, so none borrows
+ *  another meaning's colour). A move that is not in play is drawn faded. A move that is not legal
+ *  on the board draws nothing. */
 export function moveArrows(fen: string, moves: { move: string; inPlay: boolean; color?: string }[]): BoardArrow[] {
   const out: BoardArrow[] = [];
   moves.forEach((m, i) => {
     const sq = sanToSquares(fen, m.move);
-    if (sq) out.push({ startSquare: sq[0], endSquare: sq[1], color: `${m.color ?? MOVE_COLOURS[i % MOVE_COLOURS.length]}${m.inPlay ? "" : "66"}` });
+    if (!sq) return;
+    const color = !m.inPlay ? faded(m.color ?? ARROWS.book) : (m.color ?? faded(ARROWS.book, MOVE_STRENGTHS[Math.min(i, MOVE_STRENGTHS.length - 1)]));
+    out.push({ startSquare: sq[0], endSquare: sq[1], color });
   });
   return out;
 }
@@ -279,61 +283,24 @@ export function spineLastMove(fenSequence: string[] | null | undefined, moves: s
   return before && san ? sanToSquares(before, san) : null;
 }
 
-export interface ReviewArrows {
-  arrows: BoardArrow[];
-  /** True iff a `bestMissed` arrow was drawn — the played-move squares then take the frame, not
-   *  the yellow fill. Returned by the builder rather than inferred from arrow colours. */
-  bestMissed: boolean;
-}
-
 /**
- * The game review's arrows on an ordinary ply, from the stored per-position analysis: a sky-blue
- * `bestHint` for the engine's move in the position shown, and one ply after a decision that was
- * not the engine's, a yellow `bestMissed` re-drawing the missed move from the prior position's
- * squares. `plyAnalysis` is one entry per position, so it indexes by ply.
+ * The game review's arrow on an ordinary ply, from the stored per-position analysis: the engine's
+ * best move in the position shown. `plyAnalysis` is one entry per position, so it indexes by ply.
+ * (A mistake of the player's is drawn by the blunder card, on the board before the move.)
  */
-export function reviewArrowsFromPlyAnalysis(p: { fenSequence: string[]; ply: number; plyAnalysis: { best_move?: string | null }[]; moves: string[] | null }): ReviewArrows {
-  const arrows: BoardArrow[] = [];
-  let bestMissed = false;
+export function reviewArrowsFromPlyAnalysis(p: { fenSequence: string[]; ply: number; plyAnalysis: { best_move?: string | null }[] }): BoardArrow[] {
   const here = p.plyAnalysis[p.ply];
-  if (here?.best_move && p.fenSequence[p.ply]) {
-    const sq = sanToSquares(p.fenSequence[p.ply], here.best_move);
-    if (sq) arrows.push({ startSquare: sq[0], endSquare: sq[1], color: ARROWS.bestHint });
-  }
-  if (p.ply >= 1 && p.fenSequence[p.ply - 1]) {
-    const prev = p.plyAnalysis[p.ply - 1];
-    const played = p.moves ? p.moves[p.ply - 1] : null;
-    if (prev?.best_move && (!played || !sansEquivalent(played, prev.best_move))) {
-      const sq = sanToSquares(p.fenSequence[p.ply - 1], prev.best_move);
-      if (sq) {
-        arrows.push({ startSquare: sq[0], endSquare: sq[1], color: ARROWS.bestMissed });
-        bestMissed = true;
-      }
-    }
-  }
-  return { arrows, bestMissed };
+  const sq = here?.best_move && p.fenSequence[p.ply] ? sanToSquares(p.fenSequence[p.ply], here.best_move) : null;
+  return sq ? [{ startSquare: sq[0], endSquare: sq[1], color: ARROWS.engine }] : [];
 }
 
-/** The same two arrows from blunder rows alone, for a game with no stored per-position series. */
-export function reviewArrowsForPly(p: { fenSequence: string[]; ply: number; blunderAtPly?: { best_move?: string | null } | null; blunderAtPrevPly?: { best_move?: string | null; move_played?: string | null } | null }): ReviewArrows {
-  const arrows: BoardArrow[] = [];
-  let bestMissed = false;
-  if (p.blunderAtPly?.best_move && p.fenSequence[p.ply]) {
-    const sq = sanToSquares(p.fenSequence[p.ply], p.blunderAtPly.best_move);
-    if (sq) arrows.push({ startSquare: sq[0], endSquare: sq[1], color: ARROWS.bestHint });
-  }
-  const prev = p.blunderAtPrevPly;
-  if (prev?.best_move && p.ply >= 1 && p.fenSequence[p.ply - 1] && (!prev.move_played || !sansEquivalent(prev.move_played, prev.best_move))) {
-    const sq = sanToSquares(p.fenSequence[p.ply - 1], prev.best_move);
-    if (sq) {
-      arrows.push({ startSquare: sq[0], endSquare: sq[1], color: ARROWS.bestMissed });
-      bestMissed = true;
-    }
-  }
-  return { arrows, bestMissed };
+/** The same arrow from blunder rows alone, for a game with no stored per-position series. */
+export function reviewArrowsForPly(p: { fenSequence: string[]; ply: number; blunderAtPly?: { best_move?: string | null } | null }): BoardArrow[] {
+  const sq = p.blunderAtPly?.best_move && p.fenSequence[p.ply] ? sanToSquares(p.fenSequence[p.ply], p.blunderAtPly.best_move) : null;
+  return sq ? [{ startSquare: sq[0], endSquare: sq[1], color: ARROWS.engine }] : [];
 }
 
-/** The five meanings of a Learn reveal, in row order — which is also the merge precedence. */
+/** The five meanings of a Learn reveal, in row order (which also orders a merged row's label). */
 export type RevealSlot = "committed" | "engine" | "book" | "played" | "opponent";
 
 export const REVEAL_SLOT_LABEL: Record<RevealSlot, string> = {
@@ -346,6 +313,10 @@ export const REVEAL_SLOT_LABEL: Record<RevealSlot, string> = {
 
 const REVEAL_SLOT_COLOR: Record<RevealSlot, string> = { committed: ARROWS.committed, engine: ARROWS.engine, book: ARROWS.book, played: ARROWS.played, opponent: ARROWS.opponent };
 const REVEAL_SLOT_ORDER: RevealSlot[] = ["committed", "engine", "book", "played", "opponent"];
+/** Which meaning colours an arrow that carries several. Learn runs no engine on the answer, so an
+ *  answer is coloured by what it turned out to be (the engine's move, the prep move, the game
+ *  move) and keeps its own, ungraded colour only when it matches none of them. */
+const REVEAL_COLOR_PRECEDENCE: RevealSlot[] = ["engine", "book", "played", "committed", "opponent"];
 
 export interface RevealRow {
   slots: RevealSlot[];
@@ -370,15 +341,17 @@ export interface RevealArrows {
  * The Learn reveal: at most one arrow per from/to pair, and a legend row per arrow naming every
  * meaning it carries. Collisions are the common case (the committed move is the game's, or the
  * engine's, or the book's), and react-chessboard keys arrows by their squares, so two slots on
- * one pair would render as one arrow in whichever colour won: the first slot in row order keeps
- * the colour and leads the label. Labels merge only when the moves agree: a promotion to another
+ * one pair would render as one arrow in whichever colour won: the first slot in row order leads
+ * the label, and the colour is the first of the row's slots in REVEAL_COLOR_PRECEDENCE. The game
+ * move is red when that ply was a flagged mistake and faded red otherwise (it lost less than an
+ * inaccuracy). Labels merge only when the moves agree: a promotion to another
  * piece shares the squares but is a different move, so it gets its own row, undrawn. The
  * opponent's move resolves against `prevFen`, every other slot against `fen`. A slot with no SAN,
  * or one that is not legal in its position, is skipped.
  */
-export function buildLearnRevealArrows(p: { fen: string; prevFen?: string | null; committedMove?: string | null; engineMove?: string | null; bookMove?: string | null; gameMove?: string | null; opponentMove?: string | null }): RevealArrows {
+export function buildLearnRevealArrows(p: { fen: string; prevFen?: string | null; committedMove?: string | null; engineMove?: string | null; bookMove?: string | null; gameMove?: string | null; gameMoveFlagged: boolean; opponentMove?: string | null }): RevealArrows {
   const san: Record<RevealSlot, string | null | undefined> = { committed: p.committedMove, engine: p.engineMove, book: p.bookMove, played: p.gameMove, opponent: p.opponentMove };
-  const arrows: BoardArrow[] = [];
+  const slotColor = (slot: RevealSlot) => (slot === "played" && !p.gameMoveFlagged ? faded(ARROWS.played) : REVEAL_SLOT_COLOR[slot]);
   const rows: RevealRow[] = [];
   const byMove = new Map<string, RevealRow>();
   const drawnPairs = new Set<string>();
@@ -395,17 +368,16 @@ export function buildLearnRevealArrows(p: { fen: string; prevFen?: string | null
     if (existing) {
       existing.slots.push(slot);
       existing.label = existing.slots.map((s) => REVEAL_SLOT_LABEL[s]).join(" · ");
+      existing.color = slotColor(REVEAL_COLOR_PRECEDENCE.find((s) => existing.slots.includes(s))!);
       continue;
     }
     const drawn = !drawnPairs.has(pair);
-    const row: RevealRow = { slots: [slot], label: REVEAL_SLOT_LABEL[slot], move, from: resolved.from, to: resolved.to, color: REVEAL_SLOT_COLOR[slot], drawn };
+    if (drawn) drawnPairs.add(pair);
+    const row: RevealRow = { slots: [slot], label: REVEAL_SLOT_LABEL[slot], move, from: resolved.from, to: resolved.to, color: slotColor(slot), drawn };
     byMove.set(key, row);
     rows.push(row);
-    if (drawn) {
-      drawnPairs.add(pair);
-      arrows.push({ startSquare: resolved.from, endSquare: resolved.to, color: row.color });
-    }
   }
+  const arrows: BoardArrow[] = rows.filter((r) => r.drawn).map((r) => ({ startSquare: r.from, endSquare: r.to, color: r.color }));
   return { arrows, rows };
 }
 

@@ -4,7 +4,7 @@ import { ARROWS } from "./utils/board";
 import { sanToSquares } from "./utils/chess";
 import type { BoardArrow } from "./utils/chess";
 
-/** A neighbour's arrows: one blue per distinct arriving (from, to), one orange per book move. */
+/** A neighbour's arrows: one opponent arrow per distinct arriving (from, to), one book arrow per book move. */
 export function neighbourArrows(n: SimilarNeighbour): BoardArrow[] {
   const arrows: BoardArrow[] = [];
   const seen = new Set<string>();
@@ -22,14 +22,14 @@ export function neighbourArrows(n: SimilarNeighbour): BoardArrow[] {
   return arrows;
 }
 
-/** A branch's arrows: blue for the opponent's move always; orange for the repertoire's reply (the
- *  repertoire is the only source of orange); for a blunder-only branch the move played in vermilion
- *  and the engine's best in green; a scout best move in green when it is the only source. */
+/** A branch's arrows: the opponent's move always; the repertoire's reply in the book colour (the
+ *  repertoire is its only source); for a blunder-only branch the move played and the engine's best;
+ *  a scout best move in the engine colour when it is the only source. */
 export function branchArrows(b: CompareBranch): BoardArrow[] {
   const arrows: BoardArrow[] = [{ startSquare: b.opponent_move.from, endSquare: b.opponent_move.to, color: ARROWS.opponent }];
   const rep = b.sources.repertoire;
   if (rep?.reply_squares) arrows.push({ startSquare: rep.reply_squares.from, endSquare: rep.reply_squares.to, color: ARROWS.book });
-  const blu = b.sources.blunders; // null whenever rep is set: never beside orange
+  const blu = b.sources.blunders; // null whenever rep is set: never beside the book arrow
   if (blu) {
     arrows.push({ startSquare: blu.worst.move_played_squares.from, endSquare: blu.worst.move_played_squares.to, color: ARROWS.played });
     if (blu.worst.best_move_squares) arrows.push({ startSquare: blu.worst.best_move_squares.from, endSquare: blu.worst.best_move_squares.to, color: ARROWS.engine });

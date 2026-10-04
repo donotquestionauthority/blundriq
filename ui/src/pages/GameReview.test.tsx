@@ -750,6 +750,37 @@ describe("the prep arrow and panel in Review mode", () => {
   });
 });
 
+describe("the arrow legend under a Review board", () => {
+  beforeEach(() => getReviewPrefs.mockResolvedValue({ review_default_mode: "review", review_show_timer: true }));
+  const legend = () => Array.from(screen.queryByTestId("arrow-legend")?.querySelectorAll("[data-legend]") ?? []).map((el) => [el.getAttribute("data-legend"), (el.textContent ?? "").trim(), ((el.querySelector("span[aria-hidden]") as HTMLElement | null)?.style.backgroundColor ?? "")]);
+  const rgb = (hex: string) => `rgb(${parseInt(hex.slice(1, 3), 16)}, ${parseInt(hex.slice(3, 5), 16)}, ${parseInt(hex.slice(5, 7), 16)})`;
+  const entry = (color: string, label: string) => [color, label, rgb(color)];
+
+  it("names each drawn arrow with its swatch, and only the drawn ones", async () => {
+    // Ply 2: an ordinary ply with a book move: the best move now and the prep.
+    await renderReview(2);
+    expect(legend()).toEqual([entry(ARROWS.engine, "best move now"), entry(ARROWS.book, "your prep")]);
+    for (const [color] of legend()) expect(arrowColors()).toContain(color);
+    cleanup();
+    // Ply 3: the mistake made at ply 2, on the board before it.
+    await renderReview(3);
+    expect(screen.getByTestId("blunder-card")).toBeInTheDocument();
+    expect(legend().slice(0, 3)).toEqual([entry(ARROWS.opponent, "their last move"), entry(ARROWS.played, "you played"), entry(ARROWS.engine, "better")]);
+    for (const [color] of legend()) expect(arrowColors()).toContain(color);
+    expect(new Set(legend().map(([c]) => c))).toEqual(new Set(arrowColors()));
+  });
+
+  it("no arrows, no legend", async () => {
+    const p = reviewPayload();
+    p.game.ply_analysis = p.game.ply_analysis!.map((x) => ({ ...x, best_move: null }));
+    p.repertoire = null;
+    getGameReview.mockResolvedValue(p);
+    await renderReview(2);
+    expect(arrowColors()).toEqual([]);
+    expect(screen.queryByTestId("arrow-legend")).toBeNull();
+  });
+});
+
 describe("stepping, Explore and the exits", () => {
   beforeEach(() => getReviewPrefs.mockResolvedValue({ review_default_mode: "review", review_show_timer: true }));
   it("stepping past the decision reviews the move just played, inaccuracies+ sits on the decision, and the URL carries the ply", async () => {
@@ -759,7 +790,7 @@ describe("stepping, Explore and the exits", () => {
     await act(async () => fireEvent.keyDown(window, { key: "ArrowLeft" }));
     expect(bodyText()).toContain("move 2 / 4");
     expect(screen.queryByTestId("blunder-card")).toBeNull(); // with the skip off, ply 2 reviews ply 1's move: none
-    expect(arrowColors()).toContain(ARROWS.bestHint);
+    expect(arrowColors()).toContain(ARROWS.engine);
     await act(async () => fireEvent.keyDown(window, { key: "ArrowLeft" }));
     expect(bodyText()).toContain("move 1 / 4");
     fireEvent.click(screen.getByLabelText("Step only through inaccuracies+"));

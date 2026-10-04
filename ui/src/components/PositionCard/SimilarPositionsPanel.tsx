@@ -148,7 +148,7 @@ export function SimilarPositionsPanel({
                       <div className="mt-2 space-y-2">
                         <NeighbourBoard n={n} orientation={orientation} />
                         <p className="text-xs text-zinc-500">
-                          Highlighted squares differ from the position above; blue is how the line got here{n.groups.some((g) => g.prep_status === "move") && ", orange your book move"}.{n.castling_delta.length > 0 && <> Castling rights differ: {n.castling_delta.join(", ")}.</>}
+                          Highlighted squares differ from the position above; grey is how the line got here{n.groups.some((g) => g.prep_status === "move") && ", purple your book move"}.{n.castling_delta.length > 0 && <> Castling rights differ: {n.castling_delta.join(", ")}.</>}
                         </p>
                       </div>
                     )}
