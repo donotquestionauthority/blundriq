@@ -559,9 +559,24 @@ function Where() {
   return <output data-testid="where">{location.pathname + location.search}</output>;
 }
 
-const renderApp = (entry: string | { pathname: string; search?: string; state?: unknown } = "/review") =>
-  render(
-    <MemoryRouter initialEntries={[entry]}>
+/** The browser's Back and the top bar's link, beside the worklist (the page stays mounted). */
+function Chrome() {
+  const navigate = useNavigate();
+  return (
+    <>
+      <button type="button" onClick={() => navigate(-1)}>
+        page back
+      </button>
+      <Link to="/review">page top bar</Link>
+    </>
+  );
+}
+
+type Entry = string | { pathname: string; search?: string; state?: unknown };
+const renderApp = (entry: Entry | Entry[] = "/review") => {
+  const entries = Array.isArray(entry) ? entry : [entry];
+  return render(
+    <MemoryRouter initialEntries={entries} initialIndex={entries.length - 1}>
       <Routes>
         <Route
           path="/review"
@@ -569,14 +584,19 @@ const renderApp = (entry: string | { pathname: string; search?: string; state?: 
             <>
               <Review />
               <Where />
+              <Chrome />
             </>
           }
         />
         <Route path="/review/:gameId" element={<GameStub />} />
+        <Route path="/elsewhere" element={<p>elsewhere</p>} />
       </Routes>
     </MemoryRouter>,
   );
+};
 const where = () => screen.getByTestId("where").textContent;
+
+const ENDGAME_POOL = "v1:route:endgame_technique";
 
 describe("Review keeps its settings in the URL", () => {
   it("a setting change writes the URL, defaults left out, and replaces rather than adding a Back step", async () => {
@@ -590,6 +610,75 @@ describe("Review keeps its settings in the URL", () => {
     await waitFor(() => expect(where()).toBe("/review?tc=all&scope=all&group=position"));
     fireEvent.change(combo("Time class"), { target: { value: "focus" } });
     await waitFor(() => expect(where()).toBe("/review?scope=all&group=position"));
+  });
+
+  it("no setting change or toggle adds a Back step", async () => {
+    renderApp(["/elsewhere", "/review"]);
+    await screen.findByText("Opening problems");
+    fireEvent.change(combo("Time class"), { target: { value: "all" } });
+    fireEvent.click(screen.getByRole("tab", { name: "All" }));
+    fireEvent.click(await screen.findByText("Scandinavian"));
+    fireEvent.click(await screen.findByText("Main Line"));
+    await screen.findByText("magnus_wannabe");
+    fireEvent.click(screen.getByRole("button", { name: "page back" }));
+    expect(await screen.findByText("elsewhere")).toBeInTheDocument();
+  });
+
+  it("an unknown time class, even an object property's name, is the default", async () => {
+    renderApp("/review?tc=constructor");
+    await screen.findByText("Opening problems");
+    expect(lastPageCall()).toEqual(["focus", "__all__", "variation"]);
+  });
+
+  it("Back between two worklist entries while the page stays mounted restores each one", async () => {
+    renderApp();
+    await screen.findByText("Opening problems");
+    fireEvent.click(screen.getByRole("tab", { name: "All" }));
+    fireEvent.click(await screen.findByText("Scandinavian"));
+    fireEvent.click(await screen.findByText("Main Line"));
+    await screen.findByText("magnus_wannabe");
+    expect(getPoolEvents).toHaveBeenCalledTimes(1);
+    // The top bar: a new entry, the default view, collapsed, on the same mounted page.
+    fireEvent.click(screen.getByRole("link", { name: "page top bar" }));
+    await waitFor(() => expect(where()).toBe("/review"));
+    expect(screen.getByRole("tab", { name: "To review" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByText("Main Line")).toBeNull();
+    // Back: the earlier entry's settings and expansion, its rows fetched again for this view.
+    fireEvent.click(screen.getByRole("button", { name: "page back" }));
+    await waitFor(() => expect(where()).toBe("/review?scope=all"));
+    expect(await screen.findByText("magnus_wannabe")).toBeInTheDocument();
+    expect(getPoolEvents).toHaveBeenCalledTimes(2);
+    expect(getPoolEvents).toHaveBeenLastCalledWith(SUB, "focus", "__all__", "all", 1);
+  });
+
+  it("a notice from a recovery does not outlive a settings change made elsewhere", async () => {
+    getReviewPage.mockImplementation((_t: string, opening: string) => (opening === "Scandinavian" ? Promise.reject(new ApiError(422, "unknown opening key: 'Scandinavian'")) : Promise.resolve(page())));
+    renderApp("/review?opening=Scandinavian&tc=all");
+    await screen.findByText(/no longer has review games/);
+    fireEvent.click(screen.getByRole("link", { name: "page top bar" }));
+    await waitFor(() => expect(where()).toBe("/review"));
+    await waitFor(() => expect(screen.queryByText(/no longer has review games/)).toBeNull());
+  });
+
+  it("an open single-pool section comes back open with its games after a game", async () => {
+    renderApp();
+    fireEvent.click(await screen.findByRole("heading", { name: "Endgame technique" }));
+    await waitFor(() => expect(getPoolEvents).toHaveBeenCalledWith(ENDGAME_POOL, "focus", "__all__", "to_review", 1));
+    fireEvent.click((await screen.findAllByRole("link", { name: "Review →" }))[0]);
+    fireEvent.click(await screen.findByRole("button", { name: "close" }));
+    await screen.findByText("Opening problems");
+    expect(await screen.findByText("magnus_wannabe")).toBeInTheDocument();
+    expect(getPoolEvents.mock.calls.filter((c) => c[0] === ENDGAME_POOL)).toHaveLength(2);
+  });
+
+  it("an open subgroup inside a closed family waits for the family before its rows are fetched", async () => {
+    const open = { cats: ["opening"], nodes: [SUB], key: "focus|to_review|__all__|variation" };
+    renderApp({ pathname: "/review", search: "", state: { open } });
+    await screen.findByText("Scandinavian");
+    expect(getPoolEvents).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("Scandinavian"));
+    expect(await screen.findByText("magnus_wannabe")).toBeInTheDocument();
+    expect(getPoolEvents).toHaveBeenCalledTimes(1);
   });
 
   it("opens at the URL's settings, and reads a value it does not know as the default", async () => {

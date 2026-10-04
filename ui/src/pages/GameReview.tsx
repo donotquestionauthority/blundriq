@@ -45,20 +45,21 @@ const select = "rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:b
 
 // --- the repertoire panel ---------------------------------------------------------------------------
 
-/** What the repertoire says at the ply, by status. `none` is a statement, not an empty state. The
- *  swatch appears only beside a `book` arrow that is actually on the board — the panel is that
- *  arrow's only legend outside Learn mode. */
 /** What each arrow on a Review board means, in a fixed order, one entry per colour actually
- *  drawn: nothing is named that is not on the board. */
+ *  drawn: nothing is named that is not on the board. On a mistake reviewed after it was played
+ *  (stepping one ply at a time) the board shows the player's move, so the opponent arrow is the
+ *  move before it, not the last one. */
 const LEGEND_ORDER = [ARROWS.opponent, ARROWS.played, ARROWS.engine, ARROWS.book] as const;
-function legendLabel(color: string, onMistake: boolean): string {
-  if (color === ARROWS.opponent) return "their last move";
+type LegendPly = "ordinary" | "mistake-before" | "mistake-after";
+function legendLabel(color: string, ply: LegendPly): string {
+  const onMistake = ply !== "ordinary";
+  if (color === ARROWS.opponent) return ply === "mistake-after" ? "their move before yours" : "their last move";
   if (color === ARROWS.played) return "you played";
   if (color === ARROWS.engine) return onMistake ? "better" : "best move now";
   return "your prep";
 }
 
-function ArrowLegend({ arrows, onMistake }: { arrows: BoardArrow[]; onMistake: boolean }) {
+function ArrowLegend({ arrows, ply }: { arrows: BoardArrow[]; ply: LegendPly }) {
   const drawn = new Set(arrows.map((a) => a.color));
   const entries = LEGEND_ORDER.filter((c) => drawn.has(c));
   if (entries.length === 0) return null;
@@ -67,13 +68,15 @@ function ArrowLegend({ arrows, onMistake }: { arrows: BoardArrow[]; onMistake: b
       {entries.map((c) => (
         <span key={c} data-legend={c} className="inline-flex items-center gap-1.5">
           <span aria-hidden className="inline-block h-1.5 w-5 rounded-sm" style={{ backgroundColor: c }} />
-          {legendLabel(c, onMistake)}
+          {legendLabel(c, ply)}
         </span>
       ))}
     </p>
   );
 }
 
+/** What the repertoire says at the ply, by status. `none` is a statement, not an empty state. The
+ *  swatch appears only beside a `book` arrow that is actually on the board. */
 function RepertoirePanel({ entry, bookArrowDrawn }: { entry: RepertoireEntry; bookArrowDrawn: boolean }) {
   const provenance = entry.book && entry.chapter && entry.line_name ? `${entry.book} · ${entry.chapter} · ${entry.line_name}` : null;
   return (
@@ -184,7 +187,6 @@ function LearnPanel({ learn, reveal, engineAvailable, promptInFlow }: { learn: L
 }
 
 // --- the page -------------------------------------------------------------------------------------
-
 
 export default function GameReview() {
   const { gameId } = useParams<{ gameId: string }>();
@@ -667,7 +669,7 @@ function ReviewBody(p: {
 
         {/* Learn has its own legend in its panel. The row keeps its height when empty, so the
             controls below never jump as the arrows change. */}
-        <div className="mt-2 min-h-[20px]">{!learnHere && <ArrowLegend arrows={arrows} onMistake={cardBlunder != null} />}</div>
+        <div className="mt-2 min-h-[20px]">{!learnHere && <ArrowLegend arrows={arrows} ply={!cardBlunder ? "ordinary" : onDecision ? "mistake-before" : "mistake-after"} />}</div>
 
         <div className="mt-2 flex min-h-[36px] flex-wrap items-center justify-center gap-2 sm:gap-3">
           <button type="button" className={btn} onClick={() => setPly(0)} disabled={curPly === 0} aria-label="First move">

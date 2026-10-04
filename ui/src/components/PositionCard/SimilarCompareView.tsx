@@ -93,7 +93,7 @@ export function SimilarCompareView({
             <div className="w-44 shrink-0 lg:w-full" data-testid="pinned-board">
               <Chessboard options={{ id: boardId, position: fen, allowDragging: false, boardStyle: { borderRadius: "6px" }, ...SQUARES, boardOrientation: orientation, arrows: mainArrows }} />
             </div>
-            <p className="text-xs text-zinc-500 lg:mt-2">Your position. Each similar position highlights the squares that differ, shows how its line got there in blue, and your book move there in orange.</p>
+            <p className="text-xs text-zinc-500 lg:mt-2">Your position. Each similar position highlights the squares that differ, shows how its line got there in grey, and your book move there in purple.</p>
           </div>
         </div>
 

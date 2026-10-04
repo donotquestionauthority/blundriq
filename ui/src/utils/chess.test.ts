@@ -132,6 +132,10 @@ describe("the game review's arrows", () => {
     expect([answer("Bc4").label, answer("Bc4").color]).toEqual(["You played · Your prep plays", ARROWS.book]);
     expect([answer("Nf3").label, answer("Nf3").color]).toEqual(["You played · You played in the game", ARROWS.played]);
     expect([answer("d4").label, answer("d4").color]).toEqual(["You played", ARROWS.committed]);
+    // The prep's colour wins over the game move's when the game move was the prep.
+    const prepGame = buildLearnRevealArrows({ ...base, bookMove: "Nf3", committedMove: "Nf3" });
+    expect(prepGame.rows[0].color).toBe(ARROWS.book);
+    expect(prepGame.rows[0].label).toBe("You played · Your prep plays · You played in the game");
     // The engine's colour wins over the prep's when the answer is both.
     const both = buildLearnRevealArrows({ ...base, bookMove: "Bb5", committedMove: "Bb5" });
     expect(both.rows[0].color).toBe(ARROWS.engine);

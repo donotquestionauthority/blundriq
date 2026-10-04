@@ -323,15 +323,17 @@ def repertoire_scopes(conn: Connection[Any], *, lookahead_plies: int) -> list[di
         JOIN repertoire_lines rl ON rl.id = v.repertoire_line_id
         GROUP BY GROUPING SETS (
             (v.book_id, bk.title, bk.color),
-            (v.book_id, bk.title, bk.color, v.chapter_id, ch.title),
-            (v.book_id, bk.title, bk.color, v.chapter_id, ch.title, v.repertoire_line_id, rl.line_name)
+            (v.book_id, bk.title, bk.color, v.chapter_id, ch.title, ch.source_chapter_id),
+            (v.book_id, bk.title, bk.color, v.chapter_id, ch.title, ch.source_chapter_id,
+             v.repertoire_line_id, rl.line_name)
         )
-        ORDER BY g_chapter DESC, g_line DESC, bk.title, v.book_id, ch.title, v.chapter_id,
-                 rl.line_name, v.repertoire_line_id"""
+        -- Books, then chapters, then lines, each in the Repertoire page's order.
+        ORDER BY g_chapter DESC, g_line DESC, bk.color DESC, bk.title, v.book_id,
+                 ch.source_chapter_id NULLS LAST, ch.title, v.chapter_id, v.repertoire_line_id"""
     with conn.cursor() as cur:
         cur.execute(query, {"pid": PLAYER_ID})
         rows = cur.fetchall()
-    # Books arrive first, then chapters, then lines, each in display order.
+    # Books arrive first, then chapters, then lines, each in the order the Repertoire page uses.
     books: list[dict[str, Any]] = []
     book_chapters: dict[int, list[dict[str, Any]]] = {}
     chapter_lines: dict[int, list[dict[str, Any]]] = {}

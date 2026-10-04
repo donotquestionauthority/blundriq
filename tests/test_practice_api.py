@@ -164,3 +164,28 @@ def test_the_repertoire_scopes_route_answers_an_empty_repertoire(client: tuple[T
     assert c.get("/practice/repertoire-scopes").json() == {"books": []}
     # A theme SubType is still free text for the other types.
     assert c.get("/practice/puzzles", params={"ptype": "motif", "subtype": "chapter:"}).status_code == 200
+
+
+def test_the_list_routes_and_the_scopes_route_serve_a_scope_s_own_puzzle(
+    client: tuple[TestClient, int], clean: psycopg.Connection[DictRow]
+) -> None:
+    """Over HTTP: a chapter whose puzzle loses the one-per-position choice to another chapter's
+    on the same board still lists and serves its own, and the tree counts what each scope lists."""
+    from tests.test_practice import _shared_board
+
+    c, _ = client
+    ids = _shared_board(clean, first_game=100)  # the seed holds game 1
+    clean.commit()
+    for view in ("all", "due"):
+        listed = c.get("/practice/puzzles", params={"ptype": "repertoire", "subtype": "chapter:1", "srs": view}).json()
+        assert [p["id"] for p in listed["puzzles"]] == [ids["p1"]], view
+    listed = c.get("/practice/puzzles", params={"ptype": "repertoire", "subtype": "book:1", "srs": "all"}).json()
+    assert [p["id"] for p in listed["puzzles"]] == [ids["p2"]]
+    unfiltered = c.get("/practice/puzzles", params={"ptype": "repertoire", "srs": "all"}).json()
+    assert [p["id"] for p in unfiltered["puzzles"]] == [ids["p3"]]
+    tree = c.get("/practice/repertoire-scopes").json()["books"]
+    assert [(b["id"], b["count"], [(ch["id"], ch["count"]) for ch in b["chapters"]]) for b in tree] == [
+        (1, 1, [(1, 1), (2, 1)]),
+        (2, 1, [(3, 1)]),
+    ]
+    assert [line["id"] for line in tree[0]["chapters"][0]["lines"]] == [1]

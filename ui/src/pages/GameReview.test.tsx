@@ -434,6 +434,30 @@ describe("fail closed", () => {
   });
 });
 
+describe("the reveal's game move says whether it was a flagged mistake", () => {
+  it("red at a flagged prompt ply, faded at one that lost less than an inaccuracy", async () => {
+    // Ply 2 carries the blunder row: the game's Nf3 is solid red beside the answer.
+    await renderReview(2);
+    await reachCommitStep();
+    await drop("d2", "d4");
+    await flush();
+    expect(arrowColors()).toContain(ARROWS.played);
+    expect(arrowColors()).not.toContain(`${ARROWS.played}66`);
+    cleanup();
+    learnCommit.mockClear();
+    // With every decision prompting, ply 0's 1.e4 has no row: faded.
+    await renderReview(2);
+    fireEvent.click(screen.getByLabelText("Step only through inaccuracies+"));
+    await act(async () => fireEvent.keyDown(window, { key: "ArrowLeft" }));
+    expect(bodyText()).toContain("move 0 / 4");
+    await reachCommitStep();
+    await drop("g1", "f3");
+    await flush();
+    expect(arrowColors()).toContain(`${ARROWS.played}66`);
+    expect(arrowColors()).not.toContain(ARROWS.played);
+  });
+});
+
 describe("commit outcomes", () => {
   it.each([
     [409, "This rep was already recorded. Starting a fresh one."],
@@ -762,12 +786,19 @@ describe("the arrow legend under a Review board", () => {
     expect(legend()).toEqual([entry(ARROWS.engine, "best move now"), entry(ARROWS.book, "your prep")]);
     for (const [color] of legend()) expect(arrowColors()).toContain(color);
     cleanup();
-    // Ply 3: the mistake made at ply 2, on the board before it.
+    // Ply 3, stepping one ply at a time: the mistake made at ply 2, reviewed after it was played,
+    // so the opponent's arrow is the move before the player's.
     await renderReview(3);
     expect(screen.getByTestId("blunder-card")).toBeInTheDocument();
-    expect(legend().slice(0, 3)).toEqual([entry(ARROWS.opponent, "their last move"), entry(ARROWS.played, "you played"), entry(ARROWS.engine, "better")]);
+    expect(legend().slice(0, 3)).toEqual([entry(ARROWS.opponent, "their move before yours"), entry(ARROWS.played, "you played"), entry(ARROWS.engine, "better")]);
     for (const [color] of legend()) expect(arrowColors()).toContain(color);
     expect(new Set(legend().map(([c]) => c))).toEqual(new Set(arrowColors()));
+    // With inaccuracies+ the same mistake is reviewed on its decision ply, before the move.
+    fireEvent.click(screen.getByLabelText("Step only through inaccuracies+"));
+    await act(async () => fireEvent.keyDown(window, { key: "ArrowLeft" }));
+    expect(bodyText()).toContain("move 2 / 4");
+    expect(screen.getByTestId("blunder-card")).toBeInTheDocument();
+    expect(legend().slice(0, 3)).toEqual([entry(ARROWS.opponent, "their last move"), entry(ARROWS.played, "you played"), entry(ARROWS.engine, "better")]);
   });
 
   it("no arrows, no legend", async () => {

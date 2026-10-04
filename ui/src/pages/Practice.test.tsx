@@ -205,6 +205,31 @@ describe("Practice page", () => {
       expect([selectOf("Book").value, selectOf("Chapter").value]).toEqual(["4", "8"]);
     });
 
+    it("a filter the tree no longer holds says so and can be cleared; a tree that fails to load says so", async () => {
+      const calls = stubFetch({
+        "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1)], 1, 1) }),
+        "/practice/repertoire-scopes": () => ({ status: 200, body: scopes }),
+      });
+      const view = renderPage("/practice?type=repertoire&subtype=line:99");
+      expect(await screen.findByText("#11")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /Filters \(1\)/ }));
+      const panel = screen.getByRole("dialog", { name: "Practice filters" });
+      expect(await within(panel).findByText("This filter is no longer in your repertoire.")).toBeInTheDocument();
+      fireEvent.click(within(panel).getByRole("button", { name: "Clear" }));
+      await vi.waitFor(() => expect(lastSubtype(calls)).toBeNull());
+      expect(within(panel).queryByText("This filter is no longer in your repertoire.")).toBeNull();
+      view.unmount();
+
+      stubFetch({
+        "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1)], 1, 1) }),
+        "/practice/repertoire-scopes": () => ({ status: 500, body: { detail: "boom" } }),
+      });
+      renderPage("/practice?type=repertoire");
+      expect(await screen.findByText("#11")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /Filters/ }));
+      expect(await within(screen.getByRole("dialog", { name: "Practice filters" })).findByRole("alert")).toHaveTextContent("Couldn't load your books");
+    });
+
     it("asks for the tree only while the Repertoire type is showing", async () => {
       const calls = stubFetch({
         "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1)], 1, 1) }),

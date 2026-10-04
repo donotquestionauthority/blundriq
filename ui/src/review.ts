@@ -32,7 +32,7 @@ export function readReviewSettings(params: URLSearchParams): ReviewSettings {
   const group = params.get("group");
   const opening = params.get("opening");
   return {
-    timeClass: tc != null && tc in REVIEW_TIME_CLASS_LABELS ? (tc as ReviewTimeClass) : REVIEW_DEFAULTS.timeClass,
+    timeClass: tc != null && Object.hasOwn(REVIEW_TIME_CLASS_LABELS, tc) ? (tc as ReviewTimeClass) : REVIEW_DEFAULTS.timeClass,
     scope: scope === "all" || scope === "to_review" ? scope : REVIEW_DEFAULTS.scope,
     opening: opening ? opening : REVIEW_DEFAULTS.opening,
     groupBy: (GROUP_BY_MODES as readonly string[]).includes(group ?? "") ? (group as GroupByMode) : REVIEW_DEFAULTS.groupBy,

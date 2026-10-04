@@ -5,13 +5,29 @@ const select = "rounded border border-zinc-300 bg-white px-2 py-1 text-sm disabl
 
 /** Book → Chapter → Line, each optional. The SubType is the narrowest choice; clearing a level
  *  falls back to the one above it, and choosing a level clears everything below it. */
-export function RepertoireScopeFilter({ books, subtype, onChange }: { books: RepertoireScopeBook[] | null; subtype: string | null; onChange: (v: string | null) => void }) {
+export function RepertoireScopeFilter({ books, error, subtype, onChange }: { books: RepertoireScopeBook[] | null; error?: string | null; subtype: string | null; onChange: (v: string | null) => void }) {
   const at = locateScope(books ?? [], subtype);
   const book = books?.find((b) => b.id === at.book) ?? null;
   const chapter = book?.chapters.find((c) => c.id === at.chapter) ?? null;
-  const loading = books == null;
+  const loading = books == null && !error;
+  // A filter the tree does not hold (switched off since, or no puzzle left under it) is still
+  // filtering: say so, with a way out, rather than showing "All" over it.
+  const orphan = books != null && subtype != null && at.book == null;
   return (
     <>
+      {error && (
+        <p role="alert" className="text-xs text-rose-600">
+          Couldn't load your books: {error}
+        </p>
+      )}
+      {orphan && (
+        <p className="flex items-center justify-between gap-2 text-xs text-amber-700 dark:text-amber-400">
+          This filter is no longer in your repertoire.
+          <button type="button" className="underline" onClick={() => onChange(null)}>
+            Clear
+          </button>
+        </p>
+      )}
       <label className="flex flex-col gap-1 text-xs text-zinc-500">
         Book
         <select className={select} disabled={loading} value={at.book ?? ""} onChange={(e) => onChange(e.target.value ? `book:${e.target.value}` : null)}>

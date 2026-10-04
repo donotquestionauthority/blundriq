@@ -295,6 +295,8 @@ export default function Review() {
   // As in the handlers, a scope change leaves the page request current (it does not carry the scope).
   const settingsKey = reviewSettingsKey(settings);
   const seenSettings = useRef(settings);
+  // Set while the stale-opening recovery writes its own change, so its notice outlives it.
+  const recovering = useRef(false);
   useEffect(() => {
     const seen = seenSettings.current;
     seenSettings.current = settings;
@@ -302,6 +304,8 @@ export default function Review() {
     else if (seen.scope !== scope) nextDrillView();
     else return;
     clearEvents();
+    if (!recovering.current) setNotice(null);
+    recovering.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settingsKey]);
 
@@ -310,6 +314,7 @@ export default function Review() {
   const recoverToAllOpenings = useCallback(() => {
     nextView();
     clearEvents();
+    recovering.current = true;
     writeEntry({ ...settingsRef.current, opening: OPENING_ALL }, DEFAULT_CATS, []);
     setNotice("That opening no longer has review games — showing all openings.");
   }, [writeEntry]);
@@ -363,9 +368,10 @@ export default function Review() {
   // node opened by a click loads in its handler.
   useEffect(() => {
     if (!data || isStale) return;
+    // Only the leaves on screen: an open subgroup inside a closed family or section waits for it.
     const leaves = new Set<string>();
-    for (const f of data.categories.opening.families) for (const sg of f.subgroups) leaves.add(sg.subgroup_id);
-    for (const pool of [...data.categories.oversights.defense.pools, ...data.categories.oversights.offense.pools]) leaves.add(pool.pool_id);
+    if (openCats.has(CAT.opening)) for (const f of data.categories.opening.families) if (openNodes.has(f.family_id)) for (const sg of f.subgroups) leaves.add(sg.subgroup_id);
+    if (openCats.has(CAT.oversights)) for (const pool of [...data.categories.oversights.defense.pools, ...data.categories.oversights.offense.pools]) leaves.add(pool.pool_id);
     const wanted = [...openNodes].filter((id) => leaves.has(id));
     for (const [catKey, category] of [
       [CAT.endgame, data.categories.endgame],

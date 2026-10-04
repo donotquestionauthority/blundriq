@@ -348,7 +348,7 @@ def _scoped_line(
 SHARED = ["e4", "e5", "Nf3", "Nc6", "Bb5"]
 
 
-def _shared_board(conn: psycopg.Connection[DictRow]) -> dict[str, int]:
+def _shared_board(conn: psycopg.Connection[DictRow], first_game: int = 0) -> dict[str, int]:
     """Three lines with the same moves, so their puzzles present the same board: line 1
     (chapter 1, book 1, 3 deviations), line 2 (chapter 2, book 1, 4) and line 3 (chapter 3,
     book 2, 5). Globally line 3 wins the one-per-position collapse; inside book 1, line 2."""
@@ -357,7 +357,7 @@ def _shared_board(conn: psycopg.Connection[DictRow]) -> dict[str, int]:
     _scoped_line(conn, SHARED, line_id=2, chapter_id=2, book_id=1)
     _scoped_line(conn, SHARED, line_id=3, chapter_id=3, book_id=2)
     ids = {f"p{n}": _rep_puzzle(conn, SHARED, n) for n in (1, 2, 3)}
-    game = 0
+    game = first_game
     for line_id, times in ((1, 3), (2, 4), (3, 5)):
         for _ in range(times):
             game += 1
@@ -411,11 +411,14 @@ def test_the_scope_counts_are_the_positions_its_browse_list_shows(clean: psycopg
     _rep_puzzle(clean, other, 4)
     for g in (101, 102, 103):
         _deviation(clean, g, 2, line_id=4)
+    # Chapters in the course's own order (as the Repertoire page lists them), not by title.
+    clean.execute("UPDATE chapters SET source_chapter_id = 10 WHERE id = 1")
+    clean.execute("UPDATE chapters SET source_chapter_id = 2 WHERE id = 2")
     scopes = visibility.repertoire_scopes(clean, lookahead_plies=2)
     assert [(b["id"], b["title"], b["count"]) for b in scopes] == [(1, "Book 1", 2), (2, "Book 2", 1)]
     book_one = scopes[0]
-    assert [(c["id"], c["count"]) for c in book_one["chapters"]] == [(1, 2), (2, 1)]
-    assert [(line["id"], line["title"], line["count"]) for line in book_one["chapters"][0]["lines"]] == [
+    assert [(c["id"], c["count"]) for c in book_one["chapters"]] == [(2, 1), (1, 2)]
+    assert [(line["id"], line["title"], line["count"]) for line in book_one["chapters"][1]["lines"]] == [
         (1, "Line 1", 1),
         (4, "Line 4", 1),
     ]
@@ -433,15 +436,23 @@ def test_the_scope_counts_are_the_positions_its_browse_list_shows(clean: psycopg
         node = {
             ("book", 1): scopes[0],
             ("book", 2): scopes[1],
-            ("chapter", 1): book_one["chapters"][0],
-            ("chapter", 2): book_one["chapters"][1],
+            ("chapter", 1): book_one["chapters"][1],
+            ("chapter", 2): book_one["chapters"][0],
             ("chapter", 3): scopes[1]["chapters"][0],
-            ("line", 4): book_one["chapters"][0]["lines"][1],
+            ("line", 4): book_one["chapters"][1]["lines"][1],
         }[(kind, key)]
         assert len(listed) == node["count"], (kind, key)
-    # An inactive chapter takes its count with it.
+    # An inactive chapter, line or book takes its node and its count with it.
     clean.execute("UPDATE chapters SET active = FALSE WHERE id = 2")
     assert [c["id"] for c in visibility.repertoire_scopes(clean, lookahead_plies=2)[0]["chapters"]] == [1]
+    clean.execute("UPDATE repertoire_lines SET active = FALSE WHERE id = 4")
+    chapter_one = visibility.repertoire_scopes(clean, lookahead_plies=2)[0]["chapters"][0]
+    assert ([line["id"] for line in chapter_one["lines"]], chapter_one["count"]) == ([1], 1)
+    clean.execute("UPDATE books SET active = FALSE WHERE id = 2")
+    assert [b["id"] for b in visibility.repertoire_scopes(clean, lookahead_plies=2)] == [1]
+    clean.execute("UPDATE books SET color = 'black' WHERE id = 1")
+    clean.execute("UPDATE books SET active = TRUE, color = 'white' WHERE id = 2")
+    assert [b["id"] for b in visibility.repertoire_scopes(clean, lookahead_plies=2)] == [2, 1]  # White books first
 
 
 def test_both_spellings_of_a_line_are_one_queue(clean: psycopg.Connection[DictRow]) -> None:
