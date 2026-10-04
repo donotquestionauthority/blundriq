@@ -13,6 +13,7 @@ import Preferences from "./pages/Preferences";
 import Repertoire from "./pages/Repertoire";
 import RepertoireConflicts from "./pages/RepertoireConflicts";
 import Review from "./pages/Review";
+import ReviewPosition from "./pages/ReviewPosition";
 import Scout from "./pages/Scout";
 
 type AuthState = "checking" | "in" | "out";
@@ -41,6 +42,7 @@ export default function App() {
         <Route path="/repertoire" element={<Repertoire />} />
         <Route path="/repertoire/conflicts" element={<RepertoireConflicts />} />
         <Route path="/review" element={<Review />} />
+        <Route path="/review/positions/:colour/:key" element={<ReviewPosition />} />
         <Route path="/review/:gameId" element={<GameReview />} />
         <Route path="/games" element={<Games />} />
         <Route path="/scout" element={<Scout />} />

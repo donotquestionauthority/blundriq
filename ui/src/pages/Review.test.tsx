@@ -1,542 +1,125 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
-import { returnTarget } from "../utils/returnTo";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Review from "./Review";
+import ReviewPosition from "./ReviewPosition";
 import { ApiError } from "../api";
-import type { OpeningFamily, OpeningSubgroup, ReviewGameRow, ReviewPage, ReviewPool } from "../review";
+import { returnTarget } from "../utils/returnTo";
+import { lineText, whyThisGame } from "../review";
+import type { HabitGame, PositionPage, ReviewHabit, ReviewPage, ReviewPosition as Position } from "../review";
 
 // The network calls are mocked; the labels and helpers are the real ones.
 const getReviewPage = vi.fn();
-const getPoolEvents = vi.fn();
-const touchPoolShown = vi.fn();
+const getHabitGames = vi.fn();
+const getPositionPage = vi.fn();
 vi.mock("../review", async () => {
   const actual = await vi.importActual<typeof import("../review")>("../review");
   return {
     ...actual,
     getReviewPage: (...args: unknown[]) => getReviewPage(...args),
-    getPoolEvents: (...args: unknown[]) => getPoolEvents(...args),
-    touchPoolShown: (...args: unknown[]) => touchPoolShown(...args),
+    getHabitGames: (...args: unknown[]) => getHabitGames(...args),
+    getPositionPage: (...args: unknown[]) => getPositionPage(...args),
   };
 });
+vi.mock("react-chessboard", () => ({
+  Chessboard: ({ options }: { options: { id?: string; position?: string; boardOrientation?: string } }) => <div data-testid={`board-${options.id}`} data-fen={options.position} data-orientation={options.boardOrientation} />,
+}));
 
-const FAM = "v1:fam:aaaaaaaaaaaaaaaa";
-const SUB = `${FAM}:var:bbbbbbbbbbbbbbbb`;
+// A key past 2^53: JavaScript numbers would round it.
+const BIG = "-9007199254740993123";
 
-const row = (over: Partial<ReviewGameRow> = {}): ReviewGameRow => ({
-  chess_game_id: 101,
-  anchor_ply: 14,
-  cost: 42.5,
-  phase: "opening",
-  piece_label: "knight",
-  book_relation: null,
-  evidence: {},
-  base_route: "lapse_defense",
-  displayed_route: "opening",
-  pool_key: "canon:Scandinavian::Main Line",
-  board_key: 555,
-  played_at: "2026-07-01T12:00:00Z",
-  opponent_username: "magnus_wannabe",
-  result: "loss",
-  url: "https://example.test/101",
-  time_class: "rapid",
-  canonical_family: "Scandinavian",
-  canonical_variation: "Main Line",
-  reviewed: false,
+const position = (over: Partial<Position> = {}): Position => ({
+  colour: "black",
+  key: "4242",
+  line_san: ["d4", "d5"],
+  fen: "rnbqkbnr/ppp1pppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2",
+  last_move: "d7d5",
+  n: 181,
+  score: 0.42,
+  expected: 0.5,
+  current_score: 0.44,
+  current_expected: 0.5,
+  long_deficit: 0.085,
+  current_deficit: 0.06,
+  leak_per_month: 3.28,
+  recent_games: 70,
+  status: "still_leaking",
+  es_at_node: 47,
+  trend: [8, null, -3, 12],
+  parent_key: null,
   ...over,
 });
 
-const subgroup = (over: Partial<OpeningSubgroup> = {}): OpeningSubgroup => ({
-  subgroup_id: SUB,
-  label: "Main Line",
-  kind: "variation",
-  severity: 60.1,
-  raw_severity: 80.2,
-  event_count: 7,
-  confidence: "low",
-  book_relation_verdict: "deviation_before",
-  total_games: 6,
-  to_review_games: 4,
-  representative_game: row({ book_relation: "deviation_before", best_move: "Nf3", best_line: "Nf3 e6 Bd3 Nc6", expected_move: "c4", deviated_at_ply: 10 }),
-  ...over,
-});
-
-const family = (over: Partial<OpeningFamily> = {}): OpeningFamily => ({
-  family_id: FAM,
-  family_key: "Scandinavian",
-  label: "Scandinavian",
-  severity: 63.2,
-  raw_severity: 84.3,
-  event_count: 9,
-  confidence: "high",
-  total_games: 8,
-  to_review_games: 5,
-  subgroups: [subgroup()],
-  representative_game: row(),
-  ...over,
-});
-
-const pool = (over: Partial<ReviewPool> = {}): ReviewPool => ({
-  pool_id: "v1:route:lapse_defense:knight",
-  pool_key: null,
-  label: "knight",
-  severity: 30,
-  raw_severity: 40,
-  event_count: 4,
-  confidence: "low",
-  book_relation_verdict: null,
-  total_games: 3,
-  to_review_games: 2,
-  // A verdict on the underlying event that must not surface on a route pool.
-  representative_game: row({ displayed_route: "lapse_defense", pool_key: null, canonical_family: null, canonical_variation: null, book_relation: "opponent_left" }),
+const habit = (over: Partial<ReviewHabit> = {}): ReviewHabit => ({
+  id: "missed:fork",
+  label: "Missed a fork",
+  events: 12,
+  games: 11,
+  rate_per_100: 10.4,
+  current_rate_per_100: 14,
+  points_per_month: 3.4,
+  trend: "worse",
+  practice_theme: "fork",
   ...over,
 });
 
 const page = (over: Partial<ReviewPage> = {}): ReviewPage => ({
-  categories: {
-    opening: { families: [family()], total_games: 8, to_review_games: 5 },
-    oversights: {
-      defense: { pools: [pool(), pool({ pool_id: "v1:route:lapse_defense:forced-loss", label: "forced-loss", total_games: 2, to_review_games: 1 })], total_games: 4, to_review_games: 3 },
-      offense: { pools: [pool({ pool_id: "v1:route:lapse_offense:fork", label: "fork", total_games: 3, to_review_games: 2 })], total_games: 3, to_review_games: 2 },
-      total_games: 6,
-      to_review_games: 4,
-    },
-    endgame: { pools: [pool({ pool_id: "v1:route:endgame_technique", label: "Endgame technique", total_games: 2, to_review_games: 1 })], total_games: 2, to_review_games: 1 },
-    faded: { pools: [pool({ pool_id: "v1:route:faded", label: "Faded advantage", total_games: 2, to_review_games: 0 })], total_games: 2, to_review_games: 0 },
-    lost_wins: {
-      games: [row({ chess_game_id: 301, opponent_username: "convert_me", base_route: "faded", url: "https://example.test/301" }), row({ chess_game_id: 302, opponent_username: "already_seen", base_route: "faded", reviewed: true })],
-      total_games: 2,
-      to_review_games: 1,
-    },
+  positions: {
+    ranked: [position(), position({ key: BIG, line_san: ["d4", "d5", "c4", "c6"], parent_key: "4242", leak_per_month: 2.07, status: "new_leak", es_at_node: 35 })],
+    fixed: [position({ key: "77", colour: "white", line_san: ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3"], status: "looks_fixed", leak_per_month: -0.1, current_score: 0.6 })],
   },
-  page: { total_games: 12, to_review_games: 7 },
+  habits: [habit(), habit({ id: "lost:middlegame", label: "Lost material in the middlegame", practice_theme: null, trend: null })],
+  lost_wins: {
+    games: Array.from({ length: 53 }, (_, i) => ({ chess_game_id: 300 + i, played_at: "2026-09-01T12:00:00Z", opponent_username: `opp${i}`, opponent_rating: 1400, result: "loss", time_class: "rapid", url: null, reviewed: false, peak_es: 81, anchor_ply: 33, anchor_move: "17…Qb6", cost: 22 })),
+    total: 53,
+  },
   filter: {
     time_class: "focus",
     opening: "__all__",
     openings: [
-      { key: "__all__", label: "All openings", to_review_games: 7 },
-      { key: "Scandinavian", label: "Scandinavian", to_review_games: 5 },
+      { key: "black:Scandinavian Defense", label: "Scandinavian Defense · Black", games: 2003 },
+      { key: "white:Italian Game", label: "Italian Game · White", games: 1057 },
     ],
-    group_by: "variation",
   },
+  meta: { as_of: "2026-10-04T00:00:00Z", history_months: 12, games_counted: 6000, games_without_prefix: 0, games_without_ratings: 3, window_games: 1000 },
   ...over,
 });
 
-const emptyPage = (): ReviewPage =>
-  page({
-    categories: {
-      opening: { families: [], total_games: 0, to_review_games: 0 },
-      oversights: { defense: { pools: [], total_games: 0, to_review_games: 0 }, offense: { pools: [], total_games: 0, to_review_games: 0 }, total_games: 0, to_review_games: 0 },
-      endgame: { pools: [], total_games: 0, to_review_games: 0 },
-      faded: { pools: [], total_games: 0, to_review_games: 0 },
-      lost_wins: { games: [], total_games: 0, to_review_games: 0 },
-    },
-    page: { total_games: 0, to_review_games: 0 },
-  });
+const habitGames = (): { rows: HabitGame[]; total: number; page: number; page_size: number; total_pages: number } => ({
+  rows: [{ chess_game_id: 901, played_at: "2026-09-30T12:00:00Z", opponent_username: "forky", opponent_rating: 1500, result: "loss", anchor_ply: 33, anchor_move: "17…Qb6", cost: 31, reviewed: false }],
+  total: 1,
+  page: 1,
+  page_size: 50,
+  total_pages: 1,
+});
 
-function ReviewStub() {
-  const location = useLocation();
-  return <pre data-testid="review-state">{JSON.stringify(location.state)}</pre>;
-}
-
-const renderPage = () =>
-  render(
-    <MemoryRouter initialEntries={["/review"]}>
-      <Routes>
-        <Route path="/review" element={<Review />} />
-        <Route path="/review/:gameId" element={<ReviewStub />} />
-      </Routes>
-    </MemoryRouter>,
-  );
-
-const lastPageCall = () => getReviewPage.mock.calls.at(-1);
-const combo = (name: string) => screen.getByRole("combobox", { name }) as HTMLSelectElement;
-
-beforeEach(() => {
-  getReviewPage.mockReset().mockResolvedValue(page());
-  getPoolEvents.mockReset().mockResolvedValue({
-    events: [row({ best_move: "Nf3", best_line: "Nf3 e6 Bd3 Nc6", expected_move: "c4", deviated_at_ply: 10, extra_in_game: 2 }), row({ chess_game_id: 102, anchor_ply: 22, opponent_username: "hikaru_fan", best_move: "Qh5", extra_in_game: 0, url: "https://example.test/102" })],
+const positionPage = (over: Partial<PositionPage> = {}): PositionPage => ({
+  node: { ...position({ key: BIG }), rob_to_move: false, ply: 2 },
+  children: [
+    { san: "c4", key: "-12", n: 60, score: 0.4, expected: 0.5 },
+    { san: "Nf3", key: "13", n: 30, score: 0.55, expected: 0.5 },
+  ],
+  games: {
+    rows: [
+      { chess_game_id: 501, ply: 2, played_at: "2026-09-30T12:00:00Z", time_class: "rapid", opponent_username: "dfour", opponent_rating: 1500, result: "loss", reviewed: false, es_on_arrival: 47, turning_state: "found", turning_ply: 33, turning_move: "17…Qb6", turning_cost: 22 },
+      { chess_game_id: 502, ply: 2, played_at: "2026-09-29T12:00:00Z", time_class: "rapid", opponent_username: "quiet", opponent_rating: 1500, result: "draw", reviewed: true, es_on_arrival: 50, turning_state: "none", turning_ply: null, turning_move: null, turning_cost: null },
+    ],
     total: 2,
     page: 1,
     page_size: 50,
     total_pages: 1,
-  });
-  touchPoolShown.mockReset().mockResolvedValue(undefined);
-});
-afterEach(cleanup);
-
-describe("Review worklist", () => {
-  it("opens with Opening problems expanded (hosting Focus opening and Group openings), the other categories collapsed, and the severity legend", async () => {
-    renderPage();
-    await screen.findByText("Opening problems");
-    for (const t of ["Tactical oversights", "Endgame technique", "Lost wins"]) expect(screen.getByText(t)).toBeInTheDocument();
-    expect(screen.getByText("Scandinavian")).toBeInTheDocument(); // the family row is visible: the section is open
-    expect(combo("Focus opening")).toBeInTheDocument();
-    expect(combo("Group openings")).toBeInTheDocument();
-    expect(screen.getAllByRole("combobox")).toHaveLength(3); // time class, focus, group by
-    expect(screen.queryByText("Forced material loss")).toBeNull(); // Tactical oversights is collapsed
-    expect(screen.getByText(/higher means fix it first/)).toBeInTheDocument();
-    expect(getReviewPage).toHaveBeenCalledWith("focus", "__all__", "variation");
-  });
-
-  it("drills an opening: the family stamps, the subgroup stamps and loads game rows with '+N more', the best and book moves", async () => {
-    renderPage();
-    const fam = await screen.findByText("Scandinavian");
-    expect(getPoolEvents).not.toHaveBeenCalled();
-    expect(fam.closest("button")!.textContent).toMatch(/High/);
-
-    fireEvent.click(fam);
-    await waitFor(() => expect(touchPoolShown).toHaveBeenCalledWith(FAM, "focus", "__all__"));
-    const sub = await screen.findByText("Main Line");
-    expect(sub.closest("button")!.textContent).toMatch(/Low/);
-
-    fireEvent.click(sub);
-    await waitFor(() => expect(getPoolEvents).toHaveBeenCalledWith(SUB, "focus", "__all__", "to_review", 1));
-    expect(touchPoolShown).toHaveBeenCalledWith(SUB, "focus", "__all__");
-    await screen.findByText("magnus_wannabe");
-    expect(screen.getByText(/\+2 more in this game/)).toBeInTheDocument();
-    expect(screen.getByText("Book move: c4")).toBeInTheDocument();
-    expect(screen.getByText("Best move: Nf3")).toBeInTheDocument();
-    expect(screen.getAllByText("You left book first — drill the line").length).toBeGreaterThan(0);
-    // Opening rows carry the Best column.
-    expect(screen.getByRole("columnheader", { name: "Best" })).toBeInTheDocument();
-  });
-
-  it("a game row opens the game's review at its anchor ply, carrying where to come back to", async () => {
-    renderPage();
-    fireEvent.click(await screen.findByText("Lost wins"));
-    const link = (await screen.findAllByRole("link", { name: "Review →" }))[0];
-    expect(link).toHaveAttribute("href", "/review/301?ply=14");
-    fireEvent.click(link);
-    const state = JSON.parse((await screen.findByTestId("review-state")).textContent ?? "{}");
-    expect(state).toEqual({ from: { pathname: "/review", search: "", open: { cats: ["opening", "lost_wins"], nodes: [], key: "focus|to_review|__all__|variation" } } });
-  });
-
-  it("relabels forced-loss and never shows a book-relation label on a route pool", async () => {
-    renderPage();
-    fireEvent.click(await screen.findByText("Tactical oversights"));
-    expect(await screen.findByText("Forced material loss")).toBeInTheDocument();
-    expect(screen.queryByText("Forced-loss")).toBeNull();
-    expect(screen.queryByText("Opponent left your prep — extend prep here")).toBeNull();
-    expect(screen.getByText("Gave away material")).toBeInTheDocument();
-    expect(screen.getByText("Missed material & mates")).toBeInTheDocument();
-    expect(screen.getByText("Fork")).toBeInTheDocument();
-  });
-
-  it("scope: To review hides reviewed lost wins and a category with nothing to review, adds no Status column; All reveals them without a refetch", async () => {
-    renderPage();
-    await screen.findByText("Lost wins");
-    expect(screen.queryByRole("heading", { name: "Faded advantage" })).toBeNull();
-
-    fireEvent.click(screen.getByText("Lost wins"));
-    expect(await screen.findByText("convert_me")).toBeInTheDocument();
-    expect(screen.queryByText("already_seen")).toBeNull();
-    expect(screen.queryByRole("columnheader", { name: "Status" })).toBeNull();
-
-    fireEvent.click(screen.getByRole("tab", { name: "All" }));
-    expect(await screen.findByText("already_seen")).toBeInTheDocument();
-    expect(screen.getByText("✓ reviewed")).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "Status" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Faded advantage" })).toBeInTheDocument();
-    expect(screen.getAllByText("2 games · 1 to review").length).toBeGreaterThan(0); // Endgame and Lost wins both
-    expect(getReviewPage).toHaveBeenCalledTimes(1);
-  });
-
-  it("changing scope collapses open drill-downs so they reload under the new scope", async () => {
-    renderPage();
-    fireEvent.click(await screen.findByText("Scandinavian"));
-    fireEvent.click(await screen.findByText("Main Line"));
-    await screen.findByText("magnus_wannabe");
-    fireEvent.click(screen.getByRole("tab", { name: "All" }));
-    expect(screen.queryByText("magnus_wannabe")).toBeNull();
-    fireEvent.click(screen.getByText("Scandinavian"));
-    fireEvent.click(await screen.findByText("Main Line"));
-    await waitFor(() => expect(getPoolEvents).toHaveBeenLastCalledWith(SUB, "focus", "__all__", "all", 1));
-  });
-
-  it("refetches with the new server params on a Focus-opening, Group-by or Time-class change, and Opening problems stays expanded", async () => {
-    renderPage();
-    await screen.findByText("Opening problems");
-
-    fireEvent.change(combo("Focus opening"), { target: { value: "Scandinavian" } });
-    await waitFor(() => expect(lastPageCall()).toEqual(["focus", "Scandinavian", "variation"]));
-    await screen.findByText(/Opening problems — focused: Scandinavian/);
-    expect(screen.getByText(/including thin ones/)).toBeInTheDocument();
-
-    fireEvent.change(combo("Group openings"), { target: { value: "repertoire" } });
-    await waitFor(() => expect(lastPageCall()).toEqual(["focus", "Scandinavian", "repertoire"]));
-
-    fireEvent.change(combo("Time class"), { target: { value: "all" } });
-    await waitFor(() => expect(lastPageCall()).toEqual(["all", "Scandinavian", "repertoire"]));
-    await waitFor(() => expect(combo("Focus opening")).toBeInTheDocument());
-    expect(screen.getByText("Scandinavian")).toBeInTheDocument();
-    expect(screen.getAllByRole("combobox")).toHaveLength(3);
-  });
-
-  it("a single-pool category (Endgame technique) drills straight to its games: one header click loads page 1 and stamps the pool", async () => {
-    renderPage();
-    await screen.findByText("Endgame technique");
-    const header = screen.getByRole("heading", { name: "Endgame technique" }).closest("button")!;
-    expect(header.textContent).toMatch(/Severity 30\.0/);
-    expect(header.textContent).toMatch(/Low/);
-    expect(getPoolEvents).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("heading", { name: "Endgame technique" }));
-    await waitFor(() => expect(getPoolEvents).toHaveBeenCalledWith("v1:route:endgame_technique", "focus", "__all__", "to_review", 1));
-    await waitFor(() => expect(touchPoolShown).toHaveBeenCalledWith("v1:route:endgame_technique", "focus", "__all__"));
-    expect(await screen.findByText("magnus_wannabe")).toBeInTheDocument();
-    // No Best column on a route pool's rows.
-    expect(screen.queryByRole("columnheader", { name: "Best" })).toBeNull();
-  });
-
-  it("loads more pages of a drill-down", async () => {
-    getPoolEvents.mockImplementation((_id: string, _t: string, _o: string, _s: string, p: number) =>
-      Promise.resolve({
-        events: [row({ chess_game_id: 100 + p, opponent_username: `opp${p}`, url: `https://example.test/${100 + p}` })],
-        total: 2,
-        page: p,
-        page_size: 1,
-        total_pages: 2,
-      }),
-    );
-    renderPage();
-    fireEvent.click(await screen.findByText("Scandinavian"));
-    fireEvent.click(await screen.findByText("Main Line"));
-    await screen.findByText("opp1");
-    fireEvent.click(screen.getByRole("button", { name: "Load more (1 of 2)" }));
-    await screen.findByText("opp2");
-    expect(screen.getByText("opp1")).toBeInTheDocument();
-    expect(getPoolEvents).toHaveBeenLastCalledWith(SUB, "focus", "__all__", "to_review", 2);
-    expect(screen.queryByRole("button", { name: /Load more/ })).toBeNull();
-  });
-
-  it("renders the empty state when the page has no games", async () => {
-    getReviewPage.mockResolvedValue(emptyPage());
-    renderPage();
-    expect(await screen.findByText(/No review events yet/)).toBeInTheDocument();
-    expect(screen.queryByText("Opening problems")).toBeNull();
-  });
-
-  it("recovers a stale-opening 422 by resetting to All openings with a one-line notice", async () => {
-    getReviewPage.mockImplementation((_t: string, opening: string) => (opening === "Scandinavian" ? Promise.reject(new ApiError(422, "unknown opening key: 'Scandinavian'")) : Promise.resolve(page())));
-    renderPage();
-    await screen.findByText("Opening problems");
-    fireEvent.change(combo("Focus opening"), { target: { value: "Scandinavian" } });
-
-    await screen.findByText(/no longer has review games/);
-    await waitFor(() => expect(combo("Focus opening").value).toBe("__all__"));
-    expect(screen.getByText("Opening problems")).toBeInTheDocument();
-    const openings = getReviewPage.mock.calls.map((c) => c[1]);
-    expect(openings).toContain("Scandinavian");
-    expect(openings.filter((o) => o === "__all__").length).toBeGreaterThanOrEqual(1);
-    expect(screen.queryByRole("alert")).toBeNull();
-
-    fireEvent.click(screen.getByText("Dismiss"));
-    expect(screen.queryByText(/no longer has review games/)).toBeNull();
-  });
-
-  it("does not launder any other error into a stale-opening reset", async () => {
-    getReviewPage.mockImplementation((_t: string, opening: string) => (opening === "Scandinavian" ? Promise.reject(new ApiError(500, "boom")) : Promise.resolve(page())));
-    renderPage();
-    await screen.findByText("Opening problems");
-    fireEvent.change(combo("Focus opening"), { target: { value: "Scandinavian" } });
-    expect(await screen.findByRole("alert")).toHaveTextContent("boom");
-    expect(screen.queryByText(/no longer has review games/)).toBeNull();
-    expect(getReviewPage.mock.calls.map((c) => c[1]).filter((o) => o === "__all__")).toHaveLength(1);
-  });
-
-  it("a drill-down that 422s on a stale opening recovers at the page level; any other drill error stays on the node", async () => {
-    getReviewPage.mockResolvedValue(page({ filter: { time_class: "focus", opening: "Scandinavian", openings: page().filter.openings, group_by: "variation" } }));
-    getPoolEvents.mockRejectedValueOnce(new ApiError(500, "node boom"));
-    renderPage();
-    fireEvent.click(await screen.findByText("Scandinavian"));
-    fireEvent.click(await screen.findByText("Main Line"));
-    expect(await screen.findByRole("alert")).toHaveTextContent("node boom");
-
-    // Focus the opening, then have its drill-down go stale.
-    fireEvent.change(combo("Focus opening"), { target: { value: "Scandinavian" } });
-    await waitFor(() => expect(lastPageCall()).toEqual(["focus", "Scandinavian", "variation"]));
-    getPoolEvents.mockRejectedValueOnce(new ApiError(422, "unknown opening key: 'Scandinavian'"));
-    fireEvent.click(await screen.findByText("Scandinavian"));
-    fireEvent.click(await screen.findByText("Main Line"));
-    await screen.findByText(/no longer has review games/);
-    await waitFor(() => expect(combo("Focus opening").value).toBe("__all__"));
-  });
-
-  it("a 422 for a focus the user has since left never undoes the newer choice", async () => {
-    let rejectScandi: (e: unknown) => void = () => undefined;
-    getReviewPage.mockImplementation((_t: string, opening: string) => {
-      if (opening === "Scandinavian") return new Promise((_, reject) => (rejectScandi = reject));
-      return Promise.resolve(page({ filter: { ...page().filter, openings: [...page().filter.openings, { key: "Italian", label: "Italian", to_review_games: 2 }] } }));
-    });
-    renderPage();
-    await screen.findByText("Opening problems");
-    fireEvent.change(combo("Focus opening"), { target: { value: "Scandinavian" } });
-    await waitFor(() => expect(lastPageCall()).toEqual(["focus", "Scandinavian", "variation"]));
-    fireEvent.change(combo("Focus opening"), { target: { value: "Italian" } });
-    await waitFor(() => expect(lastPageCall()).toEqual(["focus", "Italian", "variation"]));
-    await screen.findByText(/focused: Italian/);
-    rejectScandi(new ApiError(422, "unknown opening key: 'Scandinavian'"));
-    await new Promise((r) => setTimeout(r, 20));
-    expect(combo("Focus opening").value).toBe("Italian");
-    expect(screen.queryByText(/no longer has review games/)).toBeNull();
-    expect(getReviewPage.mock.calls.map((c) => c[1]).filter((o) => o === "__all__")).toHaveLength(1);
-  });
-
-  it("a single-pool category left open across a scope change reloads under the new scope", async () => {
-    renderPage();
-    fireEvent.click(await screen.findByRole("heading", { name: "Endgame technique" }));
-    await screen.findByText("magnus_wannabe");
-    fireEvent.click(screen.getByRole("tab", { name: "All" }));
-    // Closed, not stuck on "Loading…"; opening it again fetches under the new scope.
-    expect(screen.queryByText("magnus_wannabe")).toBeNull();
-    expect(screen.queryByText("Loading…")).toBeNull();
-    fireEvent.click(screen.getByRole("heading", { name: "Endgame technique" }));
-    await waitFor(() => expect(getPoolEvents).toHaveBeenLastCalledWith("v1:route:endgame_technique", "focus", "__all__", "all", 1));
-    await screen.findByText("magnus_wannabe");
-  });
-
-  it("a scope round trip refetches a drill-down instead of serving rows from before", async () => {
-    renderPage();
-    fireEvent.click(await screen.findByText("Scandinavian"));
-    fireEvent.click(await screen.findByText("Main Line"));
-    await screen.findByText("magnus_wannabe");
-    fireEvent.click(screen.getByRole("tab", { name: "All" }));
-    fireEvent.click(screen.getByRole("tab", { name: "To review" }));
-    fireEvent.click(screen.getByText("Scandinavian"));
-    fireEvent.click(await screen.findByText("Main Line"));
-    await screen.findByText("magnus_wannabe");
-    expect(getPoolEvents).toHaveBeenCalledTimes(2);
-  });
-
-  const deferred = () => {
-    let resolve: (v: unknown) => void = () => undefined;
-    const promise = new Promise((r) => (resolve = r));
-    return { promise, resolve };
-  };
-  const events = (names: string[], page = 1, total = names.length) => ({ events: names.map((n, i) => row({ chess_game_id: 500 + i + page * 10, opponent_username: n, url: `https://example.test/${n}` })), total, page, page_size: 1, total_pages: 2 });
-  const ENDGAME = "v1:route:endgame_technique";
-
-  it("a drill response from before a scope round trip never overwrites the fresh rows", async () => {
-    const held = deferred();
-    getPoolEvents.mockImplementationOnce(() => held.promise);
-    renderPage();
-    fireEvent.click(await screen.findByRole("heading", { name: "Endgame technique" }));
-    await waitFor(() => expect(getPoolEvents).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByRole("tab", { name: "All" }));
-    fireEvent.click(screen.getByRole("tab", { name: "To review" }));
-    getPoolEvents.mockResolvedValueOnce(events(["fresh_one"]));
-    fireEvent.click(screen.getByRole("heading", { name: "Endgame technique" }));
-    await screen.findByText("fresh_one");
-    held.resolve(events(["obsolete_one"]));
-    await new Promise((r) => setTimeout(r, 20));
-    expect(screen.getByText("fresh_one")).toBeInTheDocument();
-    expect(screen.queryByText("obsolete_one")).toBeNull();
-    expect(screen.queryByText("Loading…")).toBeNull();
-  });
-
-  it("a Load more from before a scope round trip never restores page 2 alone", async () => {
-    getPoolEvents.mockResolvedValueOnce(events(["first_a"], 1, 2));
-    renderPage();
-    fireEvent.click(await screen.findByRole("heading", { name: "Endgame technique" }));
-    await screen.findByText("first_a");
-    const held = deferred();
-    getPoolEvents.mockImplementationOnce(() => held.promise);
-    fireEvent.click(screen.getByRole("button", { name: "Load more (1 of 2)" }));
-    await waitFor(() => expect(getPoolEvents).toHaveBeenLastCalledWith(ENDGAME, "focus", "__all__", "to_review", 2));
-    fireEvent.click(screen.getByRole("tab", { name: "All" }));
-    fireEvent.click(screen.getByRole("tab", { name: "To review" }));
-    held.resolve(events(["second_a"], 2, 2));
-    await new Promise((r) => setTimeout(r, 20));
-    expect(screen.queryByText("second_a")).toBeNull();
-    // Reopening fetches page 1 again; nothing from the old view survives.
-    getPoolEvents.mockResolvedValueOnce(events(["first_b"], 1, 2));
-    fireEvent.click(screen.getByRole("heading", { name: "Endgame technique" }));
-    await waitFor(() => expect(getPoolEvents).toHaveBeenLastCalledWith(ENDGAME, "focus", "__all__", "to_review", 1));
-    await screen.findByText("first_b");
-    expect(screen.queryByText("second_a")).toBeNull();
-    expect(screen.getByRole("button", { name: "Load more (1 of 2)" })).toBeInTheDocument();
-  });
-
-  it("a drill error from before a scope round trip is dropped, not shown on the reopened node", async () => {
-    const held = deferred();
-    getPoolEvents.mockImplementationOnce(() => held.promise);
-    renderPage();
-    fireEvent.click(await screen.findByRole("heading", { name: "Endgame technique" }));
-    fireEvent.click(screen.getByRole("tab", { name: "All" }));
-    fireEvent.click(screen.getByRole("tab", { name: "To review" }));
-    getPoolEvents.mockResolvedValueOnce(events(["fresh_one"]));
-    fireEvent.click(screen.getByRole("heading", { name: "Endgame technique" }));
-    await screen.findByText("fresh_one");
-    held.resolve(Promise.reject(new ApiError(500, "old boom")));
-    await new Promise((r) => setTimeout(r, 20));
-    expect(screen.queryByText("old boom")).toBeNull();
-    expect(screen.getByText("fresh_one")).toBeInTheDocument();
-  });
-
-  it("a scope change while the page request is pending leaves its stale-opening recovery intact", async () => {
-    const held = deferred();
-    getReviewPage.mockImplementation((_t: string, opening: string) => (opening === "Scandinavian" ? held.promise : Promise.resolve(page())));
-    renderPage();
-    await screen.findByText("Opening problems");
-    fireEvent.change(combo("Focus opening"), { target: { value: "Scandinavian" } });
-    await waitFor(() => expect(lastPageCall()).toEqual(["focus", "Scandinavian", "variation"]));
-    fireEvent.click(screen.getByRole("tab", { name: "All" }));
-    held.resolve(Promise.reject(new ApiError(422, "unknown opening key: 'Scandinavian'")));
-    await screen.findByText(/no longer has review games/);
-    await waitFor(() => expect(combo("Focus opening").value).toBe("__all__"));
-    expect(screen.queryByRole("alert")).toBeNull();
-    // The chosen scope survived the recovery.
-    expect(screen.getByRole("tab", { name: "All" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("heading", { name: "Faded advantage" })).toBeInTheDocument();
-  });
-
-  it("the Focus opening list shows each family's to-review count", async () => {
-    renderPage();
-    await screen.findByText("Opening problems");
-    const options = within(combo("Focus opening")).getAllByRole("option");
-    expect(options.map((o) => o.textContent)).toEqual(["All openings (7)", "Scandinavian (5)"]);
-  });
-
-  it("Lost wins shows fifty games at a time, and a scope change starts again from the first fifty", async () => {
-    const games = Array.from({ length: 120 }, (_, i) => row({ chess_game_id: 1000 + i, opponent_username: `lw${i}`, base_route: "faded", reviewed: i % 2 === 1 }));
-    const p = page();
-    p.categories.lost_wins = { games, total_games: 120, to_review_games: 60 };
-    getReviewPage.mockResolvedValue(p);
-    renderPage();
-    fireEvent.click(await screen.findByText("Lost wins"));
-    expect(screen.getAllByRole("link", { name: "Review →" })).toHaveLength(50);
-    expect(screen.getByText("lw0")).toBeInTheDocument();
-    expect(screen.queryByText("lw100")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Show 10 more (10 remaining)" }));
-    expect(screen.getAllByRole("link", { name: "Review →" })).toHaveLength(60);
-    expect(screen.getByText("lw118")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Show .* more/ })).toBeNull();
-    fireEvent.click(screen.getByRole("tab", { name: "All" }));
-    expect(screen.getAllByRole("link", { name: "Review →" })).toHaveLength(50);
-    expect(screen.getByRole("button", { name: "Show 50 more (70 remaining)" })).toBeInTheDocument();
-  });
-
-  it("theme and piece tokens read as words: camelCase and snake_case alike", async () => {
-    const { prettyToken, pieceOrTheme } = await vi.importActual<typeof import("../review")>("../review");
-    expect(prettyToken("hangingPiece")).toBe("Hanging piece");
-    expect(prettyToken("discoveredAttack")).toBe("Discovered attack");
-    expect(prettyToken("mateIn2")).toBe("Mate in 2");
-    expect(prettyToken("forced_loss")).toBe("Forced loss");
-    expect(prettyToken("fork")).toBe("Fork");
-    expect(pieceOrTheme(row({ piece_label: null, evidence: { theme: "backRankMate" } }))).toBe("Back rank mate");
-  });
+  },
+  older_games: 212,
+  ...over,
 });
 
-// --- The settings in the URL, the expansion in the entry ---------------------------------------------
-
-/** A game review stand-in with the review's two ways back: the browser's Back, and Close (which
- *  goes through the same return target the review uses). A top-bar link starts a fresh visit. */
+/** A game review stand-in with the review's two ways back. */
 function GameStub() {
   const location = useLocation();
   const navigate = useNavigate();
   return (
     <div>
+      <span data-testid="game-at">{location.pathname + location.search}</span>
       <button type="button" onClick={() => navigate(-1)}>
         browser back
       </button>
@@ -556,10 +139,9 @@ function GameStub() {
 
 function Where() {
   const location = useLocation();
-  return <output data-testid="where">{location.pathname + location.search}</output>;
+  return <span data-testid="where">{location.pathname + location.search}</span>;
 }
 
-/** The browser's Back and the top bar's link, beside the worklist (the page stays mounted). */
 function Chrome() {
   const navigate = useNavigate();
   return (
@@ -588,186 +170,230 @@ const renderApp = (entry: Entry | Entry[] = "/review") => {
             </>
           }
         />
+        <Route
+          path="/review/positions/:colour/:key"
+          element={
+            <>
+              <ReviewPosition />
+              <Where />
+            </>
+          }
+        />
         <Route path="/review/:gameId" element={<GameStub />} />
-        <Route path="/elsewhere" element={<p>elsewhere</p>} />
       </Routes>
     </MemoryRouter>,
   );
 };
 const where = () => screen.getByTestId("where").textContent;
+const combo = (name: string) => screen.getByRole("combobox", { name }) as HTMLSelectElement;
+const lastPageCall = () => getReviewPage.mock.calls.at(-1);
 
-const ENDGAME_POOL = "v1:route:endgame_technique";
+beforeEach(() => {
+  getReviewPage.mockReset().mockResolvedValue(page());
+  getHabitGames.mockReset().mockResolvedValue(habitGames());
+  getPositionPage.mockReset().mockResolvedValue(positionPage());
+});
+afterEach(cleanup);
 
-describe("Review keeps its settings in the URL", () => {
-  it("a setting change writes the URL, defaults left out, and replaces rather than adding a Back step", async () => {
+describe("Review page", () => {
+  it("leads with the positions costing points, each a card with its line, numbers, status, engine word, trend and breadcrumb", async () => {
     renderApp();
-    await screen.findByText("Opening problems");
-    expect(where()).toBe("/review");
+    const cards = await screen.findAllByTestId("position-card");
+    expect(cards).toHaveLength(2);
+    expect(cards[0]).toHaveTextContent("1.d4 d5");
+    expect(cards[0]).toHaveTextContent("181 games · 42% (expected 50%) · ≈3.3 points a month");
+    expect(cards[0]).toHaveTextContent("Still leaking");
+    expect(cards[0]).toHaveTextContent("Fine when you get here");
+    expect(within(cards[0]).getAllByTestId("trend")[0].querySelectorAll("[data-bar]")).toHaveLength(4);
+    expect(within(cards[0]).getAllByTestId("trend")[0].querySelectorAll('[data-bar="empty"]')).toHaveLength(1);
+    expect(cards[1]).toHaveTextContent("Inside 1.d4 d5");
+    expect(cards[1]).toHaveTextContent("Already worse when you get here");
+    // Keys stay strings all the way into the URL.
+    expect(cards[1].getAttribute("href")).toBe(`/review/positions/black/${BIG}`);
+    expect(screen.getByText(/Your last 12 months prove a leak/)).toBeInTheDocument();
+    // Fixed? and Lost wins start collapsed; the habits start open.
+    expect(screen.getByRole("button", { name: /Fixed\?/ })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: /Lost wins/ })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("From your last 1,000 analysed games.")).toBeInTheDocument();
+  });
+
+  it("Fixed? shows the history beside now", async () => {
+    renderApp();
+    fireEvent.click(await screen.findByRole("button", { name: /Fixed\?/ }));
+    const card = screen.getAllByTestId("position-card").find((c) => c.getAttribute("data-key") === "77");
+    expect(card).toHaveTextContent("12 months: 42% (expected 50%) · now: 60% (expected 50%)");
+    expect(card).toHaveTextContent("Looks fixed");
+  });
+
+  it("a habit row shows its rate, trend and cost, links Practice only for a served theme, and expands to its games", async () => {
+    renderApp();
+    const rows = await screen.findAllByTestId("habit");
+    expect(rows[0]).toHaveTextContent("Missed a fork");
+    expect(rows[0]).toHaveTextContent("10.4 per 100 games");
+    expect(rows[0]).toHaveTextContent("Getting worse");
+    expect(within(rows[0]).getByRole("link", { name: "Drill this" })).toHaveAttribute("href", "/practice?type=motif&subtype=fork");
+    expect(within(rows[1]).queryByRole("link", { name: "Drill this" })).toBeNull();
+    fireEvent.click(within(rows[0]).getByRole("button", { name: /Missed a fork/ }));
+    expect(await within(rows[0]).findByText("forky")).toBeInTheDocument();
+    expect(getHabitGames).toHaveBeenCalledWith("missed:fork", "focus", "__all__", 1);
+    expect(within(rows[0]).getByRole("link", { name: "Review →" })).toHaveAttribute("href", "/review/901?ply=33");
+  });
+
+  it("Lost wins shows fifty at a time, each with why it was lost", async () => {
+    renderApp();
+    fireEvent.click(await screen.findByRole("button", { name: /Lost wins/ }));
+    expect(screen.getAllByText("Winning (ES 81), turned at 17…Qb6 (−22), lost.")).toHaveLength(50);
+    fireEvent.click(screen.getByRole("button", { name: "Show 3 more (3 remaining)" }));
+    expect(screen.getAllByText("Winning (ES 81), turned at 17…Qb6 (−22), lost.")).toHaveLength(53);
+  });
+
+  it("explains an empty page by the games still waiting for their opening moves", async () => {
+    getReviewPage.mockResolvedValue(page({ positions: { ranked: [], fixed: [] }, meta: { ...page().meta, games_counted: 0, games_without_prefix: 812 } }));
+    renderApp();
+    expect(await screen.findByText(/812 games still need their opening moves fetched/)).toBeInTheDocument();
+  });
+
+  it("the opening filter lists colour-labelled openings and refetches; the time class too", async () => {
+    renderApp();
+    await screen.findAllByTestId("position-card");
+    expect([...combo("Opening").options].map((o) => o.textContent)).toEqual(["All openings", "Scandinavian Defense · Black (2003)", "Italian Game · White (1057)"]);
+    fireEvent.change(combo("Opening"), { target: { value: "black:Scandinavian Defense" } });
+    await waitFor(() => expect(lastPageCall()).toEqual(["focus", "black:Scandinavian Defense"]));
+    expect(where()).toBe("/review?opening=black%3AScandinavian+Defense");
     fireEvent.change(combo("Time class"), { target: { value: "all" } });
+    await waitFor(() => expect(lastPageCall()).toEqual(["all", "black:Scandinavian Defense"]));
+  });
+
+  it("recovers a stale-opening 422 by dropping it from the URL with a one-line notice", async () => {
+    getReviewPage.mockImplementation((_tc: string, opening: string) => (opening === "__all__" ? Promise.resolve(page()) : Promise.reject(new ApiError(422, "unknown opening key: 'white:Gone'"))));
+    renderApp("/review?tc=all&opening=white%3AGone");
+    expect(await screen.findByRole("status")).toHaveTextContent("That opening no longer has enough games");
     await waitFor(() => expect(where()).toBe("/review?tc=all"));
-    fireEvent.change(combo("Group openings"), { target: { value: "position" } });
-    fireEvent.click(screen.getByRole("tab", { name: "All" }));
-    await waitFor(() => expect(where()).toBe("/review?tc=all&scope=all&group=position"));
-    fireEvent.change(combo("Time class"), { target: { value: "focus" } });
-    await waitFor(() => expect(where()).toBe("/review?scope=all&group=position"));
   });
 
-  it("no setting change or toggle adds a Back step", async () => {
-    renderApp(["/elsewhere", "/review"]);
-    await screen.findByText("Opening problems");
-    fireEvent.change(combo("Time class"), { target: { value: "all" } });
-    fireEvent.click(screen.getByRole("tab", { name: "All" }));
-    fireEvent.click(await screen.findByText("Scandinavian"));
-    fireEvent.click(await screen.findByText("Main Line"));
-    await screen.findByText("magnus_wannabe");
-    fireEvent.click(screen.getByRole("button", { name: "page back" }));
-    expect(await screen.findByText("elsewhere")).toBeInTheDocument();
-  });
-
-  it("an unknown time class, even an object property's name, is the default", async () => {
-    renderApp("/review?tc=constructor");
-    await screen.findByText("Opening problems");
-    expect(lastPageCall()).toEqual(["focus", "__all__", "variation"]);
-  });
-
-  it("Back between two worklist entries while the page stays mounted restores each one", async () => {
-    renderApp();
-    await screen.findByText("Opening problems");
-    fireEvent.click(screen.getByRole("tab", { name: "All" }));
-    fireEvent.click(await screen.findByText("Scandinavian"));
-    fireEvent.click(await screen.findByText("Main Line"));
-    await screen.findByText("magnus_wannabe");
-    expect(getPoolEvents).toHaveBeenCalledTimes(1);
-    // The top bar: a new entry, the default view, collapsed, on the same mounted page.
-    fireEvent.click(screen.getByRole("link", { name: "page top bar" }));
-    await waitFor(() => expect(where()).toBe("/review"));
-    expect(screen.getByRole("tab", { name: "To review" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.queryByText("Main Line")).toBeNull();
-    // Back: the earlier entry's settings and expansion, its rows fetched again for this view.
-    fireEvent.click(screen.getByRole("button", { name: "page back" }));
-    await waitFor(() => expect(where()).toBe("/review?scope=all"));
-    expect(await screen.findByText("magnus_wannabe")).toBeInTheDocument();
-    expect(getPoolEvents).toHaveBeenCalledTimes(2);
-    expect(getPoolEvents).toHaveBeenLastCalledWith(SUB, "focus", "__all__", "all", 1);
-  });
-
-  it("a notice from a recovery does not outlive a settings change made elsewhere", async () => {
-    getReviewPage.mockImplementation((_t: string, opening: string) => (opening === "Scandinavian" ? Promise.reject(new ApiError(422, "unknown opening key: 'Scandinavian'")) : Promise.resolve(page())));
-    renderApp("/review?opening=Scandinavian&tc=all");
-    await screen.findByText(/no longer has review games/);
-    fireEvent.click(screen.getByRole("link", { name: "page top bar" }));
-    await waitFor(() => expect(where()).toBe("/review"));
-    await waitFor(() => expect(screen.queryByText(/no longer has review games/)).toBeNull());
+  it("does not launder any other error into a stale-opening reset", async () => {
+    getReviewPage.mockRejectedValue(new ApiError(500, "boom"));
+    renderApp("/review?opening=white%3AItalian+Game");
+    expect(await screen.findByRole("alert")).toHaveTextContent("boom");
+    expect(where()).toBe("/review?opening=white%3AItalian+Game");
   });
 
   it("a notice from a recovery does not outlive a top-bar visit with the same settings", async () => {
-    getReviewPage.mockImplementation((_t: string, opening: string) => (opening === "Scandinavian" ? Promise.reject(new ApiError(422, "unknown opening key: 'Scandinavian'")) : Promise.resolve(page())));
-    renderApp("/review?opening=Scandinavian");
-    await screen.findByText(/no longer has review games/);
-    await waitFor(() => expect(where()).toBe("/review"));
-    // The recovery's own write and an expansion change keep the notice.
-    fireEvent.click(screen.getByRole("heading", { name: "Tactical oversights" }));
-    expect(screen.getByText(/no longer has review games/)).toBeInTheDocument();
+    getReviewPage.mockImplementation((_tc: string, opening: string) => (opening === "__all__" ? Promise.resolve(page()) : Promise.reject(new ApiError(422, "unknown opening key: 'x'"))));
+    renderApp("/review?opening=white%3AGone");
+    await screen.findByRole("status");
     fireEvent.click(screen.getByRole("link", { name: "page top bar" }));
-    await waitFor(() => expect(screen.queryByText(/no longer has review games/)).toBeNull());
-    expect(where()).toBe("/review");
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
   });
+});
 
-  it("an open single-pool section comes back open with its games after a game", async () => {
-    renderApp();
-    fireEvent.click(await screen.findByRole("heading", { name: "Endgame technique" }));
-    await waitFor(() => expect(getPoolEvents).toHaveBeenCalledWith(ENDGAME_POOL, "focus", "__all__", "to_review", 1));
-    fireEvent.click((await screen.findAllByRole("link", { name: "Review →" }))[0]);
-    fireEvent.click(await screen.findByRole("button", { name: "close" }));
-    await screen.findByText("Opening problems");
-    expect(await screen.findByText("magnus_wannabe")).toBeInTheDocument();
-    expect(getPoolEvents.mock.calls.filter((c) => c[0] === ENDGAME_POOL)).toHaveLength(2);
-  });
-
-  it("an open subgroup inside a closed family waits for the family before its rows are fetched", async () => {
-    const open = { cats: ["opening"], nodes: [SUB], key: "focus|to_review|__all__|variation" };
-    renderApp({ pathname: "/review", search: "", state: { open } });
-    await screen.findByText("Scandinavian");
-    expect(getPoolEvents).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByText("Scandinavian"));
-    expect(await screen.findByText("magnus_wannabe")).toBeInTheDocument();
-    expect(getPoolEvents).toHaveBeenCalledTimes(1);
-  });
-
-  it("opens at the URL's settings, and reads a value it does not know as the default", async () => {
-    renderApp("/review?tc=all&scope=all&opening=Scandinavian&group=repertoire");
-    await screen.findByText(/^Opening problems/);
-    expect(lastPageCall()).toEqual(["all", "Scandinavian", "repertoire"]);
-    expect(combo("Time class").value).toBe("all");
-    expect(screen.getByRole("tab", { name: "All" })).toHaveAttribute("aria-selected", "true");
-    cleanup();
-    getReviewPage.mockClear();
-    renderApp("/review?tc=bullet&scope=maybe&group=nonsense");
-    await screen.findByText("Opening problems");
-    expect(lastPageCall()).toEqual(["focus", "__all__", "variation"]);
-    expect(screen.getByRole("tab", { name: "To review" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.queryByRole("button", { name: "Reset filters" })).toBeNull();
-  });
-
-  it("Reset filters returns every setting to its default and collapses", async () => {
-    renderApp("/review?tc=all&scope=all&group=position");
-    fireEvent.click(await screen.findByText("Lost wins"));
+describe("Review keeps its settings in the URL and its expansion in the entry", () => {
+  it("a setting change replaces the entry, defaults left out; Reset filters returns to them", async () => {
+    renderApp(["/elsewhere", "/review"]);
+    await screen.findAllByTestId("position-card");
+    fireEvent.change(combo("Time class"), { target: { value: "all" } });
+    await waitFor(() => expect(where()).toBe("/review?tc=all"));
     fireEvent.click(screen.getByRole("button", { name: "Reset filters" }));
     await waitFor(() => expect(where()).toBe("/review"));
-    expect(lastPageCall()).toEqual(["focus", "__all__", "variation"]);
     expect(screen.queryByRole("button", { name: "Reset filters" })).toBeNull();
-    expect(screen.queryAllByRole("link", { name: "Review →" })).toHaveLength(0); // Lost wins collapsed
   });
 
-  it("a stale focused opening is dropped from the URL, the other settings kept", async () => {
-    getReviewPage.mockImplementation((_t: string, opening: string) => (opening === "Scandinavian" ? Promise.reject(new ApiError(422, "unknown opening key: 'Scandinavian'")) : Promise.resolve(page())));
-    renderApp("/review?tc=all&opening=Scandinavian");
-    await screen.findByText(/no longer has review games/);
-    await waitFor(() => expect(where()).toBe("/review?tc=all"));
+  it("an unknown time class is the default", async () => {
+    renderApp("/review?tc=constructor");
+    await screen.findAllByTestId("position-card");
+    expect(lastPageCall()).toEqual(["focus", "__all__"]);
   });
 
-  for (const way of ["browser back", "close"] as const) {
-    it(`${way} from a game returns to the same settings, the same branch open and its rows reloaded`, async () => {
-      renderApp();
-      await screen.findByText("Opening problems");
-      fireEvent.click(screen.getByRole("tab", { name: "All" }));
-      fireEvent.change(combo("Group openings"), { target: { value: "repertoire" } });
-      await waitFor(() => expect(where()).toBe("/review?scope=all&group=repertoire"));
-      fireEvent.click(await screen.findByText("Scandinavian"));
-      fireEvent.click(await screen.findByText("Main Line"));
-      await screen.findByText("magnus_wannabe");
-      expect(getPoolEvents).toHaveBeenCalledTimes(1);
-      const stamped = touchPoolShown.mock.calls.length;
-
-      fireEvent.click(screen.getAllByRole("link", { name: "Review →" })[0]);
-      fireEvent.click(await screen.findByRole("button", { name: way }));
-
-      await screen.findByText("Opening problems");
-      expect(where()).toBe("/review?scope=all&group=repertoire");
-      expect(screen.getByRole("tab", { name: "All" })).toHaveAttribute("aria-selected", "true");
-      expect(combo("Group openings").value).toBe("repertoire");
-      expect(screen.getByText("Main Line")).toBeInTheDocument(); // the family is open
-      expect(await screen.findByText("magnus_wannabe")).toBeInTheDocument(); // the subgroup is open, its rows back
-      expect(getPoolEvents).toHaveBeenCalledTimes(2);
-      expect(getPoolEvents).toHaveBeenLastCalledWith(SUB, "focus", "__all__", "all", 1);
-      expect(touchPoolShown.mock.calls.length).toBe(stamped); // resuming a look is not a new look
-
-      // The top bar after the trip: the default view, collapsed.
-      fireEvent.click(screen.getAllByRole("link", { name: "Review →" })[0]);
-      fireEvent.click(await screen.findByRole("link", { name: "top bar Review" }));
-      await screen.findByText("Opening problems");
-      expect(where()).toBe("/review");
-      expect(screen.getByRole("tab", { name: "To review" })).toHaveAttribute("aria-selected", "true");
-      expect(screen.queryByText("Main Line")).toBeNull();
-      expect(screen.queryByText("magnus_wannabe")).toBeNull();
-    });
-  }
+  it.each(["close", "browser back"])("%s from a game returns to the same settings, the same habit open and its games reloaded", async (way) => {
+    renderApp("/review?tc=all");
+    const rows = await screen.findAllByTestId("habit");
+    fireEvent.click(screen.getByRole("button", { name: /Lost wins/ }));
+    fireEvent.click(within(rows[0]).getByRole("button", { name: /Missed a fork/ }));
+    fireEvent.click(await within(rows[0]).findByRole("link", { name: "Review →" }));
+    expect(screen.getByTestId("game-at")).toHaveTextContent("/review/901?ply=33");
+    fireEvent.click(screen.getByRole("button", { name: way }));
+    const back = await screen.findAllByTestId("habit");
+    expect(where()).toBe("/review?tc=all");
+    expect(within(back[0]).getByRole("button", { name: /Missed a fork/ })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: /Lost wins/ })).toHaveAttribute("aria-expanded", "true");
+    expect(await within(back[0]).findByText("forky")).toBeInTheDocument();
+  });
 
   it("a snapshot taken under other settings is ignored", async () => {
-    const open = { cats: ["opening"], nodes: [FAM, SUB], key: "all|all|__all__|variation" };
-    renderApp({ pathname: "/review", search: "", state: { open } });
-    await screen.findByText("Opening problems");
-    expect(screen.queryByText("Main Line")).toBeNull();
-    expect(getPoolEvents).not.toHaveBeenCalled();
+    renderApp({ pathname: "/review", search: "?tc=all", state: { open: { sections: ["lost"], habits: [], key: "focus|__all__" } } });
+    await screen.findAllByTestId("position-card");
+    expect(screen.getByRole("button", { name: /Lost wins/ })).toHaveAttribute("aria-expanded", "false");
+  });
+});
+
+describe("A position's page", () => {
+  it("opens from a card with the page's settings, and its Back returns to the page as it was", async () => {
+    renderApp("/review?tc=all");
+    fireEvent.click(await screen.findByRole("button", { name: /Lost wins/ }));
+    fireEvent.click(screen.getAllByTestId("position-card")[1]);
+    await screen.findByText("What happens next");
+    expect(where()).toBe(`/review/positions/black/${BIG}?tc=all`);
+    expect(getPositionPage).toHaveBeenCalledWith("black", BIG, "all", "__all__", 1);
+    fireEvent.click(screen.getByRole("button", { name: "← Back" }));
+    await screen.findAllByTestId("position-card");
+    expect(where()).toBe("/review?tc=all");
+    expect(screen.getByRole("button", { name: /Lost wins/ })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("shows the explorer, each game with why it is worth opening, the older games, and links that carry the way back", async () => {
+    renderApp({ pathname: `/review/positions/black/${BIG}`, state: { from: { pathname: "/review", search: "?tc=all" } } });
+    await screen.findByText("What happens next");
+    expect(screen.getByText("Their replies from here.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "c4" })).toHaveAttribute("href", "/review/positions/black/-12");
+    expect(screen.getByText("Fine when you got here (ES 47), turned at 17…Qb6 (−22), lost.")).toBeInTheDocument();
+    expect(screen.getByText("Fine when you got here (ES 50), no single turning point, drew.")).toBeInTheDocument();
+    expect(screen.getByText("Plus 212 older games in the numbers above.")).toBeInTheDocument();
+    const games = screen.getAllByTestId("position-game");
+    expect(within(games[0]).getByRole("link", { name: "Review →" })).toHaveAttribute("href", "/review/501?ply=33");
+    expect(within(games[0]).getByRole("link", { name: "From here" })).toHaveAttribute("href", "/review/501?ply=2");
+    expect(within(games[1]).getByRole("link", { name: "Review →" })).toHaveAttribute("href", "/review/502?ply=2");
+    // A game's Close comes back here; this page's Back still goes where it was opened from.
+    fireEvent.click(within(games[0]).getByRole("link", { name: "Review →" }));
+    fireEvent.click(screen.getByRole("button", { name: "close" }));
+    await screen.findByText("What happens next");
+    expect(where()).toBe(`/review/positions/black/${BIG}`);
+    fireEvent.click(screen.getByRole("button", { name: "← Back" }));
+    await screen.findAllByTestId("position-card");
+    expect(where()).toBe("/review?tc=all");
+  });
+
+  it("a stale focused opening drops to all openings with a notice", async () => {
+    getPositionPage.mockImplementation((_c: string, _k: string, _tc: string, opening: string) => (opening === "__all__" ? Promise.resolve(positionPage()) : Promise.reject(new ApiError(422, "unknown opening key: 'white:Gone'"))));
+    renderApp(`/review/positions/black/${BIG}?tc=all&opening=white%3AGone`);
+    expect(await screen.findByRole("status")).toHaveTextContent("That opening no longer has enough games");
+    await waitFor(() => expect(where()).toBe(`/review/positions/black/${BIG}?tc=all`));
+    expect(await screen.findByText("What happens next")).toBeInTheDocument();
+  });
+
+  it("a stale-opening answer that lands after Back leaves the page Rob went back to alone", async () => {
+    let reject: (e: unknown) => void = () => {};
+    getPositionPage.mockImplementation(() => new Promise((_resolve, rej) => (reject = rej)));
+    renderApp(["/review?tc=all", { pathname: `/review/positions/black/${BIG}`, search: "?tc=all&opening=white%3AGone", state: { from: { pathname: "/review", search: "?tc=all" } } }]);
+    await waitFor(() => expect(getPositionPage).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "← Back" }));
+    await screen.findAllByTestId("position-card");
+    reject(new ApiError(422, "unknown opening key: 'white:Gone'"));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(where()).toBe("/review?tc=all");
+  });
+
+  it("a position no game reaches says so", async () => {
+    getPositionPage.mockRejectedValue(new ApiError(404, "no counted game reaches this position"));
+    renderApp(`/review/positions/white/${BIG}`);
+    expect(await screen.findByRole("alert")).toHaveTextContent("None of your games under this filter reach this position.");
+  });
+});
+
+describe("Review helpers", () => {
+  it("number a line and say why a game matters", () => {
+    expect(lineText(["e4", "d5", "exd5"])).toBe("1.e4 d5 2.exd5");
+    expect(whyThisGame({ ...positionPage().games.rows[0], es_on_arrival: null, turning_state: "not_analysed" })).toBe("Not analysed yet, lost.");
+    expect(whyThisGame({ ...positionPage().games.rows[0], turning_move: null })).toBe("Fine when you got here (ES 47), turned (−22), lost.");
+    expect(whyThisGame({ ...positionPage().games.rows[0], es_on_arrival: 31 })).toBe("Already worse when you got here (ES 31), turned at 17…Qb6 (−22), lost.");
   });
 });
