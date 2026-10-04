@@ -218,3 +218,53 @@ export async function skipPuzzle(body: { ptype: string; subtype: string | null; 
     throw err;
   }
 }
+
+/** One node of the repertoire filter: `count` is how many positions that scope serves (the rows
+ *  its browse list shows). */
+export interface RepertoireScopeLine {
+  id: number;
+  title: string;
+  count: number;
+}
+export interface RepertoireScopeChapter {
+  id: number;
+  title: string;
+  count: number;
+  lines: RepertoireScopeLine[];
+}
+export interface RepertoireScopeBook {
+  id: number;
+  title: string;
+  color: "white" | "black";
+  count: number;
+  chapters: RepertoireScopeChapter[];
+}
+
+export async function getRepertoireScopes(): Promise<RepertoireScopeBook[]> {
+  const data = await api.get<{ books: RepertoireScopeBook[] }>("/practice/repertoire-scopes");
+  return data.books;
+}
+
+/** A repertoire SubType: `book:<id>`, `chapter:<id>`, `line:<id>`, or a bare `<id>` (a line, the
+ *  older spelling). Anything else is no filter here; the server refuses it. */
+export function parseRepertoireSubtype(subtype: string | null): { kind: "book" | "chapter" | "line"; id: number } | null {
+  if (!subtype) return null;
+  const m = /^(?:(book|chapter|line):)?([1-9][0-9]{0,9})$/.exec(subtype);
+  if (!m) return null;
+  return { kind: (m[1] as "book" | "chapter" | "line" | undefined) ?? "line", id: Number(m[2]) };
+}
+
+/** Where a SubType sits in the tree: the book, chapter and line it selects (null above it). */
+export function locateScope(books: RepertoireScopeBook[], subtype: string | null): { book: number | null; chapter: number | null; line: number | null } {
+  const none = { book: null, chapter: null, line: null };
+  const parsed = parseRepertoireSubtype(subtype);
+  if (!parsed) return none;
+  for (const b of books) {
+    if (parsed.kind === "book" && b.id === parsed.id) return { book: b.id, chapter: null, line: null };
+    for (const c of b.chapters) {
+      if (parsed.kind === "chapter" && c.id === parsed.id) return { book: b.id, chapter: c.id, line: null };
+      for (const l of c.lines) if (parsed.kind === "line" && l.id === parsed.id) return { book: b.id, chapter: c.id, line: l.id };
+    }
+  }
+  return none;
+}
