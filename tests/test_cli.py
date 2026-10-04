@@ -198,6 +198,7 @@ def test_the_hourly_chain_generates_puzzles_after_analysis(
         "srs-maintain",
         "import-opponents",
         "review",
+        "position-evals",
         "housekeep",
     ]
 

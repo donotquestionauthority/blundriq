@@ -18,6 +18,7 @@ HOURLY_STEPS = (
     "srs-maintain",
     "import-opponents",
     "review",
+    "position-evals",
     "housekeep",
 )
 

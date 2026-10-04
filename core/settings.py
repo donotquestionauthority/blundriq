@@ -423,6 +423,20 @@ class Settings(BaseModel):
     review_recency_half_life_games: int = Field(
         default=200, ge=10, description="Half-life (games) for recency weighting."
     )
+    # Review's position statistics read the opening prefix every analysable game keeps
+    # (core.constants.OPENING_PREFIX_PLIES), over this many months back from the newest game.
+    # A board needs this many games through it before it can be counted, and only boards up to
+    # this ply are positions. `pipeline position-evals` evaluates exactly the boards these
+    # three admit; the backfill reaches as far back as the history.
+    review_history_months: int = Field(
+        default=12, ge=1, le=36, description="Months of games counted toward a position's numbers."
+    )
+    review_position_min_games: int = Field(
+        default=10, ge=3, le=100, description="Games through a position before it can be ranked."
+    )
+    review_position_max_ply: int = Field(
+        default=24, ge=4, le=30, description="Deepest ply (half-move) counted as a position."
+    )
     review_default_mode: Literal["learn", "review"] = Field(
         default="learn", description="Mode the game review opens in."
     )

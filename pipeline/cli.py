@@ -10,6 +10,8 @@
     pipeline srs-maintain                         un-retire mastered puzzles whose pattern recurred
     pipeline import-opponents [--profile ID] [--reset-lichess-cursors]   scouted opponents' games
     pipeline review [--workers N]                 retag the window's review events
+    pipeline position-evals [--limit N]           evaluate Review positions (hourly: 40; 0 = all)
+    pipeline backfill-openings [--months N]       opening prefix for games stored before it existed
     pipeline import-corpus --csv FILE             rebuild the Lichess CC0 corpus sample
     pipeline import-repertoire FILE --mode update|scratch [--preserve-manual] [--dry-run]
     pipeline housekeep
@@ -34,10 +36,12 @@ from psycopg.rows import DictRow, dict_row
 
 from core import db, housekeeping, migrate, notify, player, runs, schema, settings
 from core.analysis import run as analysis
+from core.ingest import backfill
 from core.ingest import run as ingest
 from core.puzzles import corpus, srs
 from core.puzzles.generate import run as puzzles
 from core.repertoire import importing, matching
+from core.review import evals as position_evals
 from core.review import run as review
 from core.scout import importing as scout_importing
 
@@ -167,6 +171,22 @@ def _step_review(conn: psycopg.Connection[Any], args: argparse.Namespace) -> dic
     return review.run(conn, workers=int(getattr(args, "workers", None) or 1))
 
 
+def _step_position_evals(conn: psycopg.Connection[Any], args: argparse.Namespace) -> dict[str, Any]:
+    """`--limit 0` evaluates every pending position (the Mac's first pass); the hourly chain
+    passes nothing and evaluates at most POSITION_EVALS_PER_RUN."""
+    from core.constants import POSITION_EVALS_PER_RUN
+
+    limit = getattr(args, "evals_limit", None)
+    if limit is None:
+        limit = POSITION_EVALS_PER_RUN
+    return position_evals.run(conn, settings.load(conn), limit=limit or None)
+
+
+def _step_backfill_openings(conn: psycopg.Connection[Any], args: argparse.Namespace) -> dict[str, Any]:
+    months = getattr(args, "months", None) or settings.load(conn).review_history_months
+    return backfill.backfill_openings(conn, months=int(months))
+
+
 def _step_housekeep(conn: psycopg.Connection[Any], _: argparse.Namespace) -> dict[str, Any]:
     return housekeeping.run(conn, settings.load(conn).analysis_game_limit)
 
@@ -224,6 +244,7 @@ def hourly_steps() -> dict[str, Step]:
         "srs-maintain": _step_srs_maintain,
         "import-opponents": _step_import_opponents,
         "review": _step_review,
+        "position-evals": _step_position_evals,
         "housekeep": _step_housekeep,
     }
     return {name: steps[name] for name in runs.HOURLY_STEPS}
@@ -342,6 +363,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_rev = sub.add_parser("review", help="retag the window's review events (the Review pages read them)")
     p_rev.add_argument("--workers", type=int, help="tagging processes (default 1)")
     p_rev.set_defaults(func=_cmd("review", _step_review))
+
+    p_ev = sub.add_parser("position-evals", help="engine evaluation of each Review position that lacks one")
+    p_ev.add_argument("--limit", dest="evals_limit", type=int, help="at most N positions (default 40; 0 = all)")
+    p_ev.set_defaults(func=_cmd("position-evals", _step_position_evals))
+
+    p_bf = sub.add_parser("backfill-openings", help="opening prefix for stored games that have none (re-fetches)")
+    p_bf.add_argument("--months", type=int, help="how far back (default: review_history_months)")
+    p_bf.set_defaults(func=_cmd("backfill-openings", _step_backfill_openings))
 
     p_corpus = sub.add_parser("import-corpus", help="rebuild the Lichess CC0 corpus sample from the published CSV")
     p_corpus.add_argument("--csv", required=True, help="the decompressed lichess_db_puzzle.csv")

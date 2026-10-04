@@ -52,6 +52,17 @@ AS $function$
 $function$
 ;
 
+-- The position keys of a game's first 31 positions (its first 30 moves): the opening prefix
+-- Review keeps for every game after the bulk payload is gone (migration 007).
+CREATE OR REPLACE FUNCTION public.bq_opening_keys(fens jsonb)
+ RETURNS bigint[]
+ LANGUAGE sql
+ IMMUTABLE PARALLEL SAFE STRICT
+AS $function$
+  SELECT public.bq_position_keys(jsonb_path_query_array(fens, '$[0 to 30]'))
+$function$
+;
+
 CREATE OR REPLACE FUNCTION public.bq_material_sig(fen text)
  RETURNS text
  LANGUAGE sql
@@ -184,7 +195,7 @@ CREATE SEQUENCE public.chapters_id_seq
 
 ALTER SEQUENCE public.chapters_id_seq OWNED BY public.chapters.id;
 
--- Every imported game (own and opponents'), deduplicated by platform id. fen_sequence has len(moves)+1 entries; position_keys is a generated hash array used for repertoire/scout matching via the GIN index.
+-- Every imported game (own and opponents'), deduplicated by platform id. fen_sequence has len(moves)+1 entries; position_keys is a generated hash array used for repertoire/scout matching via the GIN index. opening_moves / opening_keys are the first 30 moves and 31 position keys, kept for every analysable game after housekeeping nulls the bulk payload (Review's position statistics; NULL = not recorded yet).
 CREATE TABLE public.chess_games (
     id bigint NOT NULL,
     platform text NOT NULL,
@@ -212,6 +223,8 @@ CREATE TABLE public.chess_games (
     canonical_variation text,
     position_keys bigint[] GENERATED ALWAYS AS (public.bq_position_keys(fen_sequence)) STORED,
     clocks jsonb,
+    opening_moves jsonb,
+    opening_keys bigint[],
     CONSTRAINT chess_games_analysis_status_check CHECK ((analysis_status = ANY (ARRAY['unanalyzed'::text, 'pending'::text, 'completed'::text, 'failed_retryable'::text, 'failed_permanent'::text]))),
     CONSTRAINT chess_games_canonical_pair_coherent CHECK (((canonical_family IS NULL) = (canonical_variation IS NULL))),
     CONSTRAINT chess_games_chess960_starting_fen_matches_seq CHECK (((variant = 'standard'::text) OR (fen_sequence IS NULL) OR ((fen_sequence ->> 0) = starting_fen))),
@@ -870,6 +883,8 @@ CREATE INDEX ix_chapters_book_id ON public.chapters USING btree (book_id);
 
 CREATE UNIQUE INDEX ix_chapters_identity ON public.chapters USING btree (book_id, title, root_fen) NULLS NOT DISTINCT;
 
+CREATE INDEX ix_chess_games_opening_keys ON public.chess_games USING gin (opening_keys);
+
 CREATE INDEX ix_chess_games_pending ON public.chess_games USING btree (analysis_status) WHERE (analysis_status = ANY (ARRAY['unanalyzed'::text, 'failed_retryable'::text, 'pending'::text]));
 
 CREATE INDEX ix_chess_games_played_at ON public.chess_games USING btree (played_at DESC);
@@ -1096,6 +1111,18 @@ CREATE SEQUENCE public.ai_calls_id_seq AS bigint START WITH 1 INCREMENT BY 1 NO 
 ALTER SEQUENCE public.ai_calls_id_seq OWNED BY public.ai_calls.id;
 ALTER TABLE ONLY public.ai_calls ALTER COLUMN id SET DEFAULT nextval('public.ai_calls_id_seq'::regclass);
 CREATE INDEX ix_ai_calls_called_at ON public.ai_calls USING btree (called_at DESC);
+
+-- One engine evaluation per board (board_key = bq_position_key of fen), White's point of view like ply_analysis: eval_cp, or mate_in in moves. Written by `pipeline position-evals`, read by Review.
+CREATE TABLE public.position_evals (
+    board_key bigint NOT NULL,
+    fen text NOT NULL,
+    eval_cp integer,
+    mate_in integer,
+    depth integer NOT NULL,
+    computed_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT position_evals_pkey PRIMARY KEY (board_key),
+    CONSTRAINT position_evals_one_score CHECK (((eval_cp IS NULL) <> (mate_in IS NULL)))
+);
 
 -- Which schema version this database is at. Written by `pipeline db init` (fresh) and `pipeline db upgrade`.
 CREATE TABLE public.schema_version (
