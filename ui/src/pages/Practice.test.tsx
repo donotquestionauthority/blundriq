@@ -596,7 +596,7 @@ describe("Practice page", () => {
     nextDrop = { from: "a1", to: "a8" };
     fireEvent.click(screen.getByText("drop"));
     expect(await screen.findByText(/Couldn't save your attempt/)).toBeInTheDocument();
-    expect(screen.getByText("Replay")).toBeDisabled();
+    expect(await screen.findByText("Replay")).toBeDisabled(); // the button renders a tick after the banner
     fireEvent.click(screen.getByText("Replay"));
     fireEvent.click(screen.getByText("drop"));
     await flush();
@@ -705,7 +705,7 @@ describe("Practice page", () => {
     expect(await screen.findByText(/Couldn't save your attempt/)).toBeInTheDocument();
     const attempts = () => calls.filter((c) => c.path === "/practice/puzzles/11/attempt");
     expect(attempts()[0].body).toMatchObject({ solved: false, moves_played: "Rb1" });
-    expect(screen.getByText("Try Again")).toBeDisabled();
+    expect(await screen.findByText("Try Again")).toBeDisabled(); // the button renders a tick after the banner
     fireEvent.click(screen.getByText("Try Again"));
     nextDrop = { from: "a1", to: "a8" };
     fireEvent.click(screen.getByText("drop"));
