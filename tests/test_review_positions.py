@@ -115,7 +115,6 @@ def test_a_populated_upgrade_gives_window_games_their_prefix_and_keeps_review_st
 ) -> None:
     from psycopg import sql
 
-    from core.review import read
     from tests.test_schema import FIXTURES, _scratch
 
     url = _scratch(fresh_db_url, "prefix_v6")
@@ -146,14 +145,23 @@ def test_a_populated_upgrade_gives_window_games_their_prefix_and_keeps_review_st
             "INSERT INTO review_pool_state (player_id, pool_id, last_shown_at) VALUES (1, 'v1:route:faded', now())"
         )
         c.commit()
-        assert schema.upgrade(c) == [n for n, _ in schema.migration_files() if n > 6]
+        v7 = tmp_path / "v7"
+        v7.mkdir()
+        for n, path in schema.migration_files():
+            if n <= 7:
+                (v7 / path.name).write_text(path.read_text())
+        assert schema.upgrade(c, v7) == [7]
         got = _prefix(c, "inside")
         assert got["opening_moves"] == LONG[:OPENING_PREFIX_PLIES]
         assert got["opening_keys"] == got["window_keys"] and len(got["opening_keys"]) == OPENING_PREFIX_PLIES + 1
         assert _prefix(c, "outside")["opening_keys"] is None  # not recorded yet, for the backfill
         assert _prefix(c, "c960")["opening_keys"] is None and _prefix(c, "c960")["opening_moves"] is None
-        # Between the two Review PRs the deployed worklist still reads and writes this table.
-        assert list(read._pool_state(c)) == ["v1:route:faded"]  # type: ignore[reportPrivateUsage]
+        # Between the two Review releases the deployed worklist still reads and writes this table.
+        assert c.execute("SELECT pool_id FROM review_pool_state").fetchall() == [{"pool_id": "v1:route:faded"}]
+        # The page that no longer reads it is live before the table goes, and nothing else goes with it.
+        assert schema.upgrade(c) == [n for n, _ in schema.migration_files() if n > 7]
+        assert c.execute("SELECT to_regclass('public.review_pool_state') AS t").fetchone() == {"t": None}
+        assert _prefix(c, "inside")["opening_moves"] == LONG[:OPENING_PREFIX_PLIES]
 
 
 # --- the importer ---------------------------------------------------------------------------

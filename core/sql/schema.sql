@@ -692,13 +692,6 @@ CREATE SEQUENCE public.review_events_id_seq
 
 ALTER SEQUENCE public.review_events_id_seq OWNED BY public.review_events.id;
 
--- When the Review worklist last showed each node, for representative rotation.
-CREATE TABLE public.review_pool_state (
-    player_id integer NOT NULL,
-    pool_id text NOT NULL,
-    last_shown_at timestamp with time zone NOT NULL
-);
-
 ALTER TABLE ONLY public.blunders ALTER COLUMN id SET DEFAULT nextval('public.blunders_id_seq'::regclass);
 
 ALTER TABLE ONLY public.books ALTER COLUMN id SET DEFAULT nextval('public.books_id_seq'::regclass);
@@ -851,9 +844,6 @@ ALTER TABLE ONLY public.review_events
 
 ALTER TABLE ONLY public.review_events
     ADD CONSTRAINT review_events_player_id_chess_game_id_anchor_ply_key UNIQUE (player_id, chess_game_id, anchor_ply);
-
-ALTER TABLE ONLY public.review_pool_state
-    ADD CONSTRAINT review_pool_state_pkey PRIMARY KEY (player_id, pool_id);
 
 CREATE INDEX idx_chess_games_variant_played_at ON public.chess_games USING btree (variant, played_at DESC) WHERE (variant <> 'standard'::text);
 
@@ -1063,9 +1053,6 @@ ALTER TABLE ONLY public.review_detection_state
 
 ALTER TABLE ONLY public.review_events
     ADD CONSTRAINT review_events_chess_game_id_player_id_fkey FOREIGN KEY (chess_game_id, player_id) REFERENCES public.player_games(chess_game_id, player_id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY public.review_pool_state
-    ADD CONSTRAINT review_pool_state_player_id_fkey FOREIGN KEY (player_id) REFERENCES public.players(id) ON DELETE CASCADE;
 
 -- ---------------------------------------------------------------------------
 -- Tables new in this schema

@@ -44,3 +44,21 @@ def moves_to_fen_sequence(moves: list[str], starting_fen: str | None = None, var
         board.push(move)
         fens.append(board.fen())
     return fens
+
+
+def replay(moves: list[str], ply: int) -> chess.Board | None:
+    """The board after the first `ply` moves from the standard start, or None when a move is
+    missing, does not parse, or is the null move (python-chess parses `--`, `Z0`, `0000` as
+    a move without complaint)."""
+    if ply < 0 or len(moves) < ply:
+        return None
+    board = chess.Board()
+    for san in moves[:ply]:
+        try:
+            move = board.parse_san(san)
+        except ValueError:
+            return None
+        if not move or move not in board.legal_moves:
+            return None
+        board.push(move)
+    return board

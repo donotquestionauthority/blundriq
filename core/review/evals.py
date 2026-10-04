@@ -24,6 +24,7 @@ import chess
 import chess.engine
 from psycopg import Connection
 
+from core.chess.board import replay
 from core.constants import POSITION_EVALS_PER_RUN, STOCKFISH_DEPTH
 from core.review import positions
 from core.settings import Settings
@@ -31,24 +32,6 @@ from core.settings import Settings
 # (centipawns, mate in moves), White's point of view; exactly one is not None.
 Score = tuple[int | None, int | None]
 Analyser = Callable[[chess.Board], Score]
-
-
-def replay(moves: list[str], ply: int) -> chess.Board | None:
-    """The board after the first `ply` moves from the standard start, or None when a move is
-    missing, does not parse, or is the null move (python-chess parses `--`, `Z0`, `0000` as
-    a move without complaint)."""
-    if ply < 0 or len(moves) < ply:
-        return None
-    board = chess.Board()
-    for san in moves[:ply]:
-        try:
-            move = board.parse_san(san)
-        except ValueError:
-            return None
-        if not move or move not in board.legal_moves:
-            return None
-        board.push(move)
-    return board
 
 
 def _score(info: chess.engine.InfoDict) -> Score | None:

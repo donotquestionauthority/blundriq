@@ -241,7 +241,7 @@ def blunders_for_game(conn: Connection[Any], game_id: int) -> list[dict[str, Any
 
 def mark_reviewed(conn: Connection[Any], game_id: int) -> None:
     """Stamp `reviewed_at` once: the first landing on the game sets it and every later one
-    leaves it (the worklist's only progress authority). The gate runs first."""
+    leaves it (the Review page's reviewed tick reads it). The gate runs first."""
     review_gate(conn, game_id)
     conn.execute(
         "UPDATE player_games SET reviewed_at = now()"

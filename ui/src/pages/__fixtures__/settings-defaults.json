@@ -151,6 +151,7 @@
   "review_position_max_ply": 24,
   "review_position_min_games": 10,
   "review_quiesce_max_plies": 6,
+  "review_recency_half_life_days": 30,
   "review_recency_half_life_games": 200,
   "review_show_timer": true,
   "scout_bayesian_prior_strength": 10,
