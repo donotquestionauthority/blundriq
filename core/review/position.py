@@ -108,11 +108,16 @@ def order_games(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _children(conn: Connection[Any], scope: Scope, colour: str, key: int, max_ply: int) -> list[dict[str, Any]]:
+    """The moves played from the board, most played first. A move is `linkable` when the board it
+    leads to is a position of its own somewhere in these games: first reached after at least one
+    move. The one board that never is, the start, is still listed (games do return to it) but
+    has no page; every other child's first occurrence is at ply 1 or later, so its page exists."""
     query = cast(
         LiteralString,
         f"""
         WITH {scope.games_ctes()}, {occurrence_ctes(keyed=True)}
         SELECT cg.opening_moves ->> o.ply AS san, cg.opening_keys[o.ply + 2] AS child, o.ply,
+               bool_or(array_position(cg.opening_keys, cg.opening_keys[o.ply + 2]) > 1) AS linkable,
                count(*) AS n, avg(g.s) AS score, avg(g.e) AS expected
         FROM occ o JOIN games g ON g.id = o.id JOIN chess_games cg ON cg.id = o.id
         WHERE o.player_color = %(colour)s AND jsonb_array_length(cg.opening_moves) > o.ply
@@ -125,7 +130,10 @@ def _children(conn: Connection[Any], scope: Scope, colour: str, key: int, max_pl
     merged: dict[tuple[str, int], dict[str, Any]] = {}
     for r in rows:
         k = (r["san"], int(r["child"]))
-        m = merged.setdefault(k, {"san": r["san"], "key": str(r["child"]), "n": 0, "s": 0.0, "e": 0.0})
+        m = merged.setdefault(
+            k, {"san": r["san"], "key": str(r["child"]), "linkable": False, "n": 0, "s": 0.0, "e": 0.0}
+        )
+        m["linkable"] = m["linkable"] or bool(r["linkable"])
         m["n"] += int(r["n"])
         m["s"] += float(r["score"]) * int(r["n"])
         m["e"] += float(r["expected"]) * int(r["n"])
@@ -133,6 +141,7 @@ def _children(conn: Connection[Any], scope: Scope, colour: str, key: int, max_pl
         {
             "san": m["san"],
             "key": m["key"],
+            "linkable": m["linkable"],
             "n": m["n"],
             "score": round(m["s"] / m["n"], 4),
             "expected": round(m["e"] / m["n"], 4),

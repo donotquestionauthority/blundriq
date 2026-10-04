@@ -5,7 +5,7 @@ import Review from "./Review";
 import ReviewPosition from "./ReviewPosition";
 import { ApiError } from "../api";
 import { returnTarget } from "../utils/returnTo";
-import { lineText, whyThisGame } from "../review";
+import { lineText, readPositionPage, whyThisGame } from "../review";
 import type { HabitGame, PositionPage, ReviewHabit, ReviewPage, ReviewPosition as Position } from "../review";
 
 // The network calls are mocked; the labels and helpers are the real ones.
@@ -96,8 +96,9 @@ const habitGames = (): { rows: HabitGame[]; total: number; page: number; page_si
 const positionPage = (over: Partial<PositionPage> = {}): PositionPage => ({
   node: { ...position({ key: BIG }), rob_to_move: false, ply: 2 },
   children: [
-    { san: "c4", key: "-12", n: 60, score: 0.4, expected: 0.5 },
-    { san: "Nf3", key: "13", n: 30, score: 0.55, expected: 0.5 },
+    { san: "c4", key: "-12", linkable: true, n: 60, score: 0.4, expected: 0.5 },
+    { san: "Nf3", key: "13", linkable: true, n: 30, score: 0.55, expected: 0.5 },
+    { san: "Ng8", key: "99", linkable: false, n: 12, score: 0.5, expected: 0.5 },
   ],
   games: {
     rows: [
@@ -338,6 +339,43 @@ describe("A position's page", () => {
     await screen.findAllByTestId("position-card");
     expect(where()).toBe("/review?tc=all");
     expect(screen.getByRole("button", { name: /Lost wins/ })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("a move back to the starting position is listed without a link", async () => {
+    renderApp(`/review/positions/black/${BIG}`);
+    await screen.findByText("What happens next");
+    expect(screen.getByText("Ng8").closest("a")).toBeNull();
+    expect(screen.getByRole("link", { name: "Nf3" })).toHaveAttribute("href", "/review/positions/black/13");
+  });
+
+  it.each(["close", "browser back"])("%s from a game on page 2 comes back to page 2", async (way) => {
+    const rows = positionPage().games.rows;
+    getPositionPage.mockImplementation((_c: string, _k: string, _tc: string, _o: string, page: number) =>
+      Promise.resolve(positionPage({ games: { rows: page === 2 ? [{ ...rows[0], chess_game_id: 777 }] : rows, total: 51, page, page_size: 50, total_pages: 2 } })),
+    );
+    renderApp({ pathname: `/review/positions/black/${BIG}`, search: "?tc=all", state: { from: { pathname: "/review", search: "?tc=all" } } });
+    await screen.findByText("What happens next");
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    await waitFor(() => expect(where()).toBe(`/review/positions/black/${BIG}?tc=all&page=2`));
+    const game = await screen.findByRole("link", { name: "Review →" });
+    expect(game).toHaveAttribute("href", "/review/777?ply=33");
+    fireEvent.click(game);
+    fireEvent.click(screen.getByRole("button", { name: way }));
+    await screen.findByText("What happens next");
+    expect(where()).toBe(`/review/positions/black/${BIG}?tc=all&page=2`);
+    expect(getPositionPage).toHaveBeenLastCalledWith("black", BIG, "all", "__all__", 2);
+    expect(await screen.findByRole("link", { name: "Review →" })).toHaveAttribute("href", "/review/777?ply=33");
+    // Its own Back still returns to the Review page; Previous returns to the first page.
+    fireEvent.click(screen.getByRole("button", { name: "Previous" }));
+    await waitFor(() => expect(where()).toBe(`/review/positions/black/${BIG}?tc=all`));
+    fireEvent.click(screen.getByRole("button", { name: "← Back" }));
+    await screen.findAllByTestId("position-card");
+    expect(where()).toBe("/review?tc=all");
+  });
+
+  it("reads a page it does not understand as the first", () => {
+    for (const raw of ["0", "-2", "x", "1e3", "999999"]) expect(readPositionPage(new URLSearchParams(`page=${raw}`))).toBe(1);
+    expect(readPositionPage(new URLSearchParams("page=3"))).toBe(3);
   });
 
   it("shows the explorer, each game with why it is worth opening, the older games, and links that carry the way back", async () => {

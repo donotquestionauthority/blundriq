@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { useApi } from "../hooks/useApi";
 import { daysAgo } from "../blunders";
-import { OPENING_ALL, engineLabel, getPositionPage, isStaleOpeningError, lineText, pct, pointsAMonth, positionPath, readReviewSettings, reviewSettingsSearch, whyThisGame } from "../review";
+import { OPENING_ALL, engineLabel, getPositionPage, isStaleOpeningError, lineText, pct, pointsAMonth, positionPath, positionSearch, readPositionPage, readReviewSettings, reviewSettingsSearch, whyThisGame } from "../review";
 import type { PositionGame } from "../review";
 import { PositionBoard, StatusChip, TrendBars } from "../components/ReviewBits";
 import { returnTarget } from "../utils/returnTo";
@@ -10,8 +10,8 @@ import type { From } from "../utils/returnTo";
 
 /**
  * One position's page at `/review/positions/:colour/:key`, under the Review page's two settings
- * (the same query string). The board as Rob reached it, the line most of his games took to it, its
- * numbers and trend, what happens next (each move a link to that position's page), and his games
+ * (the same query string, plus `page` for the games past the first fifty). The board as Rob reached it, the line most of his games took to it, its
+ * numbers and trend, what happens next (each move a link to that position's page, except a return to the start), and his games
  * through it whose moves are still stored: playable-then-not-won first, each with one sentence on
  * why it is worth opening. "Review" opens the game at its turning point, "From here" at the board;
  * both carry this page's whole state as the way back, so a game's Close returns here and this page's
@@ -52,13 +52,11 @@ export default function ReviewPosition() {
   const navigate = useNavigate();
   const settings = readReviewSettings(new URLSearchParams(location.search));
   const { timeClass, opening } = settings;
-  const [page, setPage] = useState(1);
-  const [pageFor, setPageFor] = useState(`${colour}:${key}:${location.search}`);
-  const here = `${colour}:${key}:${location.search}`;
-  if (pageFor !== here) {
-    setPageFor(here);
-    setPage(1);
-  }
+  // The page of games is the URL's too, so a game's Close, browser Back and a reload all come
+  // back to it. A settings change or another position's link starts again from page 1, since
+  // neither carries it.
+  const page = readPositionPage(new URLSearchParams(location.search));
+  const setPage = (next: number) => navigate({ pathname: location.pathname, search: positionSearch(settings, next) }, { replace: true, state: location.state });
 
   // A response belongs to the view it was asked for: one that lands after Back, a link or a
   // settings change must not act on whatever is showing now.
@@ -158,9 +156,13 @@ export default function ReviewPosition() {
                   {data.children.map((c) => (
                     <tr key={c.key} className="border-t border-zinc-200 dark:border-zinc-800">
                       <td className="py-1 pr-4 font-mono">
-                        <Link to={positionPath(node.colour, c.key, settings)} state={location.state} className="underline">
-                          {c.san}
-                        </Link>
+                        {c.linkable ? (
+                          <Link to={positionPath(node.colour, c.key, settings)} state={location.state} className="underline">
+                            {c.san}
+                          </Link>
+                        ) : (
+                          <span title="Back to the starting position, which is not a position of its own">{c.san}</span>
+                        )}
                       </td>
                       <td className="py-1 pr-4 text-right tabular-nums">{c.n}</td>
                       <td className="py-1 pr-4 text-right tabular-nums">{pct(c.score)}</td>
@@ -185,13 +187,13 @@ export default function ReviewPosition() {
                 </ul>
                 {data.games.total_pages > 1 && (
                   <div className="mt-2 flex items-center gap-3 text-xs text-zinc-500">
-                    <button type="button" className={btn} disabled={page <= 1} onClick={() => setPage((n) => n - 1)}>
+                    <button type="button" className={btn} disabled={page <= 1} onClick={() => setPage(page - 1)}>
                       Previous
                     </button>
                     <span>
                       Page {data.games.page} of {data.games.total_pages}
                     </span>
-                    <button type="button" className={btn} disabled={page >= data.games.total_pages} onClick={() => setPage((n) => n + 1)}>
+                    <button type="button" className={btn} disabled={page >= data.games.total_pages} onClick={() => setPage(page + 1)}>
                       Next
                     </button>
                   </div>

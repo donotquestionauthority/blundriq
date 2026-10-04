@@ -163,6 +163,8 @@ export interface PositionGame {
 export interface PositionChild {
   san: string;
   key: string;
+  /** False when the move goes back to a board that is never a position of its own (the start). */
+  linkable: boolean;
   n: number;
   score: number;
   expected: number;
@@ -182,6 +184,21 @@ export const getReviewPage = (timeClass: ReviewTimeClass, opening: string) => ap
 export const getHabitGames = (habitId: string, timeClass: ReviewTimeClass, opening: string, page: number) => api.get<Paged<HabitGame>>(`/review/habits/${encodeURIComponent(habitId)}?${q({ time_class: timeClass, opening, page })}`);
 
 export const getPositionPage = (colour: string, key: string, timeClass: ReviewTimeClass, opening: string, page: number) => api.get<PositionPage>(`/review/positions/${encodeURIComponent(colour)}/${encodeURIComponent(key)}?${q({ time_class: timeClass, opening, page })}`);
+
+/** The page of a position's games from its query string: a positive integer, else 1. */
+export function readPositionPage(params: URLSearchParams): number {
+  const raw = params.get("page") ?? "";
+  const n = /^[0-9]{1,5}$/.test(raw) ? Number(raw) : 1;
+  return n >= 1 ? n : 1;
+}
+
+/** A position page's query string: the settings, then the page when it is not the first. */
+export function positionSearch(s: ReviewSettings, page: number): string {
+  const q = new URLSearchParams(reviewSettingsSearch(s));
+  if (page > 1) q.set("page", String(page));
+  const qs = q.toString();
+  return qs ? `?${qs}` : "";
+}
 
 /** A position's page, under the same settings as the page that links to it. */
 export const positionPath = (colour: string, key: string, s: ReviewSettings) => `/review/positions/${colour}/${key}${reviewSettingsSearch(s)}`;

@@ -241,3 +241,29 @@ def test_a_board_read_past_the_ranking_plies_has_no_status(clean: psycopg.Connec
     assert deep is not None and deep["node"]["n"] == 12 and deep["node"]["status"] is None
     ranked = pp.position_page(clean, scope(Settings(review_position_min_games=3)), "black", key_of(clean, SCANDI), 1)
     assert ranked is not None and ranked["node"]["status"] is not None
+
+
+def test_every_linked_move_has_a_page_and_a_return_to_the_start_has_none(clean: psycopg.Connection[DictRow]) -> None:
+    """Games that go back to the starting position: the move is listed, but the start is never a
+    position of its own (it is first reached at ply 0), so it gets no link. Every move that is
+    linked opens a page under the same filters."""
+    g = Games(clean)
+    knights = "Nf3 Nf6 Ng1 Ng8 e4 e5".split()
+    for day in range(1, 13):
+        g.add(knights, colour="white", days=day)
+    for day in range(1, 4):
+        g.add(knights[:3] + ["Nc6"], colour="white", days=day)
+    sc = scope()
+    start = key_of(clean, [])
+    assert pp.position_page(clean, sc, "white", start, 1) is None
+    for depth in range(1, len(knights) + 1):
+        if key_of(clean, knights[:depth]) == start:
+            continue
+        page = pp.position_page(clean, sc, "white", key_of(clean, knights[:depth]), 1)
+        assert page is not None
+        for child in page["children"]:
+            target = pp.position_page(clean, sc, "white", int(child["key"]), 1)
+            assert child["linkable"] == (target is not None), (knights[:depth], child["san"])
+    after_ng1 = pp.position_page(clean, sc, "white", key_of(clean, knights[:3]), 1)
+    assert after_ng1 is not None
+    assert [(c["san"], c["n"], c["linkable"]) for c in after_ng1["children"]] == [("Ng8", 12, False), ("Nc6", 3, True)]
