@@ -258,7 +258,7 @@ describe("Review page", () => {
     // The second has a visit the engine has not checked: it says so, and the strip shows it grey.
     expect(cards[1]).toHaveTextContent("Inside 1.d4 d5 2.Bf4 c5 3.e3 Nc6 4.Nc3");
     expect(cards[1]).toHaveTextContent("6 of 7 visits checked");
-    expect(cards[1]).toHaveTextContent("Not yet checked");
+    expect(within(cards[1]).getByText("Not yet checked")).toHaveAttribute("title", expect.stringContaining("waiting for the engine"));
     expect(within(cards[1]).getByTestId("strip").querySelectorAll('[data-visit="unknown"]')).toHaveLength(1);
     // Keys stay strings all the way into the URL.
     expect(cards[1].getAttribute("href")).toBe(`/review/positions/black/${BIG}`);
@@ -296,6 +296,7 @@ describe("Review page", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Fixed\?/ }));
     const card = screen.getAllByTestId("mistake-card").find((c) => c.getAttribute("data-key") === "77");
     expect(card).toHaveTextContent("Not reached lately");
+    expect(card).toHaveTextContent("Costly in 12 of 15 games · ≈1.6 points given away over 12 months");
     expect(within(card as HTMLElement).getByTestId("strip").querySelectorAll('[data-visit="fine"]')).toHaveLength(3);
   });
 

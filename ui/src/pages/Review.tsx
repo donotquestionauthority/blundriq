@@ -322,7 +322,7 @@ export default function Review() {
   const resultLines = lines(data ? [...data.positions.ranked, ...data.positions.fixed] : []);
   const mistakeLines = lines(data ? [...data.mistakes.ranked, ...data.mistakes.fixed] : []);
   const card = (p: ReviewPosition, fixed: boolean) => <PositionCard key={`${p.colour}:${p.key}`} p={p} to={positionPath(p.colour, p.key, settings)} from={from} parentLine={p.parent_key ? (resultLines.get(`${p.colour}:${p.parent_key}`) ?? null) : null} fixed={fixed} months={data?.meta.history_months ?? 12} />;
-  const mistakeCard = (m: Mistake) => <MistakeCard key={`${m.colour}:${m.key}`} m={m} to={positionPath(m.colour, m.key, settings)} from={from} parentLine={m.parent_key ? (mistakeLines.get(`${m.colour}:${m.parent_key}`) ?? null) : null} />;
+  const mistakeCard = (m: Mistake, fixed = false) => <MistakeCard key={`${m.colour}:${m.key}`} m={m} to={positionPath(m.colour, m.key, settings)} from={from} parentLine={m.parent_key ? (mistakeLines.get(`${m.colour}:${m.parent_key}`) ?? null) : null} fixed={fixed} months={data?.meta.history_months ?? 12} />;
   const cards = "grid grid-cols-1 gap-2 lg:grid-cols-2";
 
   const months = data?.meta.history_months ?? 12;
@@ -392,7 +392,7 @@ export default function Review() {
                     : "No opening move of yours keeps costing you right now."}
                 </p>
               ) : (
-                <div className={cards}>{data.mistakes.ranked.map(mistakeCard)}</div>
+                <div className={cards}>{data.mistakes.ranked.map((m) => mistakeCard(m))}</div>
               )}
               <Coverage c={data.mistakes.coverage} months={months} />
               {data.meta.games_without_prefix > 0 && data.meta.games_counted > 0 && <p className="text-[11px] text-zinc-500">{data.meta.games_without_prefix} games in this period are not counted yet: their opening moves have not been fetched.</p>}
@@ -400,7 +400,7 @@ export default function Review() {
 
             <Section title="Fixed?" count={`${data.mistakes.fixed.length}`} open={openSections.has(SECTION.fixed)} onToggle={() => toggleSection(SECTION.fixed)}>
               <p className="text-xs text-zinc-500">Positions where your move used to cost you and your last visits were fine.</p>
-              {data.mistakes.fixed.length === 0 ? <p className="py-1 text-sm text-zinc-500">Nothing here yet.</p> : <div className={cards}>{data.mistakes.fixed.map(mistakeCard)}</div>}
+              {data.mistakes.fixed.length === 0 ? <p className="py-1 text-sm text-zinc-500">Nothing here yet.</p> : <div className={cards}>{data.mistakes.fixed.map((m) => mistakeCard(m, true))}</div>}
             </Section>
 
             <Section title="Results below rating expectation" count={`${data.positions.ranked.length}`} open={openSections.has(SECTION.results)} onToggle={() => toggleSection(SECTION.results)}>

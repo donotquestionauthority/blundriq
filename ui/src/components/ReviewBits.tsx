@@ -21,13 +21,18 @@ export function StatusChip({ status }: { status: PositionStatus | null }) {
 }
 
 const MISTAKE_TONE: Record<MistakeStatus, string> = { still_costing: BAD, not_yet_checked: ARROWS.opponent, fixed: GOOD, not_reached_lately: ARROWS.opponent };
+const MISTAKE_HINT: Partial<Record<MistakeStatus, string>> = {
+  not_yet_checked: "Your newest game here is waiting for the engine; the numbers count the moves it has checked.",
+  fixed: "Your last visits here were fine after costly ones.",
+  not_reached_lately: "Not reached in the last 30 days.",
+};
 
 /** An opening-mistakes status chip. */
 export function MistakeChip({ status }: { status: MistakeStatus | null }) {
   if (!status) return null;
   const tone = MISTAKE_TONE[status];
   return (
-    <span className={chip} style={{ borderColor: tone, color: tone }} data-status={status}>
+    <span className={chip} style={{ borderColor: tone, color: tone }} data-status={status} title={MISTAKE_HINT[status]}>
       {MISTAKE_STATUS_LABELS[status]}
     </span>
   );
@@ -141,8 +146,9 @@ function moveSummary(ply: number, mv: MistakeMove): string {
 }
 
 /** An opening mistake: where Rob moves, what he played there, how often it cost him, how much a
- *  month now, its status and its last visits. The whole card opens the position's page. */
-export function MistakeCard({ m, to, from, parentLine }: { m: Mistake; to: string; from: From; parentLine: string | null }) {
+ *  month now (in Fixed?: over the history, what it is ranked by), its status and its last visits.
+ *  The whole card opens the position's page. */
+export function MistakeCard({ m, to, from, parentLine, fixed = false, months = 12 }: { m: Mistake; to: string; from: From; parentLine: string | null; fixed?: boolean; months?: number }) {
   const ply = m.line_san.length;
   const unchecked = m.decisions - m.evaluated;
   return (
@@ -155,7 +161,7 @@ export function MistakeCard({ m, to, from, parentLine }: { m: Mistake; to: strin
           {m.best_move ? ` · engine: ${moveLabel(ply, m.best_move)}` : ""}
         </p>
         <p className="text-xs tabular-nums text-zinc-600 dark:text-zinc-400">
-          Costly in {m.costly_games} of {m.games} games · {givenAway(m.per_month)}
+          Costly in {m.costly_games} of {m.games} games · {fixed ? `≈${(m.per_month_12 * months).toFixed(1)} points given away over ${months} months` : givenAway(m.per_month)}
           {unchecked > 0 ? ` · ${m.evaluated} of ${m.decisions} visits checked` : ""}
         </p>
         <MistakeChip status={m.status} />
