@@ -22,7 +22,7 @@ vi.mock("../review", async () => {
   };
 });
 vi.mock("react-chessboard", () => ({
-  Chessboard: ({ options }: { options: { id?: string; position?: string; boardOrientation?: string } }) => <div data-testid={`board-${options.id}`} data-fen={options.position} data-orientation={options.boardOrientation} />,
+  Chessboard: ({ options }: { options: { id?: string; position?: string; boardOrientation?: string; showNotation?: boolean } }) => <div data-testid={`board-${options.id}`} data-fen={options.position} data-orientation={options.boardOrientation} data-notation={String(options.showNotation ?? true)} />,
 }));
 
 // A key past 2^53: JavaScript numbers would round it.
@@ -280,6 +280,15 @@ describe("Review page", () => {
     const crumb = within(cards[1]).getByText(/^Inside /);
     expect(crumb.className).toContain("break-words");
     expect(crumb.className).not.toContain("truncate");
+  });
+
+  it("a card's small board leaves the coordinates out; a position's page keeps them", async () => {
+    renderApp();
+    const cards = await screen.findAllByTestId("mistake-card");
+    expect(cards[0].querySelector("[data-notation]")?.getAttribute("data-notation")).toBe("false");
+    fireEvent.click(cards[0]);
+    await screen.findByText("What happens next");
+    expect(document.querySelector("[data-notation]")?.getAttribute("data-notation")).toBe("true");
   });
 
   it("Fixed? lists the boards whose last visits were fine, not-reached-lately ones with that chip", async () => {

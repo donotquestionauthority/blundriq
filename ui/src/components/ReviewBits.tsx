@@ -75,15 +75,16 @@ export function TrendBars({ trend, height = 28 }: { trend: (number | null)[]; he
 }
 
 /** A static board: oriented to Rob's side, the move that reached it highlighted. Every board on a
- *  page needs its own id (react-chessboard looks its squares up by element id). */
-export function PositionBoard({ fen, colour, lastMove }: { fen: string; colour: "white" | "black"; lastMove: string | null }) {
+ *  page needs its own id (react-chessboard looks its squares up by element id). A small board
+ *  leaves the coordinates out: at card size they sit on the pieces. */
+export function PositionBoard({ fen, colour, lastMove, small = false }: { fen: string; colour: "white" | "black"; lastMove: string | null; small?: boolean }) {
   const id = "rv" + useId().replace(/[^a-zA-Z0-9-]/g, "");
   const squareStyles: Record<string, CSSProperties> = {};
   if (lastMove) {
     squareStyles[lastMove.slice(0, 2)] = { backgroundColor: HIGHLIGHT.lastMove };
     squareStyles[lastMove.slice(2, 4)] = { backgroundColor: HIGHLIGHT.lastMove };
   }
-  return <Chessboard options={{ id, position: fen, allowDragging: false, boardOrientation: colour, squareStyles, boardStyle: { borderRadius: "4px" }, ...SQUARES }} />;
+  return <Chessboard options={{ id, position: fen, allowDragging: false, boardOrientation: colour, squareStyles, boardStyle: { borderRadius: "4px" }, showNotation: !small, ...SQUARES }} />;
 }
 
 /** "79 games · 42% (expected 50%) · ≈1.7 below expectation a month" */
@@ -102,7 +103,7 @@ export function NumbersLine({ p, fixed = false, months = 12 }: { p: ReviewPositi
 }
 
 const card = "flex gap-3 rounded border border-zinc-200 p-3 hover:border-zinc-400 dark:border-zinc-800 dark:hover:border-zinc-600";
-const thumb = "aspect-square w-[120px] shrink-0 self-start sm:w-[160px]";
+const thumb = "aspect-square w-[96px] shrink-0 self-start sm:w-[160px]";
 
 /** The card's line, its side, and the line of the card it sits inside. Every part wraps. */
 function LineHeader({ colour, line, parentLine }: { colour: "white" | "black"; line: string[]; parentLine: string | null }) {
@@ -121,7 +122,7 @@ function LineHeader({ colour, line, parentLine }: { colour: "white" | "black"; l
 export function PositionCard({ p, to, from, parentLine, fixed = false, months = 12 }: { p: ReviewPosition; to: string; from: From; parentLine: string | null; fixed?: boolean; months?: number }) {
   return (
     <Link to={to} state={{ from }} className={card} data-testid="position-card" data-key={p.key}>
-      <div className={thumb}>{p.fen ? <PositionBoard fen={p.fen} colour={p.colour} lastMove={p.last_move} /> : null}</div>
+      <div className={thumb}>{p.fen ? <PositionBoard fen={p.fen} colour={p.colour} lastMove={p.last_move} small /> : null}</div>
       <div className="min-w-0 flex-1 space-y-1.5">
         <LineHeader colour={p.colour} line={p.line_san} parentLine={parentLine} />
         <NumbersLine p={p} fixed={fixed} months={months} />
@@ -146,7 +147,7 @@ export function MistakeCard({ m, to, from, parentLine }: { m: Mistake; to: strin
   const unchecked = m.decisions - m.evaluated;
   return (
     <Link to={to} state={{ from }} className={card} data-testid="mistake-card" data-key={m.key}>
-      <div className={thumb}>{m.fen ? <PositionBoard fen={m.fen} colour={m.colour} lastMove={m.last_move} /> : null}</div>
+      <div className={thumb}>{m.fen ? <PositionBoard fen={m.fen} colour={m.colour} lastMove={m.last_move} small /> : null}</div>
       <div className="min-w-0 flex-1 space-y-1.5">
         <LineHeader colour={m.colour} line={m.line_san} parentLine={parentLine} />
         <p className="break-words text-xs text-zinc-700 dark:text-zinc-300">
