@@ -271,6 +271,17 @@ describe("Review page", () => {
     expect(screen.getByText("From your last 1,000 analysed games.")).toBeInTheDocument();
   });
 
+  it("the cards wrap on a phone: one shrinkable column and a breadcrumb that wraps", async () => {
+    renderApp();
+    const cards = await screen.findAllByTestId("mistake-card");
+    // A grid without a column template sizes its one column to the widest card's longest
+    // unbreakable line, and a nowrap breadcrumb is one such line: every card overflowed.
+    expect(cards[0].parentElement?.className).toContain("grid-cols-1");
+    const crumb = within(cards[1]).getByText(/^Inside /);
+    expect(crumb.className).toContain("break-words");
+    expect(crumb.className).not.toContain("truncate");
+  });
+
   it("Fixed? lists the boards whose last visits were fine, not-reached-lately ones with that chip", async () => {
     renderApp();
     fireEvent.click(await screen.findByRole("button", { name: /Fixed\?/ }));

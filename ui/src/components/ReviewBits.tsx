@@ -104,11 +104,11 @@ export function NumbersLine({ p, fixed = false, months = 12 }: { p: ReviewPositi
 const card = "flex gap-3 rounded border border-zinc-200 p-3 hover:border-zinc-400 dark:border-zinc-800 dark:hover:border-zinc-600";
 const thumb = "aspect-square w-[120px] shrink-0 self-start sm:w-[160px]";
 
-/** The card's line, its side, and the line of the card it sits inside. */
+/** The card's line, its side, and the line of the card it sits inside. Every part wraps. */
 function LineHeader({ colour, line, parentLine }: { colour: "white" | "black"; line: string[]; parentLine: string | null }) {
   return (
     <>
-      {parentLine && <p className="truncate text-[11px] text-zinc-500">Inside {parentLine}</p>}
+      {parentLine && <p className="break-words text-[11px] text-zinc-500">Inside {parentLine}</p>}
       <p className="break-words font-mono text-sm">
         <span className="mr-1.5 font-sans text-xs text-zinc-500">{colour === "white" ? "White" : "Black"}</span>
         {line.length ? lineText(line) : "Starting position"}

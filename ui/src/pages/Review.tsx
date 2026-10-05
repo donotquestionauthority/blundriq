@@ -323,7 +323,7 @@ export default function Review() {
   const mistakeLines = lines(data ? [...data.mistakes.ranked, ...data.mistakes.fixed] : []);
   const card = (p: ReviewPosition, fixed: boolean) => <PositionCard key={`${p.colour}:${p.key}`} p={p} to={positionPath(p.colour, p.key, settings)} from={from} parentLine={p.parent_key ? (resultLines.get(`${p.colour}:${p.parent_key}`) ?? null) : null} fixed={fixed} months={data?.meta.history_months ?? 12} />;
   const mistakeCard = (m: Mistake) => <MistakeCard key={`${m.colour}:${m.key}`} m={m} to={positionPath(m.colour, m.key, settings)} from={from} parentLine={m.parent_key ? (mistakeLines.get(`${m.colour}:${m.parent_key}`) ?? null) : null} />;
-  const cards = "grid gap-2 lg:grid-cols-2";
+  const cards = "grid grid-cols-1 gap-2 lg:grid-cols-2";
 
   const months = data?.meta.history_months ?? 12;
   const openingOptions = data?.filter.openings ?? [];
