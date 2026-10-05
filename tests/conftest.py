@@ -118,4 +118,5 @@ def app_env(fresh_db_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setenv("DATABASE_URL", fresh_db_url)
     monkeypatch.setenv("SESSION_SECRET", "test-session-secret-not-for-production")
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://chess.example.org, http://localhost:5173")
     monkeypatch.setenv("PASSWORD_HASH", bcrypt.hashpw(b"correct horse", bcrypt.gensalt(rounds=4)).decode())
