@@ -11,7 +11,7 @@ import psycopg
 from psycopg.rows import DictRow
 
 from core.chess.board import moves_to_fen_sequence
-from core.constants import OPENING_PREFIX_PLIES, PLAYER_ID
+from core.constants import OPENING_PREFIX_PLIES, PLAYER_ID, REVIEW_RESULTS_MIN_GAMES
 from core.review import positions
 from core.review.filters import parse_opening
 from core.settings import Settings
@@ -119,8 +119,13 @@ def key_of(conn: psycopg.Connection[DictRow], moves: Sequence[str]) -> int:
     return int(row["k"])
 
 
-def scope(config: Settings | None = None, time_class: str = "all", opening: str = "__all__") -> positions.Scope:
-    return positions.Scope(config or Settings(), time_class, parse_opening(opening))
+def scope(
+    config: Settings | None = None,
+    time_class: str = "all",
+    opening: str = "__all__",
+    results_min_games: int = REVIEW_RESULTS_MIN_GAMES,
+) -> positions.Scope:
+    return positions.Scope(config or Settings(), time_class, parse_opening(opening), results_min_games)
 
 
 def nodes(conn: psycopg.Connection[DictRow], sc: positions.Scope) -> dict[tuple[str, int], positions.Node]:

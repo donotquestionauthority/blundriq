@@ -1099,7 +1099,7 @@ ALTER SEQUENCE public.ai_calls_id_seq OWNED BY public.ai_calls.id;
 ALTER TABLE ONLY public.ai_calls ALTER COLUMN id SET DEFAULT nextval('public.ai_calls_id_seq'::regclass);
 CREATE INDEX ix_ai_calls_called_at ON public.ai_calls USING btree (called_at DESC);
 
--- One engine evaluation per board (board_key = bq_position_key of fen), White's point of view like ply_analysis: eval_cp, or mate_in in moves. Written by `pipeline position-evals`, read by Review.
+-- One engine evaluation per board (board_key = bq_position_key of fen; fen is the canonical one, clocks 0 1), White's point of view like ply_analysis: eval_cp, or mate_in in moves, and the engine's best move (SAN). A terminal board (checkmate, or a draw by stalemate or insufficient material) has no score and no best move. Written by `pipeline position-evals`, read by Review.
 CREATE TABLE public.position_evals (
     board_key bigint NOT NULL,
     fen text NOT NULL,
@@ -1107,8 +1107,11 @@ CREATE TABLE public.position_evals (
     mate_in integer,
     depth integer NOT NULL,
     computed_at timestamp with time zone DEFAULT now() NOT NULL,
+    best_move text,
+    terminal text,
     CONSTRAINT position_evals_pkey PRIMARY KEY (board_key),
-    CONSTRAINT position_evals_one_score CHECK (((eval_cp IS NULL) <> (mate_in IS NULL)))
+    CONSTRAINT position_evals_terminal_kind CHECK ((terminal = ANY (ARRAY['checkmate'::text, 'draw'::text]))),
+    CONSTRAINT position_evals_state CHECK ((((terminal IS NULL) AND ((eval_cp IS NULL) <> (mate_in IS NULL))) OR ((terminal IS NOT NULL) AND (eval_cp IS NULL) AND (mate_in IS NULL) AND (best_move IS NULL))))
 );
 
 -- The Review page's position sections per (time class, opening), computed hourly by `pipeline review-snapshot`; a request whose fingerprint differs computes them itself.

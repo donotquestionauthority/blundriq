@@ -1,17 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { useApi } from "../hooks/useApi";
 import { daysAgo } from "../blunders";
-import { OPENING_ALL, engineLabel, getPositionPage, isStaleOpeningError, lineText, pct, pointsAMonth, positionPath, positionSearch, readPositionPage, readReviewSettings, reviewSettingsSearch, whyThisGame } from "../review";
-import type { PositionGame } from "../review";
-import { PositionBoard, StatusChip, TrendBars } from "../components/ReviewBits";
+import { OPENING_ALL, belowExpectation, getPositionMoveGames, getPositionPage, givenAway, isStaleOpeningError, lineText, moveLabel, pct, positionPath, positionSearch, readMovesView, readPositionPage, readReviewSettings, reviewSettingsSearch, whyThisGame } from "../review";
+import type { MistakeDetail, MoveGame, MovesView, PositionGame, ReviewTimeClass } from "../review";
+import { MistakeChip, PositionBoard, StatusChip, TrendBars, VisitStrip } from "../components/ReviewBits";
 import { returnTarget } from "../utils/returnTo";
 import type { From } from "../utils/returnTo";
 
 /**
  * One position's page at `/review/positions/:colour/:key`, under the Review page's two settings
- * (the same query string, plus `page` for the games past the first fifty). The board as Rob reached it, the line most of his games took to it, its
- * numbers and trend, what happens next (each move a link to that position's page, except a return to the start), and his games
+ * (the same query string, plus `page` for the games past the first fifty). The board as Rob reached it, the line most of his games took to it;
+ * when he is to move there, his moves from it (how often, what each gave away, the engine's move)
+ * and his games from it, fifty at a time: the costly ones, or every game with one move (`move`
+ * and `mpage` in the query string, so a game's Close, Back and a reload come back to them); then the results below rating expectation: numbers and trend, what happens next (each move a link to that position's page, except a return to the start), and his games
  * through it whose moves are still stored: playable-then-not-won first, each with one sentence on
  * why it is worth opening. "Review" opens the game at its turning point, "From here" at the board;
  * both carry this page's whole state as the way back, so a game's Close returns here and this page's
@@ -21,6 +24,133 @@ import type { From } from "../utils/returnTo";
 
 const btn = "rounded border border-zinc-300 px-3 py-1 text-sm text-zinc-600 hover:border-zinc-500 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-400";
 const resultWord = (r: string | null) => (r === "win" ? "Won" : r === "draw" ? "Drew" : r === "loss" ? "Lost" : "—");
+
+function MoveGameRow({ g, from }: { g: MoveGame; from: From }) {
+  return (
+    <li className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-1.5 text-xs" data-testid="move-game" data-state={g.state}>
+      {g.has_moves ? (
+        <Link to={`/review/${g.chess_game_id}?ply=${g.ply}`} state={{ from }} className="whitespace-nowrap underline">
+          Review →
+        </Link>
+      ) : (
+        <span className="whitespace-nowrap text-zinc-400" title="Only this game's opening is still stored">
+          Opening only
+        </span>
+      )}
+      <span className="font-mono">{moveLabel(g.ply, g.san)}</span>
+      <span className="tabular-nums text-zinc-500">{g.loss == null ? "not checked" : g.state === "costly" ? `−${Math.round(g.loss)}` : "fine"}</span>
+      <span>
+        {g.opponent_username ?? "—"}
+        {g.opponent_rating ? ` (${g.opponent_rating})` : ""}
+      </span>
+      <span className="text-zinc-500">{daysAgo(g.played_at) ?? "—"}</span>
+      <span>{resultWord(g.result)}</span>
+    </li>
+  );
+}
+
+/** Rob's games from the board, fifty at a time, newest first: the costly ones, or every game with
+ *  the chosen move (fine, costly or not checked yet). */
+function MoveGamesList({ colour, boardKey, timeClass, opening, view, ply, onView, from }: { colour: string; boardKey: string; timeClass: ReviewTimeClass; opening: string; view: MovesView; ply: number; onView: (v: MovesView) => void; from: From }) {
+  const fetchGames = useCallback(() => getPositionMoveGames(colour, boardKey, timeClass, opening, view.move, view.page), [colour, boardKey, timeClass, opening, view.move, view.page]);
+  const { data, isLoading, error, isStale } = useApi(fetchGames, [colour, boardKey, timeClass, opening, view.move, view.page]);
+  return (
+    <div className="mt-3" data-testid="move-games">
+      <div className="mb-1 flex flex-wrap items-baseline gap-x-3">
+        <h3 className="text-sm font-medium">
+          {view.move ? `Your games with ${moveLabel(ply, view.move)}` : "Games where it cost you"}
+          {data ? ` (${data.total})` : ""}
+        </h3>
+        {view.move && (
+          <button type="button" className="text-xs underline" onClick={() => onView({ move: null, page: 1 })}>
+            Show the costly games
+          </button>
+        )}
+      </div>
+      {error && (
+        <p role="alert" className="text-xs text-red-600 dark:text-red-400">
+          {error}
+        </p>
+      )}
+      {isLoading && !data && <p className="text-xs text-zinc-500">Loading…</p>}
+      {data && (
+        <div className={isStale ? "opacity-50" : ""}>
+          {data.total === 0 ? (
+            <p className="text-xs text-zinc-500">{view.move ? "No game under this filter." : "None of your moves from here was costly under this filter."}</p>
+          ) : (
+            <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
+              {data.rows.map((g) => (
+                <MoveGameRow key={`${g.chess_game_id}:${g.ply}`} g={g} from={from} />
+              ))}
+            </ul>
+          )}
+          {data.total_pages > 1 && (
+            <div className="mt-2 flex items-center gap-3 text-xs text-zinc-500">
+              <button type="button" className={btn} disabled={view.page <= 1} onClick={() => onView({ ...view, page: view.page - 1 })}>
+                Newer
+              </button>
+              <span>
+                Page {data.page} of {data.total_pages}
+              </span>
+              <button type="button" className={btn} disabled={view.page >= data.total_pages} onClick={() => onView({ ...view, page: view.page + 1 })}>
+                Older
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Rob's moves from the board: the numbers the opening-mistakes card has, every move he played
+ *  there with the engine's (each opens its games), and the games listed below. */
+function YourMoves({ m, ply, children, view, onView }: { m: MistakeDetail; ply: number; children: ReactNode; view: MovesView; onView: (v: MovesView) => void }) {
+  const unchecked = m.decisions - m.evaluated;
+  return (
+    <section data-testid="your-moves">
+      <h2 className="mb-1 text-base font-semibold">Your moves from here</h2>
+      <p className="text-sm tabular-nums">
+        Costly in {m.costly_games} of {m.games} games · {givenAway(m.per_month)}
+        {unchecked > 0 ? ` · ${m.evaluated} of ${m.decisions} visits checked` : ""}
+      </p>
+      <div className="my-2 flex flex-wrap items-center gap-2">
+        {m.ranked && <MistakeChip status={m.status} />}
+        <VisitStrip strip={m.strip} />
+      </div>
+      <p className="mb-2 text-xs text-zinc-500">
+        {m.terminal ? "The game is over here." : m.best_move ? `The engine plays ${moveLabel(ply, m.best_move)} here.` : "The engine has not checked this position yet."} Losses are in expected-score points (a whole game is 100); a move is costly when it gives away more than the floor in your Preferences.
+      </p>
+      <table className="text-left text-xs">
+        <thead className="text-zinc-500">
+          <tr>
+            <th className="py-1 pr-3 font-normal">Move</th>
+            <th className="py-1 pr-3 text-right font-normal">Times</th>
+            <th className="py-1 pr-3 text-right font-normal">Avg lost</th>
+            <th className="py-1 pr-3 text-right font-normal">Costly</th>
+            <th className="py-1 font-normal">Last</th>
+          </tr>
+        </thead>
+        <tbody>
+          {m.moves.map((mv) => (
+            <tr key={mv.san} className="border-t border-zinc-200 dark:border-zinc-800">
+              <td className="py-1 pr-3 font-mono">
+                <button type="button" className={`underline ${view.move === mv.san ? "font-semibold" : ""}`} aria-pressed={view.move === mv.san} onClick={() => onView({ move: view.move === mv.san ? null : mv.san, page: 1 })}>
+                  {moveLabel(ply, mv.san)}
+                </button>
+              </td>
+              <td className="py-1 pr-3 text-right tabular-nums">{mv.n}</td>
+              <td className="py-1 pr-3 text-right tabular-nums">{mv.mates ? "mate" : mv.mean_loss == null ? "—" : mv.mean_loss.toFixed(1)}</td>
+              <td className="py-1 pr-3 text-right tabular-nums">{mv.costly}</td>
+              <td className="py-1 text-zinc-500">{daysAgo(mv.last_played) ?? "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {children}
+    </section>
+  );
+}
 
 function GameRow({ g, from }: { g: PositionGame; from: From }) {
   const reviewPly = g.turning_ply ?? g.ply;
@@ -56,7 +186,9 @@ export default function ReviewPosition() {
   // back to it. A settings change or another position's link starts again from page 1, since
   // neither carries it.
   const page = readPositionPage(new URLSearchParams(location.search));
-  const setPage = (next: number) => navigate({ pathname: location.pathname, search: positionSearch(settings, next) }, { replace: true, state: location.state });
+  const movesView = readMovesView(new URLSearchParams(location.search));
+  const setPage = (next: number) => navigate({ pathname: location.pathname, search: positionSearch(settings, next, movesView) }, { replace: true, state: location.state });
+  const setMovesView = (next: MovesView) => navigate({ pathname: location.pathname, search: positionSearch(settings, page, next) }, { replace: true, state: location.state });
 
   // A response belongs to the view it was asked for: one that lands after Back, a link or a
   // settings change must not act on whatever is showing now.
@@ -116,92 +248,114 @@ export default function ReviewPosition() {
         </p>
       )}
       {isLoading && !data && <p className="text-sm text-zinc-500">Loading…</p>}
-      {data && node && (
+      {data && (node || data.mistake) && (
         <div className={`space-y-5 ${isStale ? "opacity-50" : ""}`}>
-          <div className="flex flex-col gap-4 sm:flex-row">
-            <div className="aspect-square w-full max-w-[320px] shrink-0">{node.fen ? <PositionBoard fen={node.fen} colour={node.colour} lastMove={node.last_move} /> : null}</div>
-            <div className="min-w-0 space-y-2">
-              <h1 className="break-words font-mono text-base font-semibold">
-                <span className="mr-2 font-sans text-sm font-normal text-zinc-500">{node.colour === "white" ? "White" : "Black"}</span>
-                {lineText(node.line_san)}
-              </h1>
+          {(() => {
+            const head = node ?? data.mistake;
+            if (!head) return null;
+            return (
+              <div className="flex flex-col gap-4 sm:flex-row">
+                <div className="aspect-square w-full max-w-[320px] shrink-0">{head.fen ? <PositionBoard fen={head.fen} colour={head.colour} lastMove={head.last_move} /> : null}</div>
+                <div className="min-w-0 space-y-2">
+                  <h1 className="break-words font-mono text-base font-semibold">
+                    <span className="mr-2 font-sans text-sm font-normal text-zinc-500">{head.colour === "white" ? "White" : "Black"}</span>
+                    {head.line_san.length ? lineText(head.line_san) : "Starting position"}
+                  </h1>
+                </div>
+              </div>
+            );
+          })()}
+
+          {data.mistake && (
+            <YourMoves m={data.mistake} ply={data.mistake.line_san.length} view={movesView} onView={setMovesView}>
+              <MoveGamesList colour={colour} boardKey={key} timeClass={timeClass} opening={opening} view={movesView} ply={data.mistake.line_san.length} onView={setMovesView} from={from} />
+            </YourMoves>
+          )}
+
+          {node && (
+            <section data-testid="results">
+              <h2 className="mb-1 text-base font-semibold">Results below rating expectation</h2>
+              <p className="mb-2 text-xs text-zinc-500">How your games through this position scored against the rating expectation. This does not say where they went wrong.</p>
               <p className="text-sm tabular-nums">
                 {node.n} games · {pct(node.score)} (expected {pct(node.expected)}) · now {pct(node.current_score)} (expected {pct(node.current_expected)})
               </p>
-              <p className="text-sm tabular-nums text-zinc-600 dark:text-zinc-400">{node.leak_per_month > 0 ? pointsAMonth(node.leak_per_month) : "Not costing points now"}</p>
-              <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm tabular-nums text-zinc-600 dark:text-zinc-400">{node.leak_per_month > 0 ? belowExpectation(node.leak_per_month) : "Not below expectation now"}</p>
+              <div className="my-2">
                 <StatusChip status={node.status} />
-                <span className="text-xs text-zinc-500">{engineLabel(node.es_at_node)}</span>
               </div>
               <TrendBars trend={node.trend} height={36} />
-            </div>
-          </div>
+            </section>
+          )}
 
-          <section>
-            <h2 className="mb-1 text-base font-semibold">What happens next</h2>
-            <p className="mb-2 text-xs text-zinc-500">{node.rob_to_move ? "Your moves from here." : "Their replies from here."}</p>
-            {data.children.length === 0 ? (
-              <p className="text-sm text-zinc-500">No move from here is recorded in your games' opening moves.</p>
-            ) : (
-              <table className="text-left text-xs">
-                <thead className="text-zinc-500">
-                  <tr>
-                    <th className="py-1 pr-4 font-normal">Move</th>
-                    <th className="py-1 pr-4 text-right font-normal">Games</th>
-                    <th className="py-1 pr-4 text-right font-normal">You scored</th>
-                    <th className="py-1 text-right font-normal">Expected</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.children.map((c) => (
-                    <tr key={c.key} className="border-t border-zinc-200 dark:border-zinc-800">
-                      <td className="py-1 pr-4 font-mono">
-                        {c.linkable ? (
-                          <Link to={positionPath(node.colour, c.key, settings)} state={location.state} className="underline">
-                            {c.san}
-                          </Link>
-                        ) : (
-                          <span title="Back to the starting position, which is not a position of its own">{c.san}</span>
-                        )}
-                      </td>
-                      <td className="py-1 pr-4 text-right tabular-nums">{c.n}</td>
-                      <td className="py-1 pr-4 text-right tabular-nums">{pct(c.score)}</td>
-                      <td className="py-1 text-right tabular-nums text-zinc-500">{pct(c.expected)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </section>
-
-          <section>
-            <h2 className="mb-1 text-base font-semibold">Your games from here</h2>
-            {data.games.total === 0 ? (
-              <p className="text-sm text-zinc-500">None of these games still has its moves stored.</p>
-            ) : (
-              <>
-                <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
-                  {data.games.rows.map((g) => (
-                    <GameRow key={g.chess_game_id} g={g} from={from} />
-                  ))}
-                </ul>
-                {data.games.total_pages > 1 && (
-                  <div className="mt-2 flex items-center gap-3 text-xs text-zinc-500">
-                    <button type="button" className={btn} disabled={page <= 1} onClick={() => setPage(page - 1)}>
-                      Previous
-                    </button>
-                    <span>
-                      Page {data.games.page} of {data.games.total_pages}
-                    </span>
-                    <button type="button" className={btn} disabled={page >= data.games.total_pages} onClick={() => setPage(page + 1)}>
-                      Next
-                    </button>
-                  </div>
+          {node && (
+            <>
+              <section>
+                <h2 className="mb-1 text-base font-semibold">What happens next</h2>
+                <p className="mb-2 text-xs text-zinc-500">{node.rob_to_move ? "How your games scored after each of your moves." : "Their replies from here."}</p>
+                {data.children.length === 0 ? (
+                  <p className="text-sm text-zinc-500">No move from here is recorded in your games' opening moves.</p>
+                ) : (
+                  <table className="text-left text-xs">
+                    <thead className="text-zinc-500">
+                      <tr>
+                        <th className="py-1 pr-4 font-normal">Move</th>
+                        <th className="py-1 pr-4 text-right font-normal">Games</th>
+                        <th className="py-1 pr-4 text-right font-normal">You scored</th>
+                        <th className="py-1 text-right font-normal">Expected</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.children.map((c) => (
+                        <tr key={c.key} className="border-t border-zinc-200 dark:border-zinc-800">
+                          <td className="py-1 pr-4 font-mono">
+                            {c.linkable ? (
+                              <Link to={positionPath(node.colour, c.key, settings)} state={location.state} className="underline">
+                                {c.san}
+                              </Link>
+                            ) : (
+                              <span title="Back to the starting position, which is not a position of its own">{c.san}</span>
+                            )}
+                          </td>
+                          <td className="py-1 pr-4 text-right tabular-nums">{c.n}</td>
+                          <td className="py-1 pr-4 text-right tabular-nums">{pct(c.score)}</td>
+                          <td className="py-1 text-right tabular-nums text-zinc-500">{pct(c.expected)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 )}
-              </>
-            )}
-            {data.older_games > 0 && <p className="mt-2 text-xs text-zinc-500">Plus {data.older_games} older games in the numbers above.</p>}
-          </section>
+              </section>
+
+              <section>
+                <h2 className="mb-1 text-base font-semibold">Your games from here</h2>
+                {data.games.total === 0 ? (
+                  <p className="text-sm text-zinc-500">None of these games still has its moves stored.</p>
+                ) : (
+                  <>
+                    <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
+                      {data.games.rows.map((g) => (
+                        <GameRow key={g.chess_game_id} g={g} from={from} />
+                      ))}
+                    </ul>
+                    {data.games.total_pages > 1 && (
+                      <div className="mt-2 flex items-center gap-3 text-xs text-zinc-500">
+                        <button type="button" className={btn} disabled={page <= 1} onClick={() => setPage(page - 1)}>
+                          Previous
+                        </button>
+                        <span>
+                          Page {data.games.page} of {data.games.total_pages}
+                        </span>
+                        <button type="button" className={btn} disabled={page >= data.games.total_pages} onClick={() => setPage(page + 1)}>
+                          Next
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+                {data.older_games > 0 && <p className="mt-2 text-xs text-zinc-500">Plus {data.older_games} older games in the numbers above.</p>}
+              </section>
+            </>
+          )}
         </div>
       )}
     </div>

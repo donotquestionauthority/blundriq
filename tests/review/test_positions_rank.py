@@ -245,7 +245,7 @@ def test_the_elo_expectation_and_the_counts(clean: psycopg.Connection[DictRow]) 
     g.add(QGD, mine=None, theirs=1500)  # no rating: left out and counted
     g.add(QGD, variant="chess960")  # history only: never counted
     g.add(QGD, prefix=False)  # no prefix recorded yet: counted as such
-    sc = scope(Settings(review_position_min_games=3))
+    sc = scope(results_min_games=3)
     got = nodes(clean, sc)[("black", key_of(clean, QGD))]
     expected = 1 / (1 + 10 ** (200 / 400))
     assert got.n == 3
@@ -257,7 +257,7 @@ def test_the_elo_expectation_and_the_counts(clean: psycopg.Connection[DictRow]) 
 def test_a_repeated_board_counts_once(clean: psycopg.Connection[DictRow]) -> None:
     repeated = "Nf3 Nf6 Ng1 Ng8 Nf3 Nf6 Ng1 Ng8 Nf3 Nf6 Ng1 Ng8 e4".split()
     plain = "Nf3 Nf6 Ng1 Ng8 e4".split()
-    sc = scope(Settings(review_position_min_games=3))
+    sc = scope(results_min_games=3)
 
     def run(moves: Sequence[str]) -> dict[tuple[str, int], p.Node]:
         g = Games(clean)
@@ -293,7 +293,7 @@ def test_two_move_orders_are_one_position(clean: psycopg.Connection[DictRow]) ->
     for i in range(4):
         g.add(QGD, days=1 + i)
         g.add(QGD_TRANSPOSED, days=1 + i)
-    got = nodes(clean, scope(Settings(review_position_min_games=3)))
+    got = nodes(clean, scope(results_min_games=3))
     target = key_of(clean, QGD)
     assert key_of(clean, QGD_TRANSPOSED) == target
     assert got[("black", target)].n == 8
@@ -383,7 +383,7 @@ def test_the_history_and_the_ply_window(clean: psycopg.Connection[DictRow]) -> N
     for i in range(5):
         g.add(QGD, days=2 + i)
         g.add(QGD, days=400 + i)  # older than twelve months
-    sc = scope(Settings(review_position_min_games=3, review_position_max_ply=4))
+    sc = scope(Settings(review_position_max_ply=4), results_min_games=3)
     got = nodes(clean, sc)
     assert ("black", key_of(clean, QGD)) not in got  # ply 5, past the window
     assert got[("black", key_of(clean, QGD[:4]))].n == 5
@@ -441,7 +441,7 @@ def test_a_game_exactly_thirty_days_old_is_recent(clean: psycopg.Connection[Dict
     g.anchor()
     for _ in range(3):
         g.add(QGD, days=30)
-    assert nodes(clean, scope(Settings(review_position_min_games=3)))[("black", key_of(clean, QGD))].recent == 3
+    assert nodes(clean, scope(results_min_games=3))[("black", key_of(clean, QGD))].recent == 3
 
 
 def test_the_line_shown_is_the_most_frequent_then_the_most_recent(clean: psycopg.Connection[DictRow]) -> None:
@@ -450,7 +450,7 @@ def test_the_line_shown_is_the_most_frequent_then_the_most_recent(clean: psycopg
         g.add(QGD_TRANSPOSED, days=days)
     for days in (1, 2):
         g.add(QGD, days=days)
-    sc = scope(Settings(review_position_min_games=3))
+    sc = scope(results_min_games=3)
     target = ("black", key_of(clean, QGD))
     assert p.line_rows(clean, sc, [target])[target]["line"] == QGD_TRANSPOSED  # three games against two
     g.add(QGD, days=3)  # a tie: three each, and the newest game took the other order

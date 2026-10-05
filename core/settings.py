@@ -425,16 +425,28 @@ class Settings(BaseModel):
     review_recency_half_life_games: int = Field(
         default=200, ge=10, description="Not used by this implementation (the old worklist's half-life in games)."
     )
-    # Review's position statistics read the opening prefix every analysable game keeps
-    # (core.constants.OPENING_PREFIX_PLIES), over this many months back from the newest game.
-    # A board needs this many games through it before it can be counted, and only boards up to
-    # this ply are positions. `pipeline position-evals` evaluates exactly the boards these
-    # three admit; the backfill reaches as far back as the history.
+    # Review reads the opening prefix every analysable game keeps (core.constants.
+    # OPENING_PREFIX_PLIES), over this many months back from the newest game. Rob's decisions
+    # before this ply are the ones ranked, and `pipeline position-evals` evaluates the boards
+    # before and after each of them (core/review/mistakes.py); the backfill reaches as far back
+    # as the history.
     review_history_months: int = Field(
         default=12, ge=1, le=36, description="Months of games counted toward a position's numbers."
     )
     review_position_min_games: int = Field(
-        default=10, ge=3, le=100, description="Games through a position before it can be ranked."
+        default=5, ge=3, le=100, description="Games in which you moved from a position before it can be ranked."
+    )
+    # A position ranks under "Opening mistakes to work on" only when Rob's move there gave
+    # something away in at least this many of those games: one slip in fifty is not a pattern.
+    review_min_costly_games: int = Field(
+        default=3, ge=1, le=50, description="Games with a costly move from a position before it can be ranked."
+    )
+    # A move is charged only what it gave away above this many points of expected score (0-100).
+    # Depth 18 and depth 24 disagree by up to about 2.6 points on nine moves in ten, so a smaller
+    # loss is mostly the engine's noise; subtracting the floor (rather than cutting at it) keeps a
+    # move just over it from counting much.
+    review_mistake_floor_es: int = Field(
+        default=3, ge=0, le=15, description="Expected-score points a move may lose before it is charged."
     )
     review_position_max_ply: int = Field(
         default=24, ge=4, le=30, description="Deepest ply (half-move) counted as a position."

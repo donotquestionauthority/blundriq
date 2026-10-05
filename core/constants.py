@@ -43,6 +43,15 @@ REVIEW_MONTH_MIN_GAMES = 8  # a 30-day trend bucket with fewer games is left emp
 REVIEW_PLAYABLE_ES = 40  # expected score (0-100) below which a position is "already worse"
 REVIEW_TURN_MIN_DROP = 10  # the smallest one-move expected-score drop that is a turning point
 REVIEW_CHILDREN_MAX = 8  # moves listed under "What happens next"
+# The results section ("Results below rating expectation", the deficit ranking above) keeps its
+# own floor: a rating-based deficit needs many games to tell a leak from luck.
+REVIEW_RESULTS_MIN_GAMES = 10
+
+# Review's opening mistakes (core/review/mistakes.py): Rob's own decisions in the opening, each
+# charged the engine's loss above the floor at the board he played it from.
+REVIEW_EVAL_MIN_GAMES = 3  # a board Rob moved from in this many games is evaluated (below the ranking's floor)
+REVIEW_FIXED_RUN = 3  # known-fine visits in a row, after a costly one, that make a board Fixed?
+REVIEW_STRIP_VISITS = 12  # visits shown on a card's strip, newest last
 
 # Review's mistake habits (core/review/habits.py).
 REVIEW_HABIT_MIN_EVENTS = 3

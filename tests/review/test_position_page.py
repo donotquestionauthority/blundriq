@@ -97,7 +97,7 @@ def test_the_games_are_ordered_playable_losses_first() -> None:
 def _page(
     conn: psycopg.Connection[DictRow], moves: Sequence[str], colour: str = "black", **kw: Any
 ) -> dict[str, Any] | None:
-    return pp.position_page(conn, scope(Settings(review_position_min_games=3), **kw), colour, key_of(conn, moves), 1)
+    return pp.position_page(conn, scope(results_min_games=3, **kw), colour, key_of(conn, moves), 1)
 
 
 def test_the_page_of_a_position(clean: psycopg.Connection[DictRow]) -> None:
@@ -159,7 +159,7 @@ def test_the_position_route(client: TestClient, clean: psycopg.Connection[DictRo
     key = key_of(clean, SCANDI)
     body = client.get(f"/review/positions/black/{key}").json()
     assert body["node"]["key"] == str(key) and body["node"]["n"] == 12
-    assert set(body) == {"node", "children", "games", "older_games"}
+    assert set(body) == {"node", "children", "games", "older_games", "mistake"}
     assert client.get(f"/review/positions/black/{key}?opening=black:Scandinavian%20Defense").status_code == 200
     assert client.get(f"/review/positions/white/{key}").status_code == 404
     assert client.get("/review/positions/black/-9223372036854775808").status_code == 404  # negative, in range
@@ -233,20 +233,21 @@ def test_a_board_read_past_the_ranking_plies_has_no_status(clean: psycopg.Connec
         g.add(SCANDI, days=1 + i)  # all lost: a status would be a leak
     deep = pp.position_page(
         clean,
-        scope(Settings(review_position_max_ply=4, review_position_min_games=3)),
+        scope(Settings(review_position_max_ply=4), results_min_games=3),
         "black",
         key_of(clean, SCANDI),
         1,
     )
     assert deep is not None and deep["node"]["n"] == 12 and deep["node"]["status"] is None
-    ranked = pp.position_page(clean, scope(Settings(review_position_min_games=3)), "black", key_of(clean, SCANDI), 1)
+    ranked = pp.position_page(clean, scope(results_min_games=3), "black", key_of(clean, SCANDI), 1)
     assert ranked is not None and ranked["node"]["status"] is not None
 
 
 def test_every_linked_move_has_a_page_and_a_return_to_the_start_has_none(clean: psycopg.Connection[DictRow]) -> None:
     """Games that go back to the starting position: the move is listed, but the start is never a
     position of its own (it is first reached at ply 0), so it gets no link. Every move that is
-    linked opens a page under the same filters."""
+    linked opens a page under the same filters. The start does have a page when Rob moved from
+    it (an opening-mistakes card can be there): his moves only, no results node."""
     g = Games(clean)
     knights = "Nf3 Nf6 Ng1 Ng8 e4 e5".split()
     for day in range(1, 13):
@@ -255,7 +256,11 @@ def test_every_linked_move_has_a_page_and_a_return_to_the_start_has_none(clean: 
         g.add(knights[:3] + ["Nc6"], colour="white", days=day)
     sc = scope()
     start = key_of(clean, [])
-    assert pp.position_page(clean, sc, "white", start, 1) is None
+    start_page = pp.position_page(clean, sc, "white", start, 1)
+    # 15 games move 1.Nf3 from it; the 12 that come back play 3.e4 there: a different move on a
+    # return is a decision of its own.
+    assert start_page is not None and start_page["node"] is None and start_page["mistake"]["decisions"] == 27
+    assert pp.position_page(clean, sc, "black", start, 1) is None
     for depth in range(1, len(knights) + 1):
         if key_of(clean, knights[:depth]) == start:
             continue
@@ -263,7 +268,8 @@ def test_every_linked_move_has_a_page_and_a_return_to_the_start_has_none(clean: 
         assert page is not None
         for child in page["children"]:
             target = pp.position_page(clean, sc, "white", int(child["key"]), 1)
-            assert child["linkable"] == (target is not None), (knights[:depth], child["san"])
+            has_node = target is not None and target["node"] is not None
+            assert child["linkable"] == has_node, (knights[:depth], child["san"])
     after_ng1 = pp.position_page(clean, sc, "white", key_of(clean, knights[:3]), 1)
     assert after_ng1 is not None
     assert [(c["san"], c["n"], c["linkable"]) for c in after_ng1["children"]] == [("Ng8", 12, False), ("Nc6", 3, True)]

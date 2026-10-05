@@ -3,8 +3,9 @@ position evaluations (`pipeline position-evals`).
 
 The prefix outlives the analysis window, is written once and never overwritten, and is
 never given to a variant the pipeline does not analyse. The evaluation step evaluates exactly
-the boards the position statistics admit, each rebuilt from one game's prefix and checked
-against its key, and refuses (counts `failed`) a board that does not rebuild.
+the boards Review's opening mistakes read, each rebuilt from one game's prefix and checked
+against its key, refuses (counts `failed`) a board that does not rebuild, and gives the engine
+the canonical board, never the replayed one.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, LiteralString, cast
 
 import chess
 import httpx
@@ -30,7 +31,7 @@ from core.constants import ANALYSABLE_VARIANTS, OPENING_PREFIX_PLIES, PLAYER_ID,
 from core.ingest import backfill, chesscom, lichess
 from core.ingest.records import GameRecord
 from core.ingest.store import store_game, upsert_game
-from core.review import evals, positions
+from core.review import evals, mistakes, positions
 from core.settings import Settings
 
 ME = "rob_test"
@@ -336,7 +337,7 @@ def test_the_chesscom_backfill_fills_exactly_the_history_the_positions_count(
     assert _prefix(conn, "811")["opening_keys"] is None  # one minute before the history
     assert _prefix(conn, "812")["opening_keys"] == kept_keys
     # The reader agrees with the backfill: four games reach 1.d4 d5 inside the history.
-    _, rows = positions.eval_candidates(conn, _config(review_position_min_games=3), None)
+    _, rows = _candidates(conn, _config())
     after_d4 = _key(conn, moves_to_fen_sequence(["d4"])[1])
     assert {r["key"]: r["n"] for r in rows}.get(after_d4) == 4
     again = backfill.backfill_openings(conn, months=12, client=httpx.Client(transport=httpx.MockTransport(handler)))
@@ -439,25 +440,29 @@ def test_a_platform_that_fails_fails_the_backfill(clean: psycopg.Connection[Dict
 
 
 # --- position evaluations -------------------------------------------------------------------
+#
+# The candidate set and the engine's input are core.review.mistakes / core.review.evals; these
+# tests store real games through the importer. The pricing and the section are in
+# tests/review/test_mistakes.py.
 
 
 def _config(**over: Any) -> Settings:
-    return Settings(
-        **{"review_position_min_games": 3, "review_position_max_ply": 6, "review_history_months": 12, **over}
-    )
+    return Settings(**{"review_position_max_ply": 6, "review_history_months": 12, **over})
 
 
 class _Stub:
-    """An engine that remembers what it was asked and answers a fixed score."""
+    """An engine that remembers what it was asked and answers a fixed score and the first legal
+    move. Picklable, so it also runs in worker processes."""
 
     def __init__(self) -> None:
-        self.boards: list[str] = []
+        self.boards: list[tuple[str, int]] = []
 
     @contextmanager
     def __call__(self) -> Iterator[evals.Analyser]:
         def analyse(board: chess.Board) -> evals.Score:
-            self.boards.append(board.fen())
-            return (35, None) if board.turn == chess.WHITE else (None, -3)
+            self.boards.append((board.fen(), len(board.move_stack)))
+            best = board.san(next(iter(board.legal_moves)))
+            return (35, None, best) if board.turn == chess.WHITE else (None, -3, best)
 
         yield analyse
 
@@ -478,30 +483,146 @@ def _key(conn: psycopg.Connection[DictRow], fen: str) -> int:
     return int(row["k"])
 
 
-def test_position_evals_evaluates_exactly_the_counted_boards(clean: psycopg.Connection[DictRow]) -> None:
+def _candidates(
+    conn: psycopg.Connection[DictRow], config: Settings, limit: int | None = None
+) -> tuple[int, list[dict[str, Any]]]:
+    return mistakes.eval_candidates(conn, config.review_position_max_ply, config.review_history_months, limit)
+
+
+def _canonical(fen: str) -> str:
+    return " ".join(fen.split(" ")[:4] + ["0", "1"])
+
+
+def test_position_evals_evaluates_the_boards_before_and_after_robs_decisions(
+    clean: psycopg.Connection[DictRow],
+) -> None:
     conn = clean
     _player(conn)
     scandi: list[str] = ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qa5", "d4", "Nf6"]
-    _games(conn, "s", scandi, 3)  # three games: boards at plies 1..6 qualify (min 3, max ply 6)
-    _games(conn, "r", ["e4", "e5"], 2)  # 1...e5 reached twice: below the floor
-    _games(conn, "old", ["d4", "d5"], 3, days_ago=500)  # outside the 12 months before the newest game
+    _games(conn, "s", scandi, 3)  # Rob is Black: he moves at plies 1, 3, 5 (max ply 6)
+    _games(conn, "r", ["e4", "e5"], 2)  # 1...e5 from the same board: its after-board comes too
+    _games(conn, "w", ["d4", "Nf6"], 2, color="white")  # Rob moved from the start in two games only
+    _games(conn, "old", ["c4", "c5"], 3, days_ago=500)  # outside the 12 months before the newest game
     conn.commit()
     stub = _Stub()
     out = evals.run(conn, _config(), limit=None, engine=stub)
     fens = moves_to_fen_sequence(scandi)
-    want = {_key(conn, fens[p]) for p in range(1, 7)}  # 1.e4 is reached by 3 + 2 + 2 games: one board
-    assert out == {"pending": 6, "evaluated": 6, "failed": 0, "fallbacks": 0}
+    want = {_key(conn, fens[p]) for p in range(1, 7)} | {_key(conn, moves_to_fen_sequence(["e4", "e5"])[2])}
+    assert out == {"pending": 7, "evaluated": 7, "terminal": 0, "failed": 0, "fallbacks": 0}
     rows = _evaluated(conn)
     assert set(rows) == want
     after_e4 = rows[_key(conn, fens[1])]
     assert after_e4["eval_cp"] is None and after_e4["mate_in"] == -3 and after_e4["depth"] == STOCKFISH_DEPTH
-    assert after_e4["fen"] == fens[1]
+    assert after_e4["best_move"] is not None and after_e4["terminal"] is None
+    assert after_e4["fen"] == _canonical(fens[1])
+    # The engine only ever saw canonical boards: clocks 0 1, no move history.
+    assert all(fen.endswith(" 0 1") and stack == 0 for fen, stack in stub.boards)
     assert evals.run(conn, _config(), limit=None, engine=stub) == {
         "pending": 0,
         "evaluated": 0,
+        "terminal": 0,
         "failed": 0,
         "fallbacks": 0,
     }
+
+
+def test_a_board_from_different_games_is_stored_the_same_whichever_game_rebuilt_it(
+    clean: psycopg.Connection[DictRow],
+) -> None:
+    """The board after 1.e4 e5 is reached directly and after two knight trips (another halfmove
+    clock, another move history): the stored row is identical whichever game is the source."""
+    conn = clean
+    _player(conn)
+    direct: list[str] = ["e4", "e5", "Nf3"]
+    trip: list[str] = ["e4", "e5", "Nf3", "Nc6", "Ng1", "Nb8", "Nf3"]
+    rows: list[dict[str, Any]] = []
+    for order in ((trip, direct), (direct, trip)):
+        conn.execute("DELETE FROM player_games")
+        conn.execute("DELETE FROM chess_games")
+        conn.execute("DELETE FROM position_evals")
+        conn.commit()
+        _games(conn, "a", order[0], 3, color="white")
+        _games(conn, "b", order[1], 3, color="white")
+        conn.commit()
+        stub = _Stub()
+        evals.run(conn, _config(), limit=None, engine=stub)
+        key = _key(conn, moves_to_fen_sequence(direct)[2])
+        row = _evaluated(conn)[key]
+        del row["computed_at"]
+        rows.append(row)
+    assert rows[0] == rows[1]
+    assert rows[0]["fen"] == _canonical(moves_to_fen_sequence(direct)[2])
+
+
+def test_a_terminal_board_is_stored_from_the_board_and_never_asked_again(clean: psycopg.Connection[DictRow]) -> None:
+    conn = clean
+    _player(conn)
+    mate: list[str] = ["e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6", "Qxf7#"]
+    _games(conn, "m", mate, 3, color="white")
+    conn.commit()
+    stub = _Stub()
+    out = evals.run(conn, _config(review_position_max_ply=8), limit=None, engine=stub)
+    mated = _key(conn, moves_to_fen_sequence(mate)[7])
+    row = _evaluated(conn)[mated]
+    assert (row["terminal"], row["eval_cp"], row["mate_in"], row["best_move"]) == ("checkmate", None, None, None)
+    assert out["terminal"] == 1 and out["evaluated"] == 7 and out["failed"] == 0
+    assert not any(fen.startswith(row["fen"].split(" ")[0]) for fen, _ in stub.boards)  # never sent to the engine
+    assert _candidates(conn, _config(review_position_max_ply=8)) == (0, [])
+
+
+STALEMATE: list[str] = [
+    str(m) for m in "e3 a5 Qh5 Ra6 Qxa5 h5 h4 Rah6 Qxc7 f6 Qxd7+ Kf7 Qxb7 Qd3 Qxb8 Qh7 Qxc8 Kg6 Qe6".split()
+]
+
+
+def test_a_stored_stalemate_without_a_best_move_is_converted_in_one_write(clean: psycopg.Connection[DictRow]) -> None:
+    """A row written before migration 010 for a stalemate (the engine scores it 0 and has no
+    move): the catch-up re-reads it, and the whole row becomes a terminal draw at once."""
+    conn = clean
+    _player(conn)
+    _games(conn, "st", STALEMATE, 3, color="white")
+    conn.commit()
+    fens = moves_to_fen_sequence(STALEMATE)
+    stalemate = _key(conn, fens[19])
+    conn.execute(
+        "INSERT INTO position_evals (board_key, fen, eval_cp, depth) VALUES (%s, %s, 0, 18)", (stalemate, fens[19])
+    )
+    conn.commit()
+    evals.run(conn, _config(review_position_max_ply=24), limit=None, engine=_Stub())
+    row = _evaluated(conn)[stalemate]
+    assert (row["terminal"], row["eval_cp"], row["mate_in"], row["best_move"]) == ("draw", None, None, None)
+
+
+def test_a_repetition_is_never_a_terminal_fact_of_a_board() -> None:
+    """Four knight trips are an automatic fivefold draw when the game is replayed; the same key,
+    built from its position alone, is not over."""
+    shuffle: list[str] = ["Nf3", "Nf6", "Ng1", "Ng8"] * 4
+    replayed = evals.replay(shuffle, 16)
+    assert replayed is not None and replayed.is_game_over()
+    board = evals.canonical(replayed)
+    assert evals.terminal_of(board) is None and not board.move_stack and board.fen().endswith(" 0 1")
+    assert evals.terminal_of(chess.Board("8/8/8/8/8/2k5/8/2K5 w - - 0 1")) == "draw"  # insufficient material
+    assert evals.terminal_of(chess.Board("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1")) == "draw"  # stalemate
+    assert evals.terminal_of(chess.Board("7k/7Q/6K1/8/8/8/8/8 b - - 0 1")) == "checkmate"
+
+
+def test_the_evaluated_depth_follows_the_ranked_depth(clean: psycopg.Connection[DictRow]) -> None:
+    """Raising `review_position_max_ply` makes exactly the deeper boards candidates (the board
+    after the last decision included); lowering it removes nothing."""
+    conn = clean
+    _player(conn)
+    _games(conn, "l", LONG, 3)  # Rob is Black: decisions at odd plies
+    conn.commit()
+    fens = moves_to_fen_sequence(LONG)
+    at = {p: _key(conn, fens[p]) for p in range(0, 31)}
+    evals.run(conn, _config(review_position_max_ply=24), limit=None, engine=_Stub())
+    first = set(_evaluated(conn))
+    assert first == {at[p] for p in range(1, 25)}  # boards before (odd) and after (even) plies 1..23, and 24
+    pending, rows = _candidates(conn, _config(review_position_max_ply=30))
+    assert pending == 6 and {r["key"] for r in rows} == {at[p] for p in range(25, 31)}  # ply 30 = after ply 29
+    evals.run(conn, _config(review_position_max_ply=30), limit=None, engine=_Stub())
+    evals.run(conn, _config(review_position_max_ply=4), limit=None, engine=_Stub())
+    assert set(_evaluated(conn)) == {at[p] for p in range(1, 31)}
 
 
 def test_position_evals_takes_the_most_played_first_and_respects_the_limit(clean: psycopg.Connection[DictRow]) -> None:
@@ -511,25 +632,10 @@ def test_position_evals_takes_the_most_played_first_and_respects_the_limit(clean
     _games(conn, "b", ["e4", "e5"], 3)
     conn.commit()
     out = evals.run(conn, _config(), limit=1, engine=_Stub())
-    assert out == {"pending": 3, "evaluated": 1, "failed": 0, "fallbacks": 0}
+    assert out == {"pending": 3, "evaluated": 1, "terminal": 0, "failed": 0, "fallbacks": 0}
     first = _key(conn, moves_to_fen_sequence(["e4"])[1])  # 8 games
     assert set(_evaluated(conn)) == {first}
     assert evals.run(conn, _config(), limit=1, engine=_Stub())["pending"] == 2
-
-
-def test_a_repeated_board_is_one_occurrence_and_the_start_is_never_a_position(
-    clean: psycopg.Connection[DictRow],
-) -> None:
-    conn = clean
-    _player(conn)
-    shuffle: list[str] = ["Nf3", "Nf6", "Ng1", "Ng8"] * 3
-    _games(conn, "k", shuffle, 3)
-    conn.commit()
-    _, rows = positions.eval_candidates(conn, _config(review_position_max_ply=12), None)
-    fens = moves_to_fen_sequence(shuffle)
-    assert {r["key"] for r in rows} == {_key(conn, fens[p]) for p in (1, 2, 3)}  # never fens[0], nor twice
-    assert {r["sources"][0]["ply"] for r in rows} == {1, 2, 3}  # each board at its first occurrence
-    assert all(r["n"] == 3 for r in rows)
 
 
 def test_a_board_is_rebuilt_from_the_next_game_and_fails_only_when_none_rebuilds(
@@ -552,50 +658,108 @@ def test_a_board_is_rebuilt_from_the_next_game_and_fails_only_when_none_rebuilds
 
     # The lowest-id game no longer replays (a different move, then the null move): the next one does.
     for moves in (["d4", "e5"], ["--", "e5"]):
-        assert broken(ids[:1], moves) == {"pending": 2, "evaluated": 2, "failed": 0, "fallbacks": 2}, moves
-        assert _evaluated(conn)[after_e4]["fen"] == moves_to_fen_sequence(["e4"])[1]
+        assert broken(ids[:1], moves) == {"pending": 2, "evaluated": 2, "terminal": 0, "failed": 0, "fallbacks": 2}
+        assert _evaluated(conn)[after_e4]["fen"] == _canonical(moves_to_fen_sequence(["e4"])[1])
     # No source within reach rebuilds it: counted, nothing written, the step fails.
-    out = broken(ids[: positions.EVAL_SOURCES], ["d4", "e5"])
+    out = broken(ids[: mistakes.EVAL_SOURCES], ["d4", "e5"])
     assert out["failed"] == 2 and after_e4 not in _evaluated(conn)
 
 
 def test_a_board_counts_per_colour(clean: psycopg.Connection[DictRow]) -> None:
-    """Two games as White and two as Black reach 1.c4 c5: twice per colour, under a floor of 3."""
+    """Rob moved from each board twice as one colour: under the floor of 3, nothing. A third
+    Black game brings in the boards Black moves from and the boards his moves led to (the board
+    after 1...c5 among them, though as White he moved from it only twice)."""
     conn = clean
     _player(conn)
-    _games(conn, "w", ["c4", "c5"], 2, color="white")
-    _games(conn, "b", ["c4", "c5"], 2, color="black")
+    line: list[str] = ["c4", "c5", "Nc3", "Nc6"]
+    _games(conn, "w", line[:3], 2, color="white")
+    _games(conn, "b", line, 2, color="black")
     conn.commit()
-    assert positions.eval_candidates(conn, _config(), None) == (0, [])
-    _games(conn, "x", ["c4", "c5"], 1, color="black")
+    assert _candidates(conn, _config()) == (0, [])
+    _games(conn, "x", line, 1, color="black")
     conn.commit()
-    pending, rows = positions.eval_candidates(conn, _config(), None)
-    assert pending == 2 and {r["n"] for r in rows} == {3}
+    fens = moves_to_fen_sequence(line)
+    pending, rows = _candidates(conn, _config())
+    assert pending == 4 and {r["key"] for r in rows} == {_key(conn, fens[p]) for p in (1, 2, 3, 4)}
 
 
 def test_ties_go_to_the_lower_key_and_a_limit_of_zero_is_all(clean: psycopg.Connection[DictRow]) -> None:
     conn = clean
     _player(conn)
     for i, first in enumerate(("e4", "d4", "c4", "Nf3")):
-        _games(conn, f"t{i}_", [first], 3)
+        _games(conn, f"t{i}_", [first, "a6"], 3)
     conn.commit()
-    _, rows = positions.eval_candidates(conn, _config(), None)
-    keys = [r["key"] for r in rows]
-    assert keys == sorted(keys) and len(keys) == 4
-    _, first_two = positions.eval_candidates(conn, _config(), 2)  # the limit keeps the lower keys
-    assert [r["key"] for r in first_two] == keys[:2]
-    assert evals.run(conn, _config(), limit=0, engine=_Stub())["evaluated"] == 4
+    _, rows = _candidates(conn, _config())
+    keys = [r["key"] for r in rows if r["n"] == 3]
+    assert keys == sorted(keys) and len(keys) == 8
+    _, first_two = _candidates(conn, _config(), 2)
+    assert [r["key"] for r in first_two] == [r["key"] for r in rows][:2]
+    assert evals.run(conn, _config(), limit=0, engine=_Stub())["evaluated"] == 8
     with pytest.raises(ValueError):
         evals.run(conn, _config(), limit=-1, engine=_Stub())
 
 
-def test_the_engine_score_is_stored_from_whites_point_of_view() -> None:
+def test_workers_evaluate_the_same_rows_as_one_engine(clean: psycopg.Connection[DictRow]) -> None:
+    conn = clean
+    _player(conn)
+    _games(conn, "s", ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qa5"], 3)
+    conn.commit()
+    serial = evals.run(conn, _config(), limit=None, engine=_Stub())
+    one = {k: (r["eval_cp"], r["mate_in"], r["best_move"], r["fen"]) for k, r in _evaluated(conn).items()}
+    conn.execute("DELETE FROM position_evals")
+    conn.commit()
+    pooled = evals.run(conn, _config(), limit=None, engine=_Stub(), workers=2)
+    assert pooled == serial
+    assert {k: (r["eval_cp"], r["mate_in"], r["best_move"], r["fen"]) for k, r in _evaluated(conn).items()} == one
+
+
+def test_the_engine_score_is_stored_from_whites_point_of_view_with_its_best_move() -> None:
     from chess.engine import Cp, Mate, PovScore
 
-    assert evals._score({"score": PovScore(Cp(50), chess.BLACK)}) == (-50, None)  # type: ignore[reportPrivateUsage]
-    assert evals._score({"score": PovScore(Mate(2), chess.BLACK)}) == (None, -2)  # type: ignore[reportPrivateUsage]
-    assert evals._score({"score": PovScore(Cp(-30), chess.WHITE)}) == (-30, None)  # type: ignore[reportPrivateUsage]
-    assert evals._score({}) is None  # type: ignore[reportPrivateUsage]
+    board = chess.Board()
+    e4 = chess.Move.from_uci("e2e4")
+    score = evals._score  # type: ignore[reportPrivateUsage]
+    assert score({"score": PovScore(Cp(50), chess.BLACK), "pv": [e4]}, board) == (-50, None, "e4")
+    assert score({"score": PovScore(Mate(2), chess.BLACK)}, board) == (None, -2, None)
+    assert score({"score": PovScore(Cp(-30), chess.WHITE), "pv": []}, board) == (-30, None, None)
+    assert score({}, board) is None
+
+
+def test_an_answer_without_a_move_is_a_failure_not_a_row(clean: psycopg.Connection[DictRow]) -> None:
+    """A live board always has a move; a row without one would stay pending for ever."""
+    conn = clean
+    _player(conn)
+    _games(conn, "e", ["e4", "e5"], 3)
+    conn.commit()
+
+    @contextmanager
+    def no_move() -> Iterator[evals.Analyser]:
+        yield lambda board: (20, None, None)
+
+    out = evals.run(conn, _config(), limit=None, engine=no_move)
+    assert out["failed"] == 2 and out["evaluated"] == 0 and _evaluated(conn) == {}
+    assert [f.split(": ", 1)[1] for f in out["failures"]] == ["no move or no score"] * 2
+
+
+class _Broken:
+    """An engine that raises inside a worker process: the run counts it and names its class."""
+
+    @contextmanager
+    def __call__(self) -> Iterator[evals.Analyser]:
+        def analyse(board: chess.Board) -> evals.Score:
+            raise RuntimeError("engine gone")
+
+        yield analyse
+
+
+def test_a_worker_failure_is_counted_with_its_class(clean: psycopg.Connection[DictRow]) -> None:
+    conn = clean
+    _player(conn)
+    _games(conn, "e", ["e4", "e5"], 3)
+    conn.commit()
+    out = evals.run(conn, _config(), limit=None, engine=_Broken(), workers=2)
+    assert out["failed"] == 2 and _evaluated(conn) == {}
+    assert all(f.endswith("RuntimeError") for f in out["failures"]) and "engine gone" not in str(out)
 
 
 def test_position_evals_runs_last_in_the_hour() -> None:
@@ -619,3 +783,174 @@ def test_replay_refuses_what_is_not_a_legal_move() -> None:
 def test_replay_counts_plies_from_the_start(ply: int) -> None:
     board = evals.replay(["e4"], ply)
     assert board is not None and len(board.move_stack) == ply
+
+
+def test_migration_010_converts_a_stored_mate_zero_and_admits_exactly_two_kinds_of_row(
+    fresh_db_url: str, tmp_path: Path
+) -> None:
+    """A version-9 database with a centipawn row, a mate row and a `mate 0` row (the engine's
+    word for a checkmated side to move): the upgrade keeps the first two and makes the third a
+    terminal checkmate; afterwards the table refuses every other combination."""
+    from psycopg import sql
+
+    from tests.test_schema import FIXTURES, _scratch
+
+    url = _scratch(fresh_db_url, "evals_v9")
+    v9 = tmp_path / "v9"
+    v9.mkdir()
+    for n, path in schema.migration_files():
+        if n <= 9:
+            (v9 / path.name).write_text(path.read_text())
+    with psycopg.Connection[DictRow].connect(url, row_factory=dict_row) as c:
+        c.execute(sql.SQL((FIXTURES / "schema_baseline.sql").read_text()))  # type: ignore[arg-type]  # repo fixture
+        c.execute("INSERT INTO schema_version (version) VALUES (0)")
+        assert schema.upgrade(c, v9)[-1] == 9
+        c.execute(
+            "INSERT INTO position_evals (board_key, fen, eval_cp, mate_in, depth)"
+            " VALUES (1, 'a', 35, NULL, 18), (2, 'b', NULL, -3, 18), (3, 'c', NULL, 0, 18)"
+        )
+        c.commit()
+        assert schema.upgrade(c, to=10) == [10]
+        rows = c.execute(
+            "SELECT board_key, eval_cp, mate_in, best_move, terminal FROM position_evals ORDER BY board_key"
+        ).fetchall()
+        assert [tuple(r.values()) for r in rows] == [
+            (1, 35, None, None, None),
+            (2, None, -3, None, None),
+            (3, None, None, None, "checkmate"),
+        ]
+        c.execute("INSERT INTO position_evals (board_key, fen, depth, terminal) VALUES (4, 'd', 18, 'draw')")
+        c.execute(
+            "UPDATE position_evals SET terminal = 'draw', eval_cp = NULL, mate_in = NULL, best_move = NULL"
+            " WHERE board_key = 1"
+        )
+        c.commit()
+        refused = [
+            "(5, 'e', 10, NULL, NULL, 'checkmate')",  # terminal with a score
+            "(6, 'f', NULL, NULL, 'Nf3', 'draw')",  # terminal with a best move
+            "(7, 'g', NULL, NULL, NULL, NULL)",  # neither a score nor terminal
+            "(8, 'h', 10, 2, 'Nf3', NULL)",  # two scores
+            "(9, 'i', NULL, NULL, NULL, 'resigned')",  # not a terminal kind
+        ]
+        for values in refused:
+            with pytest.raises(psycopg.errors.CheckViolation):
+                c.execute(
+                    cast(
+                        LiteralString,
+                        "INSERT INTO position_evals (board_key, fen, eval_cp, mate_in, best_move, terminal, depth)"
+                        " VALUES " + values[:-1] + ", 18)",
+                    )
+                )
+            c.rollback()
+
+
+class _NoStart:
+    """An engine that cannot start (Stockfish missing, or dying in its UCI handshake)."""
+
+    def __call__(self) -> Any:
+        raise FileNotFoundError("secret-looking message that must never be printed")
+
+
+class _Dies:
+    """An engine whose worker process dies mid-search."""
+
+    @contextmanager
+    def __call__(self) -> Iterator[evals.Analyser]:
+        def analyse(board: chess.Board) -> evals.Score:
+            import os
+
+            os._exit(3)
+
+        yield analyse
+
+
+_RUN_IN_CHILD = """
+import json, sys
+import psycopg
+from psycopg.rows import dict_row
+from core.review import evals
+from core.settings import Settings
+from tests import test_review_positions as t
+
+engine = {"none": None, "no_start": t._NoStart(), "dies": t._Dies()}[sys.argv[2]]
+with psycopg.connect(sys.argv[1], row_factory=dict_row) as conn:
+    kw = {} if engine is None else {"engine": engine}
+    out = evals.run(conn, Settings(review_position_max_ply=4), limit=None, workers=2, **kw)
+print(json.dumps(out))
+"""
+
+
+def _run_in_a_process(url: str, engine: str, seconds: int = 90) -> tuple[dict[str, Any], str]:
+    """Run position-evals with two workers in a fresh process, from its main thread as the CLI
+    does (a pool behaves differently at shutdown when started from another thread), and kill it
+    rather than hang the suite; nothing it started may outlive it. (summary, its stderr)."""
+    import os
+    import signal
+    import subprocess
+    import sys
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _RUN_IN_CHILD, url, engine],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+        cwd=Path(__file__).resolve().parents[1],
+    )
+    try:
+        out, err = proc.communicate(timeout=seconds)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        pytest.fail("the run did not return")
+    assert proc.returncode == 0, err[-2000:]
+    try:  # nothing it started (workers, engines) is still running
+        os.killpg(proc.pid, 0)
+    except ProcessLookupError:
+        pass
+    else:
+        os.killpg(proc.pid, signal.SIGKILL)
+        pytest.fail("the run left processes behind")
+    return json.loads(out.strip().splitlines()[-1]), err
+
+
+def test_engines_that_do_not_start_stop_the_run_promptly_and_quietly(
+    clean: psycopg.Connection[DictRow], fresh_db_url: str
+) -> None:
+    conn = clean
+    _player(conn)
+    _games(conn, "s", ["e4", "d5", "exd5", "Qxd5"], 3)
+    conn.commit()
+    out, printed = _run_in_a_process(fresh_db_url, "no_start")
+    assert out["evaluated"] == 0 and out["failed"] == out["pending"] == 4 and _evaluated(conn) == {}
+    assert any("engine did not start: FileNotFoundError" in f for f in out["failures"])
+    assert "Traceback" not in printed and "secret-looking" not in printed + json.dumps(out)
+    # The one-engine path raises, as before: the CLI reports the class chain.
+    with pytest.raises(FileNotFoundError):
+        evals.run(conn, _config(), limit=None, engine=_NoStart())
+
+
+def test_a_worker_that_dies_ends_the_run_with_every_board_counted(
+    clean: psycopg.Connection[DictRow], fresh_db_url: str
+) -> None:
+    conn = clean
+    _player(conn)
+    _games(conn, "s", ["e4", "d5", "exd5", "Qxd5"], 3)
+    conn.commit()
+    out, printed = _run_in_a_process(fresh_db_url, "dies")
+    assert out["evaluated"] == 0 and out["failed"] == 4 and _evaluated(conn) == {}
+    assert all(f.endswith("BrokenProcessPool") for f in out["failures"]) and "Traceback" not in printed
+
+
+@pytest.mark.skipif(__import__("shutil").which("stockfish") is None, reason="stockfish not installed")
+def test_workers_close_their_engines_so_the_run_ends(clean: psycopg.Connection[DictRow], fresh_db_url: str) -> None:
+    """python-chess drives Stockfish from a non-daemon thread, and a worker process waits for
+    its non-daemon threads before it ends: with the engine left open, the pool's shutdown waited
+    for ever after the last board. Only the real engine shows it."""
+    conn = clean
+    _player(conn)
+    _games(conn, "s", ["e4", "d5", "exd5", "Qxd5"], 3)
+    conn.commit()
+    out, _ = _run_in_a_process(fresh_db_url, "none")
+    assert out == {"pending": 4, "evaluated": 4, "terminal": 0, "failed": 0, "fallbacks": 0}
+    assert all(r["best_move"] for r in _evaluated(conn).values())

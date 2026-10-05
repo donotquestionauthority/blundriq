@@ -1,8 +1,10 @@
-"""The Review page: positions ranked by what they cost now, mistake habits, and lost wins.
+"""The Review page: Rob's opening mistakes, the results below rating expectation, mistake habits
+and lost wins.
 
-Everything is derived at read time under the two filters (`core.review.filters`): the positions
-from the opening prefix of every game in the history (`core.review.positions`), the habits and
-the lost wins from the stored review events (`core.review.habits`, below). Nothing is stored.
+Everything is derived under the two filters (`core.review.filters`): the opening mistakes and
+the results section from the opening prefix of every game in the history
+(`core.review.mistakes`, `core.review.positions`; hourly through `core.review.snapshot`), the
+habits and the lost wins from the stored review events (`core.review.habits`, below).
 
 The event fetch joins `analysable_sql('cg')`, the shared eligibility predicate: a review event
 for a Chess960 game (the writer never produces one) is invisible here.
@@ -152,6 +154,7 @@ def page(
     habit_rows, window_games = habits.habits(conn, config, time_class, parsed)
     lost = select_lost_wins(fetch_events(conn, config, time_class, parsed), config.review_faded_peak_es)
     return {
+        "mistakes": sections["mistakes"],
         "positions": sections["positions"],
         "habits": habit_rows,
         "lost_wins": {"games": lost, "total": len(lost)},

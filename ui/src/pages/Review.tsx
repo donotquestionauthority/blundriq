@@ -3,15 +3,17 @@ import type { ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
 import { useApi } from "../hooks/useApi";
 import { OPENING_ALL, REVIEW_DEFAULTS, REVIEW_TIME_CLASS_LABELS, getHabitGames, getReviewPage, isStaleOpeningError, lineText, pointsAMonth, positionPath, readOpenSnapshot, readReviewSettings, reviewSettingsKey, reviewSettingsSearch } from "../review";
-import type { HabitGame, LostWin, ReviewHabit, ReviewOpenSnapshot, ReviewPosition, ReviewSettings, ReviewTimeClass } from "../review";
-import { PositionCard } from "../components/ReviewBits";
+import type { HabitGame, LostWin, MistakeCard as Mistake, MistakeCoverage, ReviewHabit, ReviewOpenSnapshot, ReviewPosition, ReviewSettings, ReviewTimeClass } from "../review";
+import { MistakeCard, PositionCard } from "../components/ReviewBits";
 import { daysAgo } from "../blunders";
 import type { From } from "../utils/returnTo";
 
 /**
- * The Review page over GET /review: the positions costing Rob points now ("Where you're losing
- * points"), the ones that look fixed ("Fixed?"), his mistake habits, and lost wins — everything
- * derived server-side per request under two settings, the time class and the opening.
+ * The Review page over GET /review: the boards where Rob's own opening moves keep giving value
+ * away ("Opening mistakes to work on"), the ones that look fixed ("Fixed?"), the positions whose
+ * games score below the rating expectation (collapsed: it says nothing about where those games
+ * went wrong), his mistake habits, and lost wins — everything derived server-side under two
+ * settings, the time class and the opening.
  *
  * The settings are the URL's query string, the defaults left out; what is expanded (the Fixed?,
  * Mistake habits and Lost wins sections, and each open habit) is this history entry's state, keyed
@@ -25,7 +27,7 @@ import type { From } from "../utils/returnTo";
  */
 
 const select = "rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900";
-const SECTION = { fixed: "fixed", habits: "habits", lost: "lost" } as const;
+const SECTION = { fixed: "fixed", results: "results", habits: "habits", lost: "lost" } as const;
 const DEFAULT_SECTIONS: readonly string[] = [SECTION.habits];
 const LOST_WINS_STEP = 50;
 
@@ -51,6 +53,19 @@ function Section({ title, count, open, onToggle, children }: { title: string; co
       )}
       {(!collapsible || open) && <div className="space-y-2 px-3 pb-4 sm:px-4">{children}</div>}
     </section>
+  );
+}
+
+/** "From your last 12 months: 72,834 opening moves; 33,783 from positions you reached at least 3
+ *  times, all of them checked." */
+function Coverage({ c, months }: { c: MistakeCoverage; months: number }) {
+  if (c.decisions === 0) return null;
+  const missing = c.covered - c.evaluated;
+  return (
+    <p className="text-[11px] text-zinc-500" data-testid="coverage">
+      From your last {months} months: {c.decisions.toLocaleString()} opening moves; {c.covered.toLocaleString()} from positions you reached at least {c.eval_min_games} times,{" "}
+      {missing === 0 ? "all of them checked by the engine." : `${c.evaluated.toLocaleString()} checked by the engine so far (${missing.toLocaleString()} waiting, not counted).`}
+    </p>
   );
 }
 
@@ -302,9 +317,13 @@ export default function Review() {
 
   // Every link out carries this entry, expansion included, as its way back.
   const from: From = { pathname: location.pathname, search: location.search, open: (location.state as { open?: unknown } | null)?.open };
-  const lineOf = new Map<string, string>();
-  if (data) for (const p of [...data.positions.ranked, ...data.positions.fixed]) lineOf.set(`${p.colour}:${p.key}`, lineText(p.line_san));
-  const card = (p: ReviewPosition, fixed: boolean) => <PositionCard key={`${p.colour}:${p.key}`} p={p} to={positionPath(p.colour, p.key, settings)} from={from} parentLine={p.parent_key ? (lineOf.get(`${p.colour}:${p.parent_key}`) ?? null) : null} fixed={fixed} months={data?.meta.history_months ?? 12} />;
+  // A breadcrumb names a card of the same section by its line.
+  const lines = (cards: { colour: string; key: string; line_san: string[] }[]) => new Map(cards.map((c) => [`${c.colour}:${c.key}`, lineText(c.line_san)]));
+  const resultLines = lines(data ? [...data.positions.ranked, ...data.positions.fixed] : []);
+  const mistakeLines = lines(data ? [...data.mistakes.ranked, ...data.mistakes.fixed] : []);
+  const card = (p: ReviewPosition, fixed: boolean) => <PositionCard key={`${p.colour}:${p.key}`} p={p} to={positionPath(p.colour, p.key, settings)} from={from} parentLine={p.parent_key ? (resultLines.get(`${p.colour}:${p.parent_key}`) ?? null) : null} fixed={fixed} months={data?.meta.history_months ?? 12} />;
+  const mistakeCard = (m: Mistake, fixed = false) => <MistakeCard key={`${m.colour}:${m.key}`} m={m} to={positionPath(m.colour, m.key, settings)} from={from} parentLine={m.parent_key ? (mistakeLines.get(`${m.colour}:${m.parent_key}`) ?? null) : null} fixed={fixed} months={data?.meta.history_months ?? 12} />;
+  const cards = "grid grid-cols-1 gap-2 lg:grid-cols-2";
 
   const months = data?.meta.history_months ?? 12;
   const openingOptions = data?.filter.openings ?? [];
@@ -314,7 +333,7 @@ export default function Review() {
     <div>
       <h1 className="text-xl font-semibold tracking-tight">Review</h1>
       <p className="mb-4 mt-1 text-sm text-zinc-500">
-        Positions and habits ranked by what they are costing you now. Your last {months} months prove a leak; your recent games decide its place.
+        Where your own moves keep giving value away, ranked by what they cost you now. Your last {months} months show the pattern; your recent games decide its place.
       </p>
 
       <div className="flex flex-wrap items-end gap-3 border-b border-zinc-200 pb-3 dark:border-zinc-800">
@@ -365,22 +384,34 @@ export default function Review() {
         {isLoading && !data && <p className="text-sm text-zinc-500">Loading…</p>}
         {data && (
           <div className={`space-y-3 ${isStale ? "opacity-50" : ""}`}>
-            <Section title="Where you're losing points" count={`${data.positions.ranked.length} position${data.positions.ranked.length === 1 ? "" : "s"}`}>
-              {data.positions.ranked.length === 0 ? (
+            <Section title="Opening mistakes to work on" count={`${data.mistakes.ranked.length} position${data.mistakes.ranked.length === 1 ? "" : "s"}`}>
+              {data.mistakes.ranked.length === 0 ? (
                 <p className="py-2 text-sm text-zinc-500">
                   {data.meta.games_counted === 0 && data.meta.games_without_prefix > 0
                     ? `No position has enough games in your last ${months} months yet: ${data.meta.games_without_prefix} games still need their opening moves fetched.`
-                    : "No position is costing you points right now."}
+                    : "No opening move of yours keeps costing you right now."}
                 </p>
               ) : (
-                <div className="grid gap-2 lg:grid-cols-2">{data.positions.ranked.map((p) => card(p, false))}</div>
+                <div className={cards}>{data.mistakes.ranked.map((m) => mistakeCard(m))}</div>
               )}
+              <Coverage c={data.mistakes.coverage} months={months} />
               {data.meta.games_without_prefix > 0 && data.meta.games_counted > 0 && <p className="text-[11px] text-zinc-500">{data.meta.games_without_prefix} games in this period are not counted yet: their opening moves have not been fetched.</p>}
             </Section>
 
-            <Section title="Fixed?" count={`${data.positions.fixed.length}`} open={openSections.has(SECTION.fixed)} onToggle={() => toggleSection(SECTION.fixed)}>
-              <p className="text-xs text-zinc-500">Positions that cost you points over the last {months} months and look better now, or that you have not reached lately: the last {months} months beside now.</p>
-              {data.positions.fixed.length === 0 ? <p className="py-1 text-sm text-zinc-500">Nothing here yet.</p> : <div className="grid gap-2 lg:grid-cols-2">{data.positions.fixed.map((p) => card(p, true))}</div>}
+            <Section title="Fixed?" count={`${data.mistakes.fixed.length}`} open={openSections.has(SECTION.fixed)} onToggle={() => toggleSection(SECTION.fixed)}>
+              <p className="text-xs text-zinc-500">Positions where your move used to cost you and your last visits were fine.</p>
+              {data.mistakes.fixed.length === 0 ? <p className="py-1 text-sm text-zinc-500">Nothing here yet.</p> : <div className={cards}>{data.mistakes.fixed.map((m) => mistakeCard(m, true))}</div>}
+            </Section>
+
+            <Section title="Results below rating expectation" count={`${data.positions.ranked.length}`} open={openSections.has(SECTION.results)} onToggle={() => toggleSection(SECTION.results)}>
+              <p className="text-xs text-zinc-500">You score below rating expectation in games reaching these positions. This does not identify where those games went wrong, and positions inside one another share games, so their figures do not add up.</p>
+              {data.positions.ranked.length === 0 ? <p className="py-1 text-sm text-zinc-500">No position trails the rating expectation right now.</p> : <div className={cards}>{data.positions.ranked.map((p) => card(p, false))}</div>}
+              {data.positions.fixed.length > 0 && (
+                <>
+                  <h3 className="pt-2 text-sm font-medium">Looking better, or not reached lately</h3>
+                  <div className={cards}>{data.positions.fixed.map((p) => card(p, true))}</div>
+                </>
+              )}
             </Section>
 
             <Section title="Mistake habits" count={`${data.habits.length}`} open={openSections.has(SECTION.habits)} onToggle={() => toggleSection(SECTION.habits)}>

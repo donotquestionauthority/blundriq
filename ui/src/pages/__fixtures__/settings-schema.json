@@ -708,12 +708,28 @@
       "title": "Review Material Candidate Drop",
       "type": "integer"
     },
+    "review_min_costly_games": {
+      "default": 3,
+      "description": "Games with a costly move from a position before it can be ranked.",
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Review Min Costly Games",
+      "type": "integer"
+    },
     "review_missed_win_shed": {
       "default": 15,
       "description": "Expected-score shed that marks a missed win.",
       "maximum": 100,
       "minimum": 1,
       "title": "Review Missed Win Shed",
+      "type": "integer"
+    },
+    "review_mistake_floor_es": {
+      "default": 3,
+      "description": "Expected-score points a move may lose before it is charged.",
+      "maximum": 15,
+      "minimum": 0,
+      "title": "Review Mistake Floor Es",
       "type": "integer"
     },
     "review_pool_floor_eco": {
@@ -741,8 +757,8 @@
       "type": "integer"
     },
     "review_position_min_games": {
-      "default": 10,
-      "description": "Games through a position before it can be ranked.",
+      "default": 5,
+      "description": "Games in which you moved from a position before it can be ranked.",
       "maximum": 100,
       "minimum": 3,
       "title": "Review Position Min Games",
