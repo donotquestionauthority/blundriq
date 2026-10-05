@@ -7,7 +7,8 @@ import { BAD, GOOD, MISTAKE_STATUS_LABELS, STATUS_LABELS, STATUS_TONE, belowExpe
 import type { MistakeCard as Mistake, MistakeMove, MistakeStatus, PositionStatus, ReviewPosition, VisitState } from "../review";
 import type { From } from "../utils/returnTo";
 
-const chip = "whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide";
+// A chip's label may wrap: "Improving, too early to call" is wider than a 320 px card's column.
+const chip = "inline-block max-w-full rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide";
 
 /** A status as a small outlined chip in its tone. */
 export function StatusChip({ status }: { status: PositionStatus | null }) {

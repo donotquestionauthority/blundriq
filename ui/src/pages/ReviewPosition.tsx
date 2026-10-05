@@ -68,20 +68,20 @@ function YourMoves({ m, ply, from }: { m: MistakeDetail; ply: number; from: From
       <table className="text-left text-xs">
         <thead className="text-zinc-500">
           <tr>
-            <th className="py-1 pr-4 font-normal">Move</th>
-            <th className="py-1 pr-4 text-right font-normal">Times</th>
-            <th className="py-1 pr-4 text-right font-normal">Lost on average</th>
-            <th className="py-1 pr-4 text-right font-normal">Costly</th>
-            <th className="py-1 font-normal">Last played</th>
+            <th className="py-1 pr-3 font-normal">Move</th>
+            <th className="py-1 pr-3 text-right font-normal">Times</th>
+            <th className="py-1 pr-3 text-right font-normal">Avg lost</th>
+            <th className="py-1 pr-3 text-right font-normal">Costly</th>
+            <th className="py-1 font-normal">Last</th>
           </tr>
         </thead>
         <tbody>
           {m.moves.map((mv) => (
             <tr key={mv.san} className="border-t border-zinc-200 dark:border-zinc-800">
-              <td className="py-1 pr-4 font-mono">{moveLabel(ply, mv.san)}</td>
-              <td className="py-1 pr-4 text-right tabular-nums">{mv.n}</td>
-              <td className="py-1 pr-4 text-right tabular-nums">{mv.mates ? "mate" : mv.mean_loss == null ? "—" : mv.mean_loss.toFixed(1)}</td>
-              <td className="py-1 pr-4 text-right tabular-nums">{mv.costly}</td>
+              <td className="py-1 pr-3 font-mono">{moveLabel(ply, mv.san)}</td>
+              <td className="py-1 pr-3 text-right tabular-nums">{mv.n}</td>
+              <td className="py-1 pr-3 text-right tabular-nums">{mv.mates ? "mate" : mv.mean_loss == null ? "—" : mv.mean_loss.toFixed(1)}</td>
+              <td className="py-1 pr-3 text-right tabular-nums">{mv.costly}</td>
               <td className="py-1 text-zinc-500">{daysAgo(mv.last_played) ?? "—"}</td>
             </tr>
           ))}
@@ -234,7 +234,7 @@ export default function ReviewPosition() {
             <>
               <section>
                 <h2 className="mb-1 text-base font-semibold">What happens next</h2>
-                <p className="mb-2 text-xs text-zinc-500">{node.rob_to_move ? "Your moves from here." : "Their replies from here."}</p>
+                <p className="mb-2 text-xs text-zinc-500">{node.rob_to_move ? "How your games scored after each of your moves." : "Their replies from here."}</p>
                 {data.children.length === 0 ? (
                   <p className="text-sm text-zinc-500">No move from here is recorded in your games' opening moves.</p>
                 ) : (
