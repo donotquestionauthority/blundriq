@@ -1,4 +1,7 @@
-"""Review's positions: boards from the opening prefix every analysable game keeps.
+"""Review's results section: boards from the opening prefix every analysable game keeps, ranked
+by how far Rob's results fall below the rating expectation in games that reach them
+("Results below rating expectation"). This says nothing about where those games went wrong;
+`core.review.mistakes` ranks the boards where his own moves give value away.
 
 A game contributes each board of its prefix (`chess_games.opening_keys`, the keys of the
 positions before and after each of its first OPENING_PREFIX_PLIES moves) once: at the board's
@@ -10,7 +13,7 @@ the board replayed for its FEN, the edges between boards) reads these rows.
 
 The history is `review_history_months` calendar months back from the newest of Rob's
 analysable games (not from now, so a break does not age everything at once). A board is a position when at least
-`review_position_min_games` of his games reach it as one colour.
+REVIEW_RESULTS_MIN_GAMES of his games reach it as one colour (`Scope.results_min_games`).
 """
 
 from __future__ import annotations
@@ -35,16 +38,13 @@ from core.constants import (
     REVIEW_MONTH_MIN_GAMES,
     REVIEW_RANKED_MAX,
     REVIEW_RECENT_DAYS,
+    REVIEW_RESULTS_MIN_GAMES,
     REVIEW_SHRINK_GAMES,
     REVIEW_STALE_RECENT_GAMES,
 )
 from core.review.detect import position_es
 from core.review.filters import Opening, opening_key, opening_params, opening_sql, time_class_sql
 from core.settings import Settings
-
-# How many games a board may be rebuilt from before it counts as failed: one game whose stored
-# prefix does not replay must not keep the board unevaluated (and the step failing) for ever.
-EVAL_SOURCES = 3
 
 
 def history_start_sql() -> str:
@@ -98,55 +98,6 @@ def occurrence_ctes(*, keyed: bool = False, scored: bool = False) -> str:
         ORDER BY g.id, k.key, k.ord
     ),
     occ AS (SELECT * FROM first WHERE ply BETWEEN 1 AND %(max_ply)s)"""
-
-
-def _params(config: Settings) -> dict[str, Any]:
-    return {
-        "pid": PLAYER_ID,
-        "months": config.review_history_months,
-        "max_ply": config.review_position_max_ply,
-        "min_games": config.review_position_min_games,
-    }
-
-
-def eval_candidates(conn: Connection[Any], config: Settings, limit: int | None) -> tuple[int, list[dict[str, Any]]]:
-    """(how many positions still lack an evaluation, the first `limit` of them, or all when
-    `limit` is None). A position is a board some colour's games reach at least min_games times;
-    the most-played go first, then the lower key. Each row carries the board's sources: up to
-    EVAL_SOURCES games reaching it, lowest id first, each with its first-occurrence ply of the
-    board and its prefix moves, from which `core.review.evals` replays the board."""
-    query = cast(
-        LiteralString,
-        f"""
-        WITH {games_cte()}, {occurrence_ctes()},
-        positions AS (
-            SELECT key, max(n) AS n FROM (
-                SELECT player_color, key, count(*) AS n FROM occ GROUP BY player_color, key
-                HAVING count(*) >= %(min_games)s
-            ) per_colour GROUP BY key
-        ),
-        pending AS (
-            SELECT p.key, p.n FROM positions p
-            WHERE NOT EXISTS (SELECT 1 FROM position_evals pe WHERE pe.board_key = p.key)
-        ),
-        chosen AS (SELECT key, n FROM pending ORDER BY n DESC, key LIMIT %(limit)s),
-        src AS (
-            SELECT o.key, o.id, o.ply, row_number() OVER (PARTITION BY o.key ORDER BY o.id) AS rn
-            FROM occ o JOIN chosen c ON c.key = o.key
-        )
-        SELECT c.key, c.n, (SELECT count(*) FROM pending) AS pending_total,
-               jsonb_agg(jsonb_build_object('ply', s.ply, 'moves', cg.opening_moves) ORDER BY s.rn) AS sources
-        FROM chosen c
-        JOIN src s ON s.key = c.key AND s.rn <= %(sources)s
-        JOIN chess_games cg ON cg.id = s.id
-        GROUP BY c.key, c.n
-        ORDER BY c.n DESC, c.key
-        """,
-    )
-    rows = conn.execute(query, {**_params(config), "limit": limit, "sources": EVAL_SOURCES}).fetchall()
-    if not rows:  # LIMIT NULL is no limit, so an empty answer means nothing is pending
-        return 0, []
-    return int(rows[0]["pending_total"]), [dict(r) for r in rows]
 
 
 # --- the ranking ------------------------------------------------------------------------------
@@ -251,13 +202,14 @@ class Scope:
     config: Settings
     time_class: str
     opening: Opening
+    results_min_games: int = REVIEW_RESULTS_MIN_GAMES
 
     def params(self, max_ply: int | None = None) -> dict[str, Any]:
         return {
             "pid": PLAYER_ID,
             "months": self.config.review_history_months,
             "max_ply": max_ply if max_ply is not None else self.config.review_position_max_ply,
-            "min_games": self.config.review_position_min_games,
+            "min_games": self.results_min_games,
             "half_life": float(self.config.review_recency_half_life_days),
             "recent_days": REVIEW_RECENT_DAYS,
             **opening_params(self.opening),
@@ -270,7 +222,7 @@ class Scope:
 
 
 def node_rows(conn: Connection[Any], scope: Scope) -> list[dict[str, Any]]:
-    """Every node at least `review_position_min_games` games reach, with its sums, edges,
+    """Every node at least `results_min_games` games reach, with its sums, edges,
     trend buckets and evaluation."""
     query = cast(
         LiteralString,
@@ -329,7 +281,7 @@ def meta(conn: Connection[Any], scope: Scope) -> dict[str, Any]:
 
 def opening_options(conn: Connection[Any], config: Settings, time_class: str) -> list[dict[str, Any]]:
     """The opening filter's choices: one per (colour, family) with at least
-    `review_position_min_games` games in the history under the time class, most played first."""
+    REVIEW_RESULTS_MIN_GAMES games in the history under the time class, most played first."""
     query = cast(
         LiteralString,
         f"""
@@ -345,7 +297,7 @@ def opening_options(conn: Connection[Any], config: Settings, time_class: str) ->
     )
     rows = conn.execute(
         query,
-        {"pid": PLAYER_ID, "months": config.review_history_months, "min_games": config.review_position_min_games},
+        {"pid": PLAYER_ID, "months": config.review_history_months, "min_games": REVIEW_RESULTS_MIN_GAMES},
     ).fetchall()
     out: list[dict[str, Any]] = []
     for r in rows:

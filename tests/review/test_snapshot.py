@@ -55,7 +55,9 @@ def test_the_snapshot_is_exactly_the_page_for_every_filter(clean: psycopg.Connec
     "changed",
     [
         {"review_recency_half_life_days": 45},
-        {"review_position_min_games": 5},
+        {"review_position_min_games": 6},
+        {"review_min_costly_games": 2},
+        {"review_mistake_floor_es": 4},
         {"review_position_max_ply": 12},
         {"review_history_months": 6},
         {"time_class_focus": "all"},
@@ -78,6 +80,11 @@ CHANGES = {
     "a game gaining its prefix": "UPDATE chess_games SET opening_keys = bq_opening_keys('[]'::jsonb) WHERE id = 29",
     "a new evaluation": "INSERT INTO position_evals (board_key, fen, eval_cp, depth) VALUES (1, 'x', 10, 18)",
     "a changed evaluation": "UPDATE position_evals SET eval_cp = eval_cp + 1",
+    "a best move filled in with the same score": "UPDATE position_evals SET best_move = 'Nf3' WHERE board_key = 2",
+    "a board found to be over": (
+        "UPDATE position_evals SET terminal = 'draw', eval_cp = NULL, mate_in = NULL, best_move = NULL"
+        " WHERE board_key = 2"
+    ),
     "a migration": "INSERT INTO schema_version (version) VALUES (999)",
 }
 
@@ -137,3 +144,27 @@ def test_a_rebuild_replaces_every_row(clean: psycopg.Connection[DictRow], corpus
     snapshot.build(clean, config)
     openings = {r["opening"] for r in clean.execute("SELECT opening FROM review_snapshots").fetchall()}
     assert "black:Gone" not in openings and "__all__" in openings
+
+
+def test_the_code_stamp_reads_every_review_module() -> None:
+    """A module added to core/review is in the stamp without anyone remembering to add it."""
+    from pathlib import Path
+
+    import core.review
+
+    files = {p.stem for p in Path(core.review.__path__[0]).glob("*.py") if p.stem != "__init__"}
+    assert {f"core.review.{f}" for f in files} <= set(snapshot.stamped_modules())
+
+
+def test_the_fingerprint_names_every_setting_the_sections_read() -> None:
+    """Every `config.<field>` the section code reads is a fingerprint input, by value."""
+    import inspect
+    import re
+
+    from core.review import filters, mistakes, positions
+
+    read_fields: set[str] = set()
+    for module in (mistakes, positions, filters, snapshot):
+        read_fields |= set(re.findall(r"config\.(\w+)", inspect.getsource(module)))
+    read_fields -= {"review_faded_peak_es"}  # lost wins: read live, never stored
+    assert read_fields <= set(snapshot.SETTINGS_READ), read_fields - set(snapshot.SETTINGS_READ)

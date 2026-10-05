@@ -31,7 +31,7 @@ def test_requires_login(app_env: None) -> None:
 
 def test_the_page_and_a_habit(client: TestClient) -> None:
     body = client.get("/review?time_class=all").json()
-    assert set(body) == {"positions", "habits", "lost_wins", "filter", "meta"}
+    assert set(body) == {"mistakes", "positions", "habits", "lost_wins", "filter", "meta"}
     card = body["positions"]["ranked"][0]
     assert isinstance(card["key"], str)
     assert client.get(f"/review/positions/{card['colour']}/{card['key']}?time_class=all").status_code == 200

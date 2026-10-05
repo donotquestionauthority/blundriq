@@ -10,7 +10,7 @@
     pipeline srs-maintain                         un-retire mastered puzzles whose pattern recurred
     pipeline import-opponents [--profile ID] [--reset-lichess-cursors]   scouted opponents' games
     pipeline review [--workers N]                 retag the window's review events
-    pipeline position-evals [--limit N]           evaluate Review positions (hourly: 40; 0 = all)
+    pipeline position-evals [--limit N] [--workers N]  evaluate Review boards (hourly: 40; 0 = all)
     pipeline review-snapshot                      store Review's position sections for every filter
     pipeline backfill-openings [--months N]       opening prefix for games stored before it existed
     pipeline import-corpus --csv FILE             rebuild the Lichess CC0 corpus sample
@@ -174,14 +174,16 @@ def _step_review(conn: psycopg.Connection[Any], args: argparse.Namespace) -> dic
 
 
 def _step_position_evals(conn: psycopg.Connection[Any], args: argparse.Namespace) -> dict[str, Any]:
-    """`--limit 0` evaluates every pending position (the Mac's first pass); the hourly chain
-    passes nothing and evaluates at most POSITION_EVALS_PER_RUN."""
+    """`--limit 0` evaluates every pending board (a catch-up on the Mac or the Dell, with
+    `--workers N` engines); the hourly chain passes nothing and evaluates at most
+    POSITION_EVALS_PER_RUN with one engine."""
     from core.constants import POSITION_EVALS_PER_RUN
 
     limit = getattr(args, "evals_limit", None)
     if limit is None:
         limit = POSITION_EVALS_PER_RUN
-    return position_evals.run(conn, settings.load(conn), limit=limit or None)
+    workers = int(getattr(args, "workers", None) or 1)
+    return position_evals.run(conn, settings.load(conn), limit=limit or None, workers=workers)
 
 
 def _step_review_snapshot(conn: psycopg.Connection[Any], _: argparse.Namespace) -> dict[str, Any]:
@@ -385,10 +387,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_rev.add_argument("--workers", type=int, help="tagging processes (default 1)")
     p_rev.set_defaults(func=_cmd("review", _step_review))
 
-    p_ev = sub.add_parser("position-evals", help="engine evaluation of each Review position that lacks one")
+    p_ev = sub.add_parser("position-evals", help="engine evaluation of each board Review's opening mistakes read")
     p_ev.add_argument(
         "--limit", dest="evals_limit", type=_at_least(0), help="at most N positions (default 40; 0 = all)"
     )
+    p_ev.add_argument("--workers", type=_at_least(1), help="engine processes (default 1)")
     p_ev.set_defaults(func=_cmd("position-evals", _step_position_evals))
     p_snap = sub.add_parser("review-snapshot", help="store Review's position sections for every time class and opening")
     p_snap.set_defaults(func=_cmd("review-snapshot", _step_review_snapshot))

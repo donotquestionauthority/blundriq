@@ -226,7 +226,7 @@ def corpus(clean: psycopg.Connection[DictRow]) -> psycopg.Connection[DictRow]:
 
 def test_the_page(corpus: psycopg.Connection[DictRow]) -> None:
     page = read.page(corpus, Settings(), time_class="all")
-    assert set(page) == {"positions", "habits", "lost_wins", "filter", "meta"}
+    assert set(page) == {"mistakes", "positions", "habits", "lost_wins", "filter", "meta"}
     assert page["positions"]["ranked"][0]["line_san"][:2] == ["e4", "d5"]
     assert {h["id"] for h in page["habits"]} == {"lost:opening", "missed:pin"}
     assert page["lost_wins"]["total"] == 2  # the Chess960 game's event is invisible

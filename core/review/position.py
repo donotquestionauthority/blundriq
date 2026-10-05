@@ -1,4 +1,5 @@
-"""One position's page: its numbers, what happens next, and the games through it.
+"""One position's page: Rob's moves from it (`mistake`, `core.review.mistakes.board_detail`), its
+results numbers, what happens next, and the games through it.
 
 A position is (colour, board). Its numbers are the ranking's (`core.review.positions`) under the
 same filters, at any game count, so a link stays valid when a filter narrows the position below
@@ -24,6 +25,7 @@ from core.constants import (
     REVIEW_PLAYABLE_ES,
     REVIEW_TURN_MIN_DROP,
 )
+from core.review import mistakes
 from core.review.detect import es_curve, position_es
 from core.review.positions import (
     Scope,
@@ -204,14 +206,20 @@ def position_page(conn: Connection[Any], scope: Scope, colour: str, key: int, pa
     """The page for (colour, board), or None when no counted game reaches it."""
     config = scope.config
     max_ply = config.review_position_max_ply
+    mistake = mistakes.board_detail(conn, scope, colour, key)
     row = one_node(conn, scope, colour, key, max_ply)
     ranked_depth = row is not None
     if row is None:
         max_ply = OPENING_PREFIX_PLIES
         row = one_node(conn, scope, colour, key, max_ply)
         if row is None:
-            return None
-    node = build_node(row, config, with_status=ranked_depth and int(row["n"]) >= config.review_position_min_games)
+            if mistake is None:
+                return None
+            # Only the start (ply 0) is a board Rob moves from that no game first reaches later:
+            # the page is its mistakes alone.
+            empty: dict[str, Any] = {"rows": [], "total": 0, "page": page, "page_size": PAGE_SIZE, "total_pages": 1}
+            return {"node": None, "children": [], "games": empty, "older_games": 0, "mistake": mistake}
+    node = build_node(row, config, with_status=ranked_depth and int(row["n"]) >= scope.results_min_games)
     line = line_rows(conn, scope, [(colour, key)], max_ply).get((colour, key))
     node_card = card(node, line, None)
     ply = int(line["ply"]) if line else 0
@@ -231,4 +239,5 @@ def position_page(conn: Connection[Any], scope: Scope, colour: str, key: int, pa
             "total_pages": max(1, -(-total // PAGE_SIZE)),
         },
         "older_games": node.n - total,
+        "mistake": mistake,
     }
