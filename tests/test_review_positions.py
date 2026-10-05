@@ -842,3 +842,69 @@ def test_migration_010_converts_a_stored_mate_zero_and_admits_exactly_two_kinds_
                     )
                 )
             c.rollback()
+
+
+class _NoStart:
+    """An engine that cannot start (Stockfish missing, or dying in its UCI handshake)."""
+
+    def __call__(self) -> Any:
+        raise FileNotFoundError("secret-looking message that must never be printed")
+
+
+class _Dies:
+    """An engine whose worker process dies mid-search."""
+
+    @contextmanager
+    def __call__(self) -> Iterator[evals.Analyser]:
+        def analyse(board: chess.Board) -> evals.Score:
+            import os
+
+            os._exit(3)
+
+        yield analyse
+
+
+def _bounded(fn: Any, seconds: float = 60.0) -> Any:
+    """Run `fn` in a thread; fail the test (rather than hang the suite) if it does not return."""
+    import threading
+
+    out: dict[str, Any] = {}
+    thread = threading.Thread(target=lambda: out.setdefault("value", fn()), daemon=True)
+    thread.start()
+    thread.join(seconds)
+    assert not thread.is_alive(), "the run did not return"
+    return out["value"]
+
+
+def test_engines_that_do_not_start_stop_the_run_promptly_and_quietly(
+    clean: psycopg.Connection[DictRow], capfd: pytest.CaptureFixture[str]
+) -> None:
+    import multiprocessing
+
+    conn = clean
+    _player(conn)
+    _games(conn, "s", ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qa5"], 3)
+    conn.commit()
+    out = _bounded(lambda: evals.run(conn, _config(), limit=None, engine=_NoStart(), workers=2))
+    assert out["evaluated"] == 0 and out["failed"] == out["pending"] == 6 and _evaluated(conn) == {}
+    assert any("engine did not start: FileNotFoundError" in f for f in out["failures"])
+    printed = capfd.readouterr()
+    assert "Traceback" not in printed.err + printed.out and "secret-looking" not in printed.err + printed.out
+    assert "secret-looking" not in str(out)
+    assert multiprocessing.active_children() == []
+    # The one-engine path raises, as before: the CLI reports the class chain.
+    with pytest.raises(FileNotFoundError):
+        evals.run(conn, _config(), limit=None, engine=_NoStart())
+
+
+def test_a_worker_that_dies_ends_the_run_with_every_board_counted(clean: psycopg.Connection[DictRow]) -> None:
+    import multiprocessing
+
+    conn = clean
+    _player(conn)
+    _games(conn, "s", ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qa5"], 3)
+    conn.commit()
+    out = _bounded(lambda: evals.run(conn, _config(), limit=None, engine=_Dies(), workers=2))
+    assert out["evaluated"] == 0 and out["failed"] == 6 and _evaluated(conn) == {}
+    assert all(f.endswith("BrokenProcessPool") for f in out["failures"])
+    assert multiprocessing.active_children() == []

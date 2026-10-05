@@ -25,14 +25,17 @@ as a new one would.
 Idempotent: a board with a best move or a terminal outcome is never a candidate again. Each
 evaluation is committed on its own, so an interrupted run keeps what it did. `workers` engines
 run in separate processes (one thread each, as the analyser runs them); the parent keeps the
-connection and writes every row.
+connection and writes every row. A worker whose engine does not start answers with that and
+the run stops, counting what it did not evaluate as failed; nothing a worker raises reaches
+the console beyond its class chain.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Generator, Iterator
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 from contextlib import AbstractContextManager, contextmanager
-from multiprocessing import Pool
 from typing import Any
 
 import chess
@@ -127,14 +130,26 @@ _WRITE = """
         computed_at = EXCLUDED.computed_at
 """
 
-# A worker process's engine, opened once by `_init_worker`.
+# A worker process's engine, opened once by `_init_worker`, or the class chain of the error that
+# kept it from opening.
 _worker: dict[str, Any] = {}
+
+# An answer whose label starts with this says the worker's engine never started: the run stops
+# there rather than feeding the rest of the work to engines that cannot answer.
+NO_ENGINE = "engine did not start: "
 
 
 def _init_worker(engine: Engine) -> None:
-    """Open this worker's engine. It is never closed explicitly: the pool ends its workers, and
-    Stockfish exits when its input closes."""
-    _worker["analyse"] = engine().__enter__()
+    """Open this worker's engine. A failure is kept, never raised: a pool whose initializer raises
+    replaces the worker and tries again for ever, and the child would print the traceback. The
+    engine is never closed explicitly: the pool ends its workers, and Stockfish exits when its
+    input closes."""
+    from core.notify import error_label
+
+    try:
+        _worker["analyse"] = engine().__enter__()
+    except Exception as exc:
+        _worker["startup"] = error_label(exc)
 
 
 def _analyse_in_worker(item: tuple[int, str]) -> Answer:
@@ -142,6 +157,8 @@ def _analyse_in_worker(item: tuple[int, str]) -> Answer:
     from core.notify import error_label
 
     key, fen = item
+    if "startup" in _worker:
+        return key, None, NO_ENGINE + str(_worker["startup"])
     try:
         return key, _worker["analyse"](chess.Board(fen)), None
     except Exception as exc:
@@ -150,7 +167,10 @@ def _analyse_in_worker(item: tuple[int, str]) -> Answer:
 
 @contextmanager
 def _answers(engine: Engine, work: list[tuple[int, str]], workers: int) -> Generator[Iterator[Answer]]:
-    """The engine's answers to `work`, as they come: in this process, or from `workers` processes."""
+    """The engine's answers to `work`, as they come: in this process, or from `workers` processes.
+    A worker process that dies ends the pool: every answer still owed comes back failed
+    (`BrokenProcessPool`). Leaving the block cancels what was not started and waits for the
+    workers to exit."""
     if workers <= 1 or len(work) < 2:
         with engine() as analyse:
 
@@ -160,8 +180,20 @@ def _answers(engine: Engine, work: list[tuple[int, str]], workers: int) -> Gener
 
             yield serial()
         return
-    with Pool(processes=workers, initializer=_init_worker, initargs=(engine,)) as pool:
-        yield pool.imap_unordered(_analyse_in_worker, work)
+    pool = ProcessPoolExecutor(max_workers=workers, initializer=_init_worker, initargs=(engine,))
+    try:
+        futures = {pool.submit(_analyse_in_worker, item): item[0] for item in work}
+
+        def pooled() -> Iterator[Answer]:
+            for future in as_completed(futures):
+                try:
+                    yield future.result()
+                except BrokenProcessPool:
+                    yield futures[future], None, "BrokenProcessPool"
+
+        yield pooled()
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
 
 
 def run(
@@ -201,18 +233,26 @@ def run(
     conn.commit()  # no transaction stays open while the engine thinks
     fens = dict(work)
     failures: list[str] = []
+    answered: set[int] = set()
     with _answers(engine, work, workers) as answers:
         for key, got, label in answers:
+            answered.add(key)
             # A live board always has a move; an answer without one would leave the row pending
             # for ever, so it is a failure and nothing is written.
             if got is None or got[2] is None or (got[0] is None) == (got[1] is None):
                 summary["failed"] += 1
                 failures.append(f"{key}: {label or 'no move or no score'}")
+                if label and label.startswith(NO_ENGINE):
+                    break
                 continue
             cp, mate, best = got
             conn.execute(_WRITE, (key, fens[key], cp, mate, best, None, STOCKFISH_DEPTH))
             conn.commit()
             summary["evaluated"] += 1
+    unanswered = len(work) - len(answered)
+    if unanswered:  # the run stopped: an engine that did not start
+        summary["failed"] += unanswered
+        failures.append(f"{unanswered} boards not evaluated: the run stopped")
     if failures:
         summary["failures"] = failures[:20]
     return summary
