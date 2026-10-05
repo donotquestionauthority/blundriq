@@ -25,3 +25,5 @@ services:
         sync: false
       - key: PASSWORD_HASH
         sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false

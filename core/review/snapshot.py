@@ -74,7 +74,7 @@ def fingerprint(conn: Connection[Any], config: Settings, time_class: str) -> str
     """Everything the position sections under `time_class` are computed from, as one string:
     the code (`_code_stamp`), the schema version (a migration that rewrites stored rows), the
     settings they read (`SETTINGS_READ`, by value), `as_of`, a digest of every analysable game
-    of Rob's as the sections see it (when, which side, time class, family, result, ratings,
+    of the player's as the sections see it (when, which side, time class, family, result, ratings,
     whether it has a prefix; a prefix itself is written once and only a migration rewrites it),
     and a digest of the evaluations (score, best move and terminal outcome). Any change to an
     input changes the fingerprint, so a stored row whose fingerprint matches is what the page

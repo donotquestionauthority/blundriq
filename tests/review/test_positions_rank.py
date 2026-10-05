@@ -307,7 +307,7 @@ def test_as_of_is_the_newest_game_under_the_time_class(clean: psycopg.Connection
     g.add(SCANDI, family="Scandinavian Defense", days=3)
     g.add(QGD, time_class="blitz", days=1)
     assert p.meta(clean, scope(time_class="focus"))["as_of"] == NOW - timedelta(days=3)
-    # The opening filter never moves it: an opening he stopped playing does not look current.
+    # The opening filter never moves it: an opening they stopped playing does not look current.
     italian = scope(time_class="focus", opening="white:Italian Game")
     assert p.meta(clean, italian)["as_of"] == NOW - timedelta(days=3)
     assert p.meta(clean, scope(time_class="all"))["as_of"] == NOW - timedelta(days=1)

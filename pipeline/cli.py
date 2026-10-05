@@ -94,9 +94,13 @@ def _settings_schema(_: argparse.Namespace) -> int:
 
 
 def _player_set(args: argparse.Namespace) -> int:
+    """Store the handles. The console says which platforms are configured, never the handles
+    themselves: output here may be pasted or run under a public log."""
     with db.connect() as conn:
         names = player.set_usernames(conn, args.chesscom, args.lichess)
-    print(f"player: chesscom={names['chesscom']} lichess={names['lichess']}")
+    given = {"chesscom": args.chesscom, "lichess": args.lichess}
+    state = {k: "updated" if given[k] else ("unchanged" if names[k] else "not set") for k in ("chesscom", "lichess")}
+    print(f"player saved (chesscom: {state['chesscom']}, lichess: {state['lichess']})")
     return 0
 
 
@@ -169,12 +173,12 @@ def _step_import_opponents(conn: psycopg.Connection[Any], args: argparse.Namespa
 
 def _step_review(conn: psycopg.Connection[Any], args: argparse.Namespace) -> dict[str, Any]:
     """Reads its settings itself, after its locks (core/review/run.py). `--workers` is for
-    the Mac and the Dell; the hourly chain runs serially."""
+    a local catch-up; the hourly chain runs serially."""
     return review.run(conn, workers=int(getattr(args, "workers", None) or 1))
 
 
 def _step_position_evals(conn: psycopg.Connection[Any], args: argparse.Namespace) -> dict[str, Any]:
-    """`--limit 0` evaluates every pending board (a catch-up on the Mac or the Dell, with
+    """`--limit 0` evaluates every pending board (a local catch-up, with
     `--workers N` engines); the hourly chain passes nothing and evaluates at most
     POSITION_EVALS_PER_RUN with one engine."""
     from core.constants import POSITION_EVALS_PER_RUN

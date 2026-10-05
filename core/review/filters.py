@@ -4,7 +4,7 @@ Time class is `focus` (the `time_class_focus` setting's classes, through
 `core.chess.eligibility.evidence_sql`) or `all`. The opening key is `__all__`,
 `{colour}:{family}` over `chess_games.canonical_family`, or `{colour}:__unclassified__` for
 games with no family. It narrows the game set itself, so every section of the page is that
-opening's. Whether a well-formed key names an opening Rob plays is the page's to judge (it is
+opening's. Whether a well-formed key names an opening the player plays is the page's to judge (it is
 one of the options the page lists); a key that is not is a ReviewParamError whose text says
 `unknown opening key`, which the client's stale-key recovery reads.
 """

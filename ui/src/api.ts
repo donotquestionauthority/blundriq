@@ -1,5 +1,6 @@
-/** Minimal API client. Same-origin in production (api.blundriq.com under blundriq.com),
- *  proxied under /api in dev. Cookies carry the session; nothing is stored in JS. */
+/** Minimal API client. In production VITE_API_URL is the API origin, a sibling host under the
+ *  UI's own domain so the SameSite=Lax session cookie is first-party there; in dev requests go to
+ *  /api, which Vite proxies to the local API. Cookies carry the session; nothing is stored in JS. */
 
 const BASE = import.meta.env.VITE_API_URL ?? "/api";
 

@@ -1,4 +1,4 @@
-"""Puzzles the player makes by hand, from a position on one of his pages.
+"""Puzzles the player makes by hand, from a position on one of their pages.
 
 A hand-made puzzle is an ordinary standard puzzle tagged `custom`, which is what makes it
 the strongest owner of its board: neither generator will displace it (generate/_state.py).

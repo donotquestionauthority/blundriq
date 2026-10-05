@@ -11,10 +11,10 @@ import type { From } from "../utils/returnTo";
 
 /**
  * One position's page at `/review/positions/:colour/:key`, under the Review page's two settings
- * (the same query string, plus `page` for the games past the first fifty). The board as Rob reached it, the line most of his games took to it;
- * when he is to move there, his moves from it (how often, what each gave away, the engine's move)
- * and his games from it, fifty at a time: the costly ones, or every game with one move (`move`
- * and `mpage` in the query string, so a game's Close, Back and a reload come back to them); then the results below rating expectation: numbers and trend, what happens next (each move a link to that position's page, except a return to the start), and his games
+ * (the same query string, plus `page` for the games past the first fifty). The board as the player reached it, the line most of their games took to it;
+ * when they are to move there, their moves from it (how often, what each gave away, the engine's move)
+ * and their games from it, fifty at a time: the costly ones, or every game with one move (`move`
+ * and `mpage` in the query string, so a game's Close, Back and a reload come back to them); then the results below rating expectation: numbers and trend, what happens next (each move a link to that position's page, except a return to the start), and their games
  * through it whose moves are still stored: playable-then-not-won first, each with one sentence on
  * why it is worth opening. "Review" opens the game at its turning point, "From here" at the board;
  * both carry this page's whole state as the way back, so a game's Close returns here and this page's
@@ -49,7 +49,7 @@ function MoveGameRow({ g, from }: { g: MoveGame; from: From }) {
   );
 }
 
-/** Rob's games from the board, fifty at a time, newest first: the costly ones, or every game with
+/** The player's games from the board, fifty at a time, newest first: the costly ones, or every game with
  *  the chosen move (fine, costly or not checked yet). */
 function MoveGamesList({ colour, boardKey, timeClass, opening, view, ply, onView, from }: { colour: string; boardKey: string; timeClass: ReviewTimeClass; opening: string; view: MovesView; ply: number; onView: (v: MovesView) => void; from: From }) {
   const fetchGames = useCallback(() => getPositionMoveGames(colour, boardKey, timeClass, opening, view.move, view.page), [colour, boardKey, timeClass, opening, view.move, view.page]);
@@ -103,7 +103,7 @@ function MoveGamesList({ colour, boardKey, timeClass, opening, view, ply, onView
   );
 }
 
-/** Rob's moves from the board: the numbers the opening-mistakes card has, every move he played
+/** The player's moves from the board: the numbers the opening-mistakes card has, every move they played
  *  there with the engine's (each opens its games), and the games listed below. */
 function YourMoves({ m, ply, children, view, onView }: { m: MistakeDetail; ply: number; children: ReactNode; view: MovesView; onView: (v: MovesView) => void }) {
   const unchecked = m.decisions - m.evaluated;
@@ -291,7 +291,7 @@ export default function ReviewPosition() {
             <>
               <section>
                 <h2 className="mb-1 text-base font-semibold">What happens next</h2>
-                <p className="mb-2 text-xs text-zinc-500">{node.rob_to_move ? "How your games scored after each of your moves." : "Their replies from here."}</p>
+                <p className="mb-2 text-xs text-zinc-500">{node.player_to_move ? "How your games scored after each of your moves." : "Their replies from here."}</p>
                 {data.children.length === 0 ? (
                   <p className="text-sm text-zinc-500">No move from here is recorded in your games' opening moves.</p>
                 ) : (

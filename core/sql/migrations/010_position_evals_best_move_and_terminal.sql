@@ -1,4 +1,4 @@
--- Review's opening mistakes read, for every board Rob moved from often enough and every board his
+-- Review's opening mistakes read, for every board the player moved from often enough and every board their
 -- moves led to, the engine's best move as well as its score, and whether the board is over.
 --
 -- A board is terminal only through a fact of the board itself: checkmate, or a draw by stalemate

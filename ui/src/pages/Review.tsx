@@ -9,10 +9,10 @@ import { daysAgo } from "../blunders";
 import type { From } from "../utils/returnTo";
 
 /**
- * The Review page over GET /review: the boards where Rob's own opening moves keep giving value
+ * The Review page over GET /review: the boards where the player's own opening moves keep giving value
  * away ("Opening mistakes to work on"), the ones that look fixed ("Fixed?"), the positions whose
  * games score below the rating expectation (collapsed: it says nothing about where those games
- * went wrong), his mistake habits, and lost wins — everything derived server-side under two
+ * went wrong), their mistake habits, and lost wins — everything derived server-side under two
  * settings, the time class and the opening.
  *
  * The settings are the URL's query string, the defaults left out; what is expanded (the Fixed?,

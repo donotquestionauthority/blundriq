@@ -58,7 +58,7 @@ _COLOR_CLAUSE: dict[str, str] = {
 
 # The GIN probe is a correlated LATERAL with `OFFSET 0`: without the fence the planner pulls
 # the subquery up into the join and, past ~120 input FENs, abandons the index and unnests every
-# element of every active line (measured 6.4x slower on Rob's repertoire). `AS MATERIALIZED`
+# element of every active line (measured 6.4x slower on a full-size repertoire). `AS MATERIALIZED`
 # keeps the input normalisation to once per FEN. Both are load-bearing; neither changes a row.
 _LINES_SQL = """
 WITH qk AS MATERIALIZED (

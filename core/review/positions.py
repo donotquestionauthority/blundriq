@@ -1,7 +1,7 @@
 """Review's results section: boards from the opening prefix every analysable game keeps, ranked
-by how far Rob's results fall below the rating expectation in games that reach them
+by how far the player's results fall below the rating expectation in games that reach them
 ("Results below rating expectation"). This says nothing about where those games went wrong;
-`core.review.mistakes` ranks the boards where his own moves give value away.
+`core.review.mistakes` ranks the boards where their own moves give value away.
 
 A game contributes each board of its prefix (`chess_games.opening_keys`, the keys of the
 positions before and after each of its first OPENING_PREFIX_PLIES moves) once: at the board's
@@ -11,9 +11,9 @@ start position is never a board of its own. Only first occurrences at plies 1 to
 `review_position_max_ply` are kept. Every statistic and every ply-based use (the line shown,
 the board replayed for its FEN, the edges between boards) reads these rows.
 
-The history is `review_history_months` calendar months back from the newest of Rob's
+The history is `review_history_months` calendar months back from the newest of the player's
 analysable games (not from now, so a break does not age everything at once). A board is a position when at least
-REVIEW_RESULTS_MIN_GAMES of his games reach it as one colour (`Scope.results_min_games`).
+REVIEW_RESULTS_MIN_GAMES of their games reach it as one colour (`Scope.results_min_games`).
 """
 
 from __future__ import annotations
@@ -48,10 +48,10 @@ from core.settings import Settings
 
 
 def history_start_sql() -> str:
-    """The first instant of the history, as a scalar SQL expression: the newest of Rob's
+    """The first instant of the history, as a scalar SQL expression: the newest of the player's
     analysable games minus %(months)s CALENDAR months, counted on the UTC calendar so the
     session's time zone never moves it (a month back from 31 March is 28 or 29 February, as
-    Postgres's interval arithmetic says). NULL when he has no analysable game. Binds %(pid)s
+    Postgres's interval arithmetic says). NULL when they have no analysable game. Binds %(pid)s
     and %(months)s. The backfill reads the same expression (`history_start`), so it reaches
     exactly the games these statistics count."""
     return f"""(
@@ -69,7 +69,7 @@ def history_start(conn: Connection[Any], months: int) -> datetime | None:
 
 
 def games_cte() -> str:
-    """`games AS (...)`: Rob's analysable games with a prefix inside the history (from
+    """`games AS (...)`: the player's analysable games with a prefix inside the history (from
     `history_start_sql()`, inclusive). Binds %(pid)s and %(months)s."""
     return f"""
     games AS (
@@ -104,7 +104,7 @@ def occurrence_ctes(*, keyed: bool = False, scored: bool = False) -> str:
 #
 # Every counted game has a result s (1 / ½ / 0), an Elo expectation e from the two ratings stored
 # with it (same platform, so the scales agree), a deficit d = e − s (points below expectation)
-# and a weight w = 0.5 ** (age / H), age in days before `as_of` (the newest of Rob's analysable
+# and a weight w = 0.5 ** (age / H), age in days before `as_of` (the newest of the player's analysable
 # games under the time-class filter, so a break does not age everything at once) and H the
 # `review_recency_half_life_days` setting. A node is (colour, board): the same board means
 # different things to each side. Its numbers are over its first-occurrence rows only, so a
@@ -133,7 +133,7 @@ _LN2 = math.log(2)
 
 
 def _counted_games_ctes(time_sql: str, opening_sql: str) -> str:
-    """`asof`, `hist` (every game of Rob's in the history under both filters) and `games` (those
+    """`asof`, `hist` (every game of the player's in the history under both filters) and `games` (those
     the statistics count: a prefix, a result and both ratings). Binds %(pid)s, %(months)s,
     %(half_life)s and the opening filter's parameters."""
     return f"""
@@ -385,7 +385,7 @@ class Node:
 def status_of(long_deficit: float, current_deficit: float, recent: int, n_eff: float) -> str | None:
     """The one ordered decision (the first rule that matches wins). Staleness comes first: an
     ageing position keeps its deficits and only its leak per month shrinks, so without that rule
-    a position Rob no longer reaches would keep any status for ever."""
+    a position the player no longer reaches would keep any status for ever."""
     t = REVIEW_LEAK_THRESHOLD
     lk, ck = long_deficit, current_deficit
     if recent < REVIEW_STALE_RECENT_GAMES:
@@ -533,7 +533,7 @@ def board_of(line: list[str]) -> tuple[str | None, str | None]:
 
 
 def es_at(node: Node) -> float | None:
-    """Rob's expected score at the board (0-100) from its stored evaluation, priced as the
+    """The player's expected score at the board (0-100) from its stored evaluation, priced as the
     detector prices a position; None until the board is evaluated."""
     if node.eval_cp is None and node.mate_in is None:
         return None

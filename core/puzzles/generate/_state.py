@@ -7,10 +7,10 @@ puzzle there, so a board has an owner class and the classes have a precedence:
     custom > own_mate > blunder_auto > cc0
 
 **A puzzle the player made by hand outranks everything**, including a missed mate: it is
-there because he decided that position was worth practising, and displacing it would
-throw away its progress along with his intent. Between the generators, a missed mate is
+there because they decided that position was worth practising, and displacing it would
+throw away its progress along with their intent. Between the generators, a missed mate is
 the stronger lesson than the blunder that led to it, and a corpus puzzle that happens to
-sit on a board he actually blundered gives way to the real thing.
+sit on a board they actually blundered gives way to the real thing.
 
 Both generators read the same `active_puzzles` CTE, so the classes cannot drift apart.
 The generator's worklist is a FULL OUTER JOIN of what qualifies now against what is

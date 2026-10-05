@@ -68,7 +68,7 @@ def position_move_games(
     move: str | None = Query(None, pattern=r"^[A-Za-z0-9+#=\-]{2,10}$"),
     page: int = Query(1, ge=1, le=10000),
 ) -> dict[str, Any]:
-    """Rob's games from the board: every visit with `move`, or with no `move` every costly one."""
+    """The player's games from the board: every visit with `move`, or with no `move` every costly one."""
     board = int(key)
     if not _BIGINT[0] <= board <= _BIGINT[1]:
         raise HTTPException(422, "position key out of range")

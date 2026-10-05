@@ -11,7 +11,7 @@ Listing: the set and order of FENs; per FEN the move set and order, each move's 
 their effectiveness, `dirty_anchor == contested`, `active_move_count == active_moves`. Gate:
 for every line that is not effectively active in the archive, whether the old check blocks
 it and, when it does, the first blocking position and the move the line plays there, against
-the new gate's refusal. The old gate rebuilds its index per line (~6 min on Rob's data).
+the new gate's refusal. The old gate rebuilds its index per line (~6 min on a full-size repertoire).
 
     python tools/oracle/diff_conflicts.py --old-src /path/to/old-src   (the extracted archive)
 """

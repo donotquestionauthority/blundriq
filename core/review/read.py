@@ -1,4 +1,4 @@
-"""The Review page: Rob's opening mistakes, the results below rating expectation, mistake habits
+"""The Review page: the player's opening mistakes, the results below rating expectation, mistake habits
 and lost wins.
 
 Everything is derived under the two filters (`core.review.filters`): the opening mistakes and
@@ -84,7 +84,7 @@ def _turning(events: list[Event]) -> Event:
 
 
 def select_lost_wins(events: list[Event], faded_peak_es: int) -> list[dict[str, Any]]:
-    """Games Rob was winning and did not win (a `faded` event, or a game peak at least the faded
+    """Games the player was winning and did not win (a `faded` event, or a game peak at least the faded
     peak), never a clock-decided one: unreviewed first, then the most recent. Each row carries
     its peak expected score and its turning point."""
     by_game: dict[int, list[Event]] = {}

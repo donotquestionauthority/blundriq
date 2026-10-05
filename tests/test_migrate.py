@@ -26,8 +26,8 @@ MAPPING = migrate.Mapping(
 
 VENDOR = "legacy"  # stands in for the old schema's source-specific column prefix and enum value
 FEN960 = "bbqnnrkr/pppppppp/8/8/8/8/PPPPPPPP/BBQNNRKR w KQkq - 0 1"
-# Puzzles 1 and 2 stand for the old shared tier: owned by nobody, solved by Rob anyway.
-# Puzzle 2 sits on the same board as his own puzzle 900, so adopting it needs reconciling.
+# Puzzles 1 and 2 stand for the old shared tier: owned by nobody, solved by the player anyway.
+# Puzzle 2 sits on the same board as their own puzzle 900, so adopting it needs reconciling.
 SHARED_FEN = "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1"
 THIRD_FEN = "rnbqkbnr/pppppppp/8/8/2P5/8/PP1PPPPP/RNBQKBNR b KQkq - 0 1"
 # Puzzle 497 is the archive's real shape for a hand-made puzzle in the shared tier: tagged
@@ -159,7 +159,7 @@ def test_migrate_copies_the_player_and_drops_960_derivatives(
         "opponent_profiles": 1,
         "opponent_sources": 1,
         "opponent_views": 1,
-        # 900 and 901 are his; 1 and 2 are shared puzzles his own history reaches. 902 is an
+        # 900 and 901 are theirs; 1 and 2 are shared puzzles their own history reaches. 902 is an
         # endgame drill, 903 belongs to another player, and 3 is shared but only ever
         # solved by someone else.
         "puzzles": 5,
@@ -198,7 +198,7 @@ def test_migrate_copies_the_player_and_drops_960_derivatives(
         (900, ["blunder"]),
         (901, ["blunder", "custom"]),  # the old 'manual' tag
     ]
-    # An adopted puzzle becomes his: there is nobody else here to own it.
+    # An adopted puzzle becomes theirs: there is nobody else here to own it.
     assert {r["player_id"] for r in sources} == {PLAYER_ID}
     # Puzzle 2 and puzzle 900 share a board. The one carrying more progress keeps serving;
     # the other is retired, not deleted, so its attempts and SRS row survive.
@@ -245,7 +245,7 @@ def test_an_adopted_hand_made_puzzle_survives_the_first_generation_run(
 ) -> None:
     """Migrating the rows is not the same as keeping them usable.
 
-    Puzzle 497 is the archive's shape for a puzzle Rob made by hand in the shared tier:
+    Puzzle 497 is the archive's shape for a puzzle the player made by hand in the shared tier:
     tagged `blunder`, no `manual`, and a `created_by`. If only the tag is translated it
     looks like a puzzle the pipeline generated, and the very next generation run retires
     it for having no evidence behind it — the row survives, its practice life does not.

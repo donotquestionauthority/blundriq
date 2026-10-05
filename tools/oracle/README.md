@@ -45,6 +45,6 @@ disposable and is modified.
 `diff_puzzles.py --generation` deletes the generated puzzles before remaking them, and
 deleting a puzzle cascades its SRS row away, so it refuses to run unless the database name
 contains `scratch`. Make one by migrating from the oracle into a local database rather than
-pointing it at the database Rob practises against.
+pointing it at the database you practise against.
 
 Each script prints per-game differences and exits 1 if any field differs.

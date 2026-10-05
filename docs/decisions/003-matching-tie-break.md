@@ -15,4 +15,4 @@ tied line supplied `expected_move` (58) or `chapter_id` (8).
 Not changed: the matcher's semantics. It is called a subsequence match but every
 line position must appear in the game in order, so a game that reaches a line's
 position by a different move order does not match (0). Changing that is a
-product decision for Rob, not a port detail.
+product decision, not a port detail.

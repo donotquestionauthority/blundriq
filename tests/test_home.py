@@ -395,7 +395,7 @@ def test_the_page_shows_the_last_full_run_and_the_hourly_steps_that_failed(db: p
     rid = runs.start(db, "match")
     runs.finish(db, rid, {})  # a later success clears the step
     rid = runs.start(db, "import-corpus")
-    runs.fail(db, rid, "by hand, on the Mac")  # not an hourly step: never a red line
+    runs.fail(db, rid, "by hand, locally")  # not an hourly step: never a red line
     p = home.page(db, Settings())["pipeline"]
     assert p["last_ok_at"] == through
     assert [(f["step"], f["error"]) for f in p["failed"]] == [("analyze", "worker exploded")]

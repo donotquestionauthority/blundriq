@@ -427,7 +427,7 @@ def _owned_id_at(conn: Connection[Any], fen: str) -> int | None:
 
 def _weak_theme_order(conn: Connection[Any], themes: list[str], config: Settings) -> list[str]:
     """The first-class themes the player misses most, most-missed first, counting misses in
-    the games he is studying (the time-class focus). When nothing clears the threshold,
+    the games they are studying (the time-class focus). When nothing clears the threshold,
     every theme in alphabetical order."""
     with conn.cursor() as cur:
         cur.execute(

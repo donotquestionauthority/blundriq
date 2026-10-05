@@ -31,13 +31,13 @@ def cp_for(es: float) -> int:
 
 
 def test_a_terminal_board_takes_its_outcome_and_mate_zero_alone_is_unknown() -> None:
-    # Rob's move mates: the board after it has the opponent to move and checkmated.
-    assert m.board_es(None, None, "checkmate", True, rob_to_move=False) == 100.0
-    assert m.board_es(None, None, "checkmate", False, rob_to_move=True) == 0.0
-    assert m.board_es(None, None, "draw", True, rob_to_move=False) == 50.0
-    assert m.board_es(None, 0, None, True, rob_to_move=False) is None  # never read as 0 or 100
-    assert m.board_es(None, None, None, True, rob_to_move=True) is None
-    assert m.board_es(120, None, None, False, rob_to_move=True) == position_es(120, None, False)
+    # The player's move mates: the board after it has the opponent to move and checkmated.
+    assert m.board_es(None, None, "checkmate", True, player_to_move=False) == 100.0
+    assert m.board_es(None, None, "checkmate", False, player_to_move=True) == 0.0
+    assert m.board_es(None, None, "draw", True, player_to_move=False) == 50.0
+    assert m.board_es(None, 0, None, True, player_to_move=False) is None  # never read as 0 or 100
+    assert m.board_es(None, None, None, True, player_to_move=True) is None
+    assert m.board_es(120, None, None, False, player_to_move=True) == position_es(120, None, False)
 
 
 def _row(b: tuple[Any, Any, Any], a: tuple[Any, Any, Any], colour: str = "white") -> dict[str, Any]:
@@ -137,7 +137,7 @@ def test_recent_decisions_weigh_more() -> None:
 
 # --- the section over stored games ------------------------------------------------------------
 
-LINE: list[str] = ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qa5", "d4", "Nf6"]  # Rob is Black: plies 1, 3, 5, 7
+LINE: list[str] = ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qa5", "d4", "Nf6"]  # The player is Black: plies 1, 3, 5, 7
 
 
 def _plant(conn: psycopg.Connection[DictRow], moves: Sequence[str], white_es: float) -> int:
@@ -245,7 +245,7 @@ def test_a_repeated_move_is_one_decision_and_another_move_on_the_return_is_two(
 
 def test_a_short_game_stops_where_it_ends(clean: psycopg.Connection[DictRow]) -> None:
     g = Games(clean)
-    g.add(LINE[:3], days=1)  # Rob moved once (1...d5), and the game ended after 2.exd5
+    g.add(LINE[:3], days=1)  # The player moved once (1...d5), and the game ended after 2.exd5
     _flat(clean, [LINE[:3]])
     assert _section(clean)["coverage"]["decisions"] == 1
 
@@ -300,7 +300,7 @@ def test_a_breadcrumb_points_to_the_ranked_board_earlier_on_the_line(clean: psyc
     assert cards[later]["parent_key"] == first and cards[first]["parent_key"] is None
 
 
-def test_the_position_page_carries_robs_moves(clean: psycopg.Connection[DictRow]) -> None:
+def test_the_position_page_carries_the_players_moves(clean: psycopg.Connection[DictRow]) -> None:
     from core.review import position as pp
 
     g = Games(clean)
@@ -311,7 +311,7 @@ def test_the_position_page_carries_robs_moves(clean: psycopg.Connection[DictRow]
     detail = page["mistake"]
     assert detail["ranked"] is True and detail["best_move"] == "Nf3"
     assert [(r["san"], r["n"], r["costly"]) for r in detail["moves"]] == [("Qa5", 3, 3), ("Qd8", 2, 0)]
-    # Rob is not to move after 3...Qa5: no mistakes block there.
+    # The player is not to move after 3...Qa5: no mistakes block there.
     after = pp.position_page(clean, scope(results_min_games=3), "black", key_of(clean, LINE[:6]), 1)
     assert after is not None and after["mistake"] is None
 
@@ -359,7 +359,7 @@ def test_fixed_is_ordered_by_what_the_board_cost_over_the_history(clean: psycopg
     """A board that cost a lot long ago comes before one that cost a little lately: Fixed? is
     ranked by the twelve months, not by the current rate."""
     g = Games(clean)
-    old_line: list[str] = ["e4", "e5", "Nf3", "Nc6"]  # Rob is Black: the costly move is 1...e5
+    old_line: list[str] = ["e4", "e5", "Nf3", "Nc6"]  # The player is Black: the costly move is 1...e5
     new_line: list[str] = ["d4", "d5", "c4", "e6"]  # and here 1...d5
     for i in range(3):
         g.add(old_line, days=200 + i)

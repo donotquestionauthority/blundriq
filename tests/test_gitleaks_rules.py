@@ -20,6 +20,9 @@ CONFIG = REPO / ".gitleaks.toml"
 MUST_FLAG: list[tuple[str, tuple[str, ...]]] = [
     ("postgres-dsn", ("postgresql://", "review:fake-secret@localhost:5432/db")),
     ("postgres-dsn", ("postgres://", "user:pw@", "db.example.internal:5432/app")),
+    ("postgres-dsn", ("postgres", "ql:///blundriq?password=", "hunter2")),
+    ("postgres-dsn", ("postgres", "ql:///blundriq?host=", "db.example.internal")),
+    ("postgres-dsn", ("postgres", "ql:///Blundriq-live")),
     ("supabase-host", ("https://abcdefghijklmnopqrst.", "supabase.co/rest/v1")),
     ("supabase-access-token", ("sbp_", "9f3c1e7a2b4d8e6f0a5c7b9d1e3f2a4c6b8d0e2f")),
     ("render-host", ("https://blundriq-api-xyz1.", "onrender.com")),
@@ -49,6 +52,8 @@ MUST_PASS = [
     "postgresql://postgres:ci@localhost:5432/blundriq_test",
     "postgresql://postgres:ci@localhost:5432/blundriq_install",
     "postgresql://localhost/blundriq_test",
+    "postgresql:///blundriq",
+    "postgresql:///blundriq_test",
     "Co-Authored-By: Claude <noreply@anthropic.com>",
     "contact@example.com",
     "a twelve digit number in prose: 123456789012 games",

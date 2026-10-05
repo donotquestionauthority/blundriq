@@ -13,6 +13,8 @@ Which variables are required depends on the role of the process:
     DATABASE_URL       api, pipeline     Postgres DSN (pooler)
     SESSION_SECRET     api               signs the login cookie
     PASSWORD_HASH      api               bcrypt hash of the one user's password
+    ALLOWED_ORIGINS    api               the UI's origin(s), comma-separated (CORS); not a
+                                         secret, but every environment value is read here
     ANTHROPIC_API_KEY  api               AI explanations with a claude-* model; read when one is used
     OPENAI_API_KEY     api               AI explanations with an OpenAI model; read when one is used
     RESEND_API_KEY     pipeline          ops alerts
@@ -20,7 +22,7 @@ Which variables are required depends on the role of the process:
     ALERT_FROM         pipeline          the sender address (on the Resend-verified domain)
     ORACLE_DATABASE_URL  migrate, tools/oracle   the restored old database (local Postgres)
 
-Local development sets them in the shell (e.g. `set -a; source ~/.blundriq-secrets/blundriq.env`).
+Local development sets them in the shell (e.g. `set -a; source ~/.config/blundriq/api.env; set +a`).
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ class ApiSecrets:
     database_url: str
     session_secret: str
     password_hash: str
+    allowed_origins: str  # raw; api.main.parse_origins validates it
 
 
 @dataclass(frozen=True)
@@ -78,6 +81,7 @@ def api() -> ApiSecrets:
         database_url=_require("DATABASE_URL"),
         session_secret=_require("SESSION_SECRET"),
         password_hash=_require("PASSWORD_HASH"),
+        allowed_origins=_require("ALLOWED_ORIGINS"),
     )
 
 

@@ -1,4 +1,4 @@
-"""Review: where Rob loses points, and the decisions that lost them.
+"""Review: where the player loses points, and the decisions that lost them.
 
 `detect` is the pure detector over one game's stored analysis; `window` reads the games and
 their context; `write` publishes the tagged games' events in one statement; `run` is the hourly step that ties them

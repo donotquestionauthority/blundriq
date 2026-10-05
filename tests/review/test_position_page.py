@@ -37,7 +37,7 @@ def ev(ply: int, cost: float) -> dict[str, Any]:
 
 
 def test_an_immediate_mistake_is_the_turning_point() -> None:
-    # White to move at ply 6 (Rob is White): his first decision is the position itself.
+    # White to move at ply 6 (the player is White): their first decision is the position itself.
     assert pp.turning_point(6, "white", [ev(6, 40), ev(8, 5)], None) == (pp.TURN_FOUND, 6, 40.0)
     assert pp.turning_point(6, "white", [ev(6, 40)], None) == (pp.TURN_FOUND, 6, 40.0)
     # The costliest wins; a tie goes to the earlier move.
@@ -45,16 +45,16 @@ def test_an_immediate_mistake_is_the_turning_point() -> None:
 
 
 def test_when_the_opponent_is_to_move_the_boundary_is_the_next_ply() -> None:
-    # Ply 6 has White to move; Rob is Black, so his first decision from the board is ply 7.
+    # Ply 6 has White to move; the player is Black, so their first decision from the board is ply 7.
     assert pp.turning_point(6, "black", [ev(5, 50), ev(9, 20)], None) == (pp.TURN_FOUND, 9, 20.0)
     assert pp.turning_point(6, "black", [ev(5, 50)], None) == (pp.TURN_NOT_ANALYSED, None, None)
 
 
-def test_without_an_event_the_largest_drop_over_his_own_moves() -> None:
-    # Rob is White; his expected score falls 15 at ply 10 and 30 at ply 11 (the opponent's move).
+def test_without_an_event_the_largest_drop_over_the_players_own_moves() -> None:
+    # The player is White; their expected score falls 15 at ply 10 and 30 at ply 11 (the opponent's move).
     curve = [50.0] * 10 + [50.0, 35.0, 65.0, 65.0, 60.0]
     assert pp.turning_point(6, "white", [], pa(curve)) == (pp.TURN_FOUND, 10, 15.0)
-    # Nothing ever dropped ten points in one of his moves.
+    # Nothing ever dropped ten points in one of their moves.
     flat = [50.0] * 8 + [45.0, 45.0, 40.0, 40.0]
     assert pp.turning_point(6, "white", [], pa(flat)) == (pp.TURN_NONE, None, None)
     # Analysed, but the drop came before the board: not a turning point from here.
@@ -65,7 +65,7 @@ def test_without_an_event_the_largest_drop_over_his_own_moves() -> None:
 def test_move_labels_and_side_to_move() -> None:
     assert pp.move_label(0, "e4") == "1.e4"
     assert pp.move_label(33, "Qb6") == "17…Qb6"
-    assert pp.rob_to_move(0, "white") and not pp.rob_to_move(0, "black") and pp.rob_to_move(5, "black")
+    assert pp.player_to_move(0, "white") and not pp.player_to_move(0, "black") and pp.player_to_move(5, "black")
 
 
 def test_the_games_are_ordered_playable_losses_first() -> None:
@@ -104,7 +104,7 @@ def test_the_page_of_a_position(clean: psycopg.Connection[DictRow]) -> None:
     g = Games(clean)
     g.anchor()
     tail = "Nf3 Nf6 d4 Bf5 Bd2 c6".split()
-    analysed = pa([50.0] * 7 + [52.0, 52.0, 70.0] + [70.0] * 3)  # Black (Rob) fine on arrival, then worse
+    analysed = pa([50.0] * 7 + [52.0, 52.0, 70.0] + [70.0] * 3)  # Black (the player) fine on arrival, then worse
     with_moves = g.add(SCANDI + tail, keep_moves=True, ply_analysis=analysed, days=2)
     clean.execute(
         "INSERT INTO review_events (player_id, chess_game_id, anchor_ply, config_version, base_route, evidence, cost,"
@@ -119,12 +119,12 @@ def test_the_page_of_a_position(clean: psycopg.Connection[DictRow]) -> None:
     assert page is not None
     node = page["node"]
     assert node["n"] == 5 and node["line_san"] == SCANDI
-    assert node["rob_to_move"] is False  # White moves after …Qa5
+    assert node["player_to_move"] is False  # White moves after …Qa5
     assert [(c["san"], c["n"]) for c in page["children"]] == [("Nf3", 4), ("d4", 1)]
     assert page["children"][0]["key"] == str(key_of(clean, SCANDI + ["Nf3"]))
     assert page["older_games"] == 3 and page["games"]["total"] == 2
     rows = {r["chess_game_id"]: r for r in page["games"]["rows"]}
-    # The event at ply 3 is before the board; the one at 9 is Rob's first costly decision after it.
+    # The event at ply 3 is before the board; the one at 9 is the player's first costly decision after it.
     assert (rows[with_moves]["turning_state"], rows[with_moves]["turning_ply"]) == (pp.TURN_FOUND, 9)
     assert rows[with_moves]["turning_move"] == "5…Bf5" and rows[with_moves]["turning_cost"] == 18.0
     assert rows[with_moves]["es_on_arrival"] is not None and rows[with_moves]["es_on_arrival"] > 40
@@ -170,8 +170,8 @@ def test_the_position_route(client: TestClient, clean: psycopg.Connection[DictRo
     assert stale.status_code == 422 and "unknown opening key" in stale.json()["detail"]
 
 
-def test_the_fallback_prices_only_robs_moves_from_his_first_decision(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Rob is Black and White is to move at ply 6: his decisions are plies 7, 9, ...
+def test_the_fallback_prices_only_the_players_moves_from_their_first_decision(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The player is Black and White is to move at ply 6: their decisions are plies 7, 9, ...
     curve = [50.0] * 6 + [
         80.0,
         30.0,
@@ -180,7 +180,7 @@ def test_the_fallback_prices_only_robs_moves_from_his_first_decision(monkeypatch
         5.0,
     ]
     monkeypatch.setattr(pp, "es_curve", lambda _pa, _white: curve)
-    # es[6]-es[7] = 50 is White's move; es[7]-es[8] = 12 is his; es[8]-es[9] = 13 is White's again.
+    # es[6]-es[7] = 50 is White's move; es[7]-es[8] = 12 is theirs; es[8]-es[9] = 13 is White's again.
     assert pp.turning_point(6, "black", [], [{}] * len(curve)) == (pp.TURN_FOUND, 7, 12.0)
 
 
@@ -246,8 +246,8 @@ def test_a_board_read_past_the_ranking_plies_has_no_status(clean: psycopg.Connec
 def test_every_linked_move_has_a_page_and_a_return_to_the_start_has_none(clean: psycopg.Connection[DictRow]) -> None:
     """Games that go back to the starting position: the move is listed, but the start is never a
     position of its own (it is first reached at ply 0), so it gets no link. Every move that is
-    linked opens a page under the same filters. The start does have a page when Rob moved from
-    it (an opening-mistakes card can be there): his moves only, no results node."""
+    linked opens a page under the same filters. The start does have a page when the player moved from
+    it (an opening-mistakes card can be there): their moves only, no results node."""
     g = Games(clean)
     knights = "Nf3 Nf6 Ng1 Ng8 e4 e5".split()
     for day in range(1, 13):

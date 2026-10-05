@@ -147,7 +147,7 @@ def standard_rows_sql(*, windowed: bool, extra_where: str = "") -> LiteralString
 
 
 # The presented ply: furthest deviation plus lookahead, capped at the line's end snapped to
-# the player's parity so the truncated line still ends on his move.
+# the player's parity so the truncated line still ends on their move.
 _PRESENTATION_PLY = """LEAST(ls.furthest_ply + {n},
         (jsonb_array_length(p.solution_line) - 1)
           - ((jsonb_array_length(p.solution_line) - 1 - ls.furthest_ply) %% 2))::int"""
@@ -410,7 +410,7 @@ def attemptable(conn: Connection[Any], puzzle_id: int) -> dict[str, Any] | None:
 def presentation_ply(conn: Connection[Any], puzzle_id: int, *, lookahead_plies: int) -> int | None:
     """The truncation point the player was shown for a repertoire puzzle; None for a
     standard puzzle or a line without enough deviations. Serve and grading derive it the
-    same way, so the player is graded against the line he saw."""
+    same way, so the player is graded against the line they saw."""
     with conn.cursor() as cur:
         cur.execute(
             "SELECT is_repertoire, repertoire_line_id, jsonb_array_length(solution_line) AS sol_len"

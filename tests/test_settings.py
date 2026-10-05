@@ -4,8 +4,8 @@ from pathlib import Path
 from core import settings
 
 
-def test_defaults_match_effective_phase0_values() -> None:
-    """Globals AND the user's page-filter overrides, resolved (see ship 001 settings-mapping.py)."""
+def test_defaults_match_the_original_deployments_values() -> None:
+    """Globals AND the user's page-filter overrides, resolved."""
     s = settings.Settings()
     assert s.blunder_threshold == 200 and s.cc0_difficulty_tier == "very_hard" and s.time_class_focus == "rapid_plus"
     assert s.blunders_default_min_occurrences == 2 and s.blunders_default_classifications == [
@@ -15,7 +15,7 @@ def test_defaults_match_effective_phase0_values() -> None:
     ]
     assert s.blunders_default_window_days == 20 and s.deviations_default_min_occurrences == 2
     # The old system had two settings of the same name: a global the generators read and a
-    # page filter Rob had set lower. They are separate fields here because they mean
+    # page filter the original user had set lower. They are separate fields here because they mean
     # different things — what gets built, and what gets shown.
     assert s.blunder_puzzle_min_occurrences == 3 and s.deviation_puzzle_min_occurrences == 3
     assert s.blunders_default_last_n_games == 500 and s.deviations_default_last_n_games == 500

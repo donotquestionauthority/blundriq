@@ -9,7 +9,7 @@ repertoire one, which in the old system had no variant filter at all. A line who
 deviations were all in Chess960 games no longer generates a puzzle, which is right:
 there is no repertoire to deviate from in Chess960.
 
-A **blitz game is still one of the player's recent games**. It just is not what he is
+A **blitz game is still one of the player's recent games**. It just is not what they are
 studying, so it occupies its slot and is then excluded as evidence
 (`core.chess.eligibility.evidence_sql`, driven by the `time_class_focus` setting,
 "rapid_plus" by default).
@@ -23,7 +23,7 @@ the opening, not the clock — leaving a prepared line in a blitz game is the sa
 as leaving it in a rapid one, and the line is the thing being practised either way. This
 matches the old system, which applied the time-class filter to the blunder and
 missed-mate worklists only. It is a deliberate asymmetry rather than an oversight, and
-whether Rob wants it changed is a product question, not a port one.
+whether to change it is a product question, not a port one.
 
 The rule that every worklist resolves eligibility through `core/chess/eligibility.py`,
 rather than writing its own variant literal, is what keeps these three behaviours

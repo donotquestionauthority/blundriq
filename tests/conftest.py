@@ -1,12 +1,16 @@
 """Test fixtures. Tests run against a scratch Postgres given by TEST_DATABASE_URL.
 
-The scratch database is dropped and recreated per session, then loaded via the
-fresh-install path (core.schema.init). Tests never touch a real database.
+The scratch database is DROPPED and recreated per session (and a few tests create and
+drop siblings named after it), then loaded via the fresh-install path (core.schema.init).
+So TEST_DATABASE_URL must name a throwaway database. Before anything is dropped,
+`scratch_refusal` stops the session when the name carries no `test` or `scratch` word, and
+when it is the database DATABASE_URL names (or that database is one of its siblings).
 """
 
 from __future__ import annotations
 
 import os  # noqa: TID251 — test bootstrap is the one other legitimate env read
+import re
 from collections.abc import Generator
 
 import psycopg
@@ -17,6 +21,34 @@ from psycopg.rows import DictRow, dict_row
 from core import schema
 
 TEST_DB_URL: str = os.environ.get("TEST_DATABASE_URL", "")  # noqa: TID251
+APP_DB_URL: str = os.environ.get("DATABASE_URL", "")  # noqa: TID251 — only compared, never connected to
+
+_SCRATCH_WORD = re.compile(r"(^|[_-])(test|scratch)([_-]|$)", re.I)
+
+
+def scratch_refusal(test_url: str, app_url: str) -> str | None:
+    """Why `test_url` must not be dropped, or None when it is a throwaway database.
+    Never connects: it reads the two DSNs and nothing else."""
+    from psycopg.conninfo import conninfo_to_dict
+
+    try:
+        test = conninfo_to_dict(test_url)
+    except psycopg.ProgrammingError:
+        return "TEST_DATABASE_URL is not a valid connection string"
+    name = str(test.get("dbname") or "")
+    if not name:
+        return "TEST_DATABASE_URL names no database"
+    if not _SCRATCH_WORD.search(name):
+        return f"database {name!r} is not named as a scratch database (put a test or scratch word in its name)"
+    if app_url:
+        try:
+            app = conninfo_to_dict(app_url)
+        except psycopg.ProgrammingError:
+            return None  # nothing to compare with; the name rule above still holds
+        app_name = str(app.get("dbname") or "")
+        if app_name == name or app_name.startswith(name + "_"):
+            return f"database {name!r} is the one DATABASE_URL names, or a sibling of it"
+    return None
 
 
 def _admin_url(url: str) -> tuple[str, str]:
@@ -38,6 +70,9 @@ def with_dbname(url: str, name: str) -> str:
 def fresh_db_url() -> Generator[str, None, None]:
     if not TEST_DB_URL:
         pytest.skip("TEST_DATABASE_URL not set")
+    refused = scratch_refusal(TEST_DB_URL, APP_DB_URL)
+    if refused:
+        pytest.exit(f"refusing to drop the test database: {refused}", returncode=2)
     admin, name = _admin_url(TEST_DB_URL)
     with psycopg.connect(admin, autocommit=True) as conn:
         conn.execute(sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(name)))
@@ -83,4 +118,5 @@ def app_env(fresh_db_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setenv("DATABASE_URL", fresh_db_url)
     monkeypatch.setenv("SESSION_SECRET", "test-session-secret-not-for-production")
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://chess.example.org, http://localhost:5173")
     monkeypatch.setenv("PASSWORD_HASH", bcrypt.hashpw(b"correct horse", bcrypt.gensalt(rounds=4)).decode())

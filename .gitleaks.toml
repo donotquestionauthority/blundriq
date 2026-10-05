@@ -1,7 +1,7 @@
 # gitleaks configuration: the default ruleset plus this project's shapes.
 # Runs as a pre-commit hook (staged content), a pre-push hook (every outgoing
-# commit) and in CI (every PR, full history). See §4.7 of
-# the rebuild plan. A hit blocks the commit/push; do not bypass.
+# commit) and in CI (every PR, full history). A hit blocks the commit/push; do not
+# bypass.
 #
 # tests/test_gitleaks_rules.py proves every rule below fires on a synthetic
 # example and that every allowlist admits only what it is meant to. Verified with
@@ -20,13 +20,16 @@ id = "postgres-dsn"
 description = "Postgres connection string"
 regex = '''postgres(ql)?://[^\s"'`]+'''
 [[rules.allowlists]]
-# Only CI's scratch server (user postgres, throwaway password "ci", localhost) and the doc
-# example. Nothing else on localhost is exempt: a localhost DSN can still carry a real
-# password (tunnels), so other credentials are never allowed.
+# Only CI's scratch server (user postgres, throwaway password "ci", localhost), the doc
+# example, and a bare local-socket DSN (`postgresql:///name`: no user, host, password or
+# parameters, so it cannot carry a credential). Nothing else on localhost is exempt: a
+# localhost DSN can still carry a real password (tunnels), so other credentials are never
+# allowed.
 regexTarget = "match"
 regexes = [
   '''^postgresql://postgres:ci@localhost:5432/[a-z_]+$''',
   '''^postgresql://localhost/blundriq_test$''',
+  '''^postgresql:///[a-z_]+$''',
 ]
 
 [[rules]]
