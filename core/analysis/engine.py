@@ -18,9 +18,7 @@ def find_stockfish() -> str:
     for path in _CANDIDATES:
         if Path(path).exists():
             return path
-    raise FileNotFoundError(
-        "stockfish not found on PATH (brew install stockfish, or ~/.local/bin/stockfish on the Dell)"
-    )
+    raise FileNotFoundError("stockfish not found on PATH (install Stockfish 18 and put it on PATH)")
 
 
 def open_engine(path: str) -> chess.engine.SimpleEngine:

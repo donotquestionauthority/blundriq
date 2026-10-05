@@ -620,7 +620,7 @@ def test_settings_ceiling_matches_the_module() -> None:
 
 def test_fresh_install_searches_six_squares_out() -> None:
     """A repertoire's sibling lines differ by a developed knight and a castled king (2 + 4): the
-    default reaches them. Rob's own row keeps whatever he set; this is the fresh-install value."""
+    default reaches them. The player's own row keeps whatever they set; this is the fresh-install value."""
     from core import settings
 
     assert settings.Settings().similar_max_distance == 6

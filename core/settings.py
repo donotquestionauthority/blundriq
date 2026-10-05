@@ -10,8 +10,8 @@ Engineering constants that need a code change anyway (engine depth, corpus
 theme mapping, the Chess960 rule) are in core/constants.py, not here. Secrets
 are in core/secrets.py, never here.
 
-Defaults below are the values in use on 2026-09-19 (see the phase-0 export),
-so a fresh database behaves like the old one until Rob changes something.
+Defaults below are the values the original deployment used on 2026-09-19, so a
+fresh database starts there until the player changes something on the Preferences page.
 Where a value has a recorded reason it is in the section comment above its
 field; docs/decisions/008-tuning-values-provenance.md says which values were
 argued for, which were labelled provisional, and which were never explained.
@@ -130,7 +130,7 @@ class Settings(BaseModel):
     # separate on purpose. The old repertoire generator hard-coded 3 with no window, the
     # blunder generator read the page's filter defaults from birth, and a "one setting
     # everywhere" directive then bound every recurrence gate to those defaults; by the
-    # export one key covered an admin global the generators read (3) and Rob's page filter
+    # export one key covered an admin global the generators read (3) and the player's page filter
     # (2), and they are two fields here so the page can be widened without minting
     # puzzles.
     # Blunder, deviation and repertoire recurrences are counted in DISTINCT games: a
@@ -138,7 +138,7 @@ class Settings(BaseModel):
     # as a recurring blunder); the weak-motif gate counts miss events. The page defaults on
     # Deviations and Scout and `weak_motif_min_occurrences` mirror the Blunders page default
     # (2), `deviation_puzzle_min_occurrences` the generator gate (3): never diagnose a
-    # weakness off a handful of games. Whether 3 becomes 2 is Rob's call.
+    # weakness off a handful of games. Whether 3 becomes 2 is a Preferences choice.
     blunders_default_last_n_games: int = Field(
         default=500, ge=10, le=5000, description="Default game window on the Blunders page."
     )
@@ -225,7 +225,7 @@ class Settings(BaseModel):
     # direction the corpus-variety memo asked for after "the same types over and over" turned out to
     # be arithmetic: five first-class themes at 30 % of every 12-puzzle batch, against 22 themes in
     # the remaining bucket. 12 has no recorded reason. Weak motifs: the old system materialised a
-    # pool of weak-motif puzzles weighted by raw miss count per theme (Rob's ruling over the
+    # pool of weak-motif puzzles weighted by raw miss count per theme (a deliberate choice over the
     # design's severity weighting: the app's theme is frequency), capped so one weakness could not
     # crowd the queue; that is where `weak_motif_target_count` and `weak_motif_theme_cap_pct` come
     # from. This serve does not weight: it orders the first-class themes most-missed first (misses
@@ -233,7 +233,7 @@ class Settings(BaseModel):
     # one candidate per theme, so a sole weak theme can take the whole first-class share. The two
     # old knobs have no consumer here and are kept for the round-trip only. The six `coverage_*`
     # fields drove the old Stats page's weakness / strength / mastered verdicts, which are not
-    # ported (backlog: Stats is Rob's call); nothing reads them. They were set at build with only
+    # ported (no Stats page was rebuilt); nothing reads them. They were set at build with only
     # their meaning written down.
     puzzle_mix_batch_size: int = Field(default=12, ge=1, le=50, description="Puzzles per practice batch.")
     puzzle_mix_window: int = Field(
@@ -308,13 +308,14 @@ class Settings(BaseModel):
     # Corpus ratings are on the Lichess scale and a Chess.com rating sits below it (about
     # 250-400 points in the mid-range, ~400 at 800, near 0 by 2200), so a Chess.com game's
     # rating is raised before the tier window is placed (core/puzzles/serve.py). `default`
-    # = -325 is the puzzle-path calibration: the middle of that gap, anchored on Rob's paired
-    # accounts (~1250 Chess.com <-> ~1600 Lichess; it was -200 before, which read as "too
-    # easy"). The per-time-class values came from Scout's opponent comparison and the old
-    # serve path never read them; this one applies them when the latest game has a time
+    # = -325 is the puzzle-path calibration: the middle of that gap, anchored on one player's
+    # paired accounts (~1250 Chess.com <-> ~1600 Lichess; it was -200 before, which read as "too
+    # easy"). That is a single sample: a player with both accounts can set the offsets from their
+    # own gap on the Preferences page. The per-time-class values came from Scout's opponent
+    # comparison and the old serve path never read them; this one applies them when the latest game has a time
     # class (docs/decisions/008). A flat offset is least accurate at the low end. Tiers:
     # `normal` reproduces the original symmetric +-150 band; the wider bands exist so a
-    # solver stronger than his rating can ask for harder material, and their widths were
+    # solver stronger than their rating can ask for harder material, and their widths were
     # not argued for. Import range 1050-2700: the weakest player served (Chess.com 800 ~
     # Lichess 1200) never needs material below ~1050, and 2700 keeps very_hard (+600)
     # available up to ~2100. 500 per cell kept a ~50-theme stratified sample of a 6M-row
@@ -357,7 +358,7 @@ class Settings(BaseModel):
     # --- SRS -------------------------------------------------------------
     # The ladder's mechanics were written down (core/puzzles/srs.py); its numbers were not:
     # the doubling curve to 14 days, the 1 h retry, 2-of-3 demotion and 2 hits / 300 games
-    # all shipped without a reason. Rob's recorded observation (May 2026): promotions feel
+    # all shipped without a reason. The original user's recorded observation (May 2026): promotions feel
     # too slow and the volume just before clearing too high; the advance threshold, seeded
     # at 2, was 1 at the export, and nothing else moved. The demotion lookback
     # counts ANALYSED games only, so a burst of imports cannot switch demotion off while
@@ -382,12 +383,12 @@ class Settings(BaseModel):
     # From the review design (July 2026): a candidate is a 2-pawn material fall measured at a
     # SETTLED endpoint (the game ends, or up to 6 capture-resolution plies reach a quiet position),
     # never at a fixed ply count, and it is a calibrated heuristic, not a proof; the expected-score
-    # leg is the compensation judgment. CONF 15 was validated on ~1,000 of Rob's games (21 of 1,145
+    # leg is the compensation judgment. CONF 15 was validated on ~1,000 games of one player (21 of 1,145
     # events fell in already-lost positions, so no contested guard); 20 at depth <= 12 is the
     # fast-pass noise floor. Every detection knob was labelled provisional, pending a second
     # rating band and a depth-12-vs-18 sensitivity that were never run; K = 8, the 30-ply cap,
     # quiesce 6, shed 15 and faded 62 have nothing else behind them. Faded advantage was nearly
-    # empty at Rob's rating (his losses are sharp) and stays for the profile where it is not.
+    # empty for the player it was tuned on (their losses were sharp) and stays for the profile where it is not.
     # Pricing is mate distance, else the win-probability sigmoid; the old system's first rung, a
     # lookup over the board, is gone (docs/decisions/001). The page reads the stored events by
     # habit (core/review/habits.py); the two pool floors and the half-life in games belonged to
@@ -426,7 +427,7 @@ class Settings(BaseModel):
         default=200, ge=10, description="Not used by this implementation (the old worklist's half-life in games)."
     )
     # Review reads the opening prefix every analysable game keeps (core.constants.
-    # OPENING_PREFIX_PLIES), over this many months back from the newest game. Rob's decisions
+    # OPENING_PREFIX_PLIES), over this many months back from the newest game. The player's decisions
     # before this ply are the ones ranked, and `pipeline position-evals` evaluates the boards
     # before and after each of them (core/review/mistakes.py); the backfill reaches as far back
     # as the history.
@@ -436,7 +437,7 @@ class Settings(BaseModel):
     review_position_min_games: int = Field(
         default=5, ge=3, le=100, description="Games in which you moved from a position before it can be ranked."
     )
-    # A position ranks under "Opening mistakes to work on" only when Rob's move there gave
+    # A position ranks under "Opening mistakes to work on" only when the player's move there gave
     # something away in at least this many of those games: one slip in fifty is not a pattern.
     review_min_costly_games: int = Field(
         default=3, ge=1, le=50, description="Games with a costly move from a position before it can be ranked."

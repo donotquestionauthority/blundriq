@@ -1,7 +1,7 @@
 """`pipeline position-evals`: one engine evaluation per board Review's opening mistakes read.
 
-The boards are `core.review.mistakes.eval_candidates`: every board Rob moved from often enough,
-and every board his moves from it led to, most-played first. Each is rebuilt by replaying a
+The boards are `core.review.mistakes.eval_candidates`: every board the player moved from often enough,
+and every board their moves from it led to, most-played first. Each is rebuilt by replaying a
 source game's prefix moves from the standard start to the board's ply in that game, and must
 hash to the board's key (checked by bq_position_key in SQL, the one key authority); the next
 source is tried when one does not. A board no source rebuilds is a defect: it is counted

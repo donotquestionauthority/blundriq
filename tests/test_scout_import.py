@@ -21,7 +21,7 @@ from core.scout import importing
 from pipeline import cli
 
 OPP = "opp_acct"
-ME = "rob_test"
+ME = "player_test"
 T0 = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
 
 

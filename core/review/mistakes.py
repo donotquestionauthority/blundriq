@@ -1,18 +1,18 @@
-"""Review's opening mistakes: Rob's own decisions in the opening, charged where he made them.
+"""Review's opening mistakes: the player's own decisions in the opening, charged where they made them.
 
-A decision is a board Rob was to move on at ply `p < review_position_max_ply` of a game's stored
-opening prefix (`chess_games.opening_keys`), and the board his move led to: `B = keys[p]`,
+A decision is a board the player was to move on at ply `p < review_position_max_ply` of a game's stored
+opening prefix (`chess_games.opening_keys`), and the board their move led to: `B = keys[p]`,
 `A = keys[p + 1]` (0-based plies). One decision is kept per (game, B, A), the lowest ply: the
 same move from the same board twice in a game is one decision; a different move on a return to
 the board is another. Games are the history under the page's two filters, as for the results
 section, but a game needs only its prefix (no result or ratings).
 
-A decision's loss is `max(0, ES(B) - ES(A))` in expected-score points (0-100, Rob's side) from
+A decision's loss is `max(0, ES(B) - ES(A))` in expected-score points (0-100, the player's side) from
 the stored evaluations (`position_evals`, `board_es`), and it is charged
 `max(0, loss - review_mistake_floor_es)`. A decision whose B or A has no usable evaluation is
 unknown: it counts in neither the cost nor the sample, and the coverage says so.
 
-A board (colour, B) ranks when Rob moved from it in at least `review_position_min_games`
+A board (colour, B) ranks when the player moved from it in at least `review_position_min_games`
 distinct games and was charged in at least `review_min_costly_games` of them. Its key is the
 expected points it gives away a month at the current rate (each decision weighted
 `0.5 ** (age / review_recency_half_life_days)`, age before the newest game under the time class).
@@ -28,9 +28,9 @@ ply), each fine, costly or unknown; Fixed? eligibility is separate from the stat
 
 A board is in Fixed? when rule 3 holds, whatever its status says.
 
-`pipeline position-evals` evaluates every board B Rob moved from in at least
+`pipeline position-evals` evaluates every board B the player moved from in at least
 REVIEW_EVAL_MIN_GAMES games of the whole history (either colour, any time class), and every
-board A his moves from them led to, under the same `review_position_max_ply`.
+board A their moves from them led to, under the same `review_position_max_ply`.
 """
 
 from __future__ import annotations
@@ -70,7 +70,7 @@ DRAW = "draw"
 
 _LN2 = math.log(2)
 
-# A position page lists Rob's games from a board this many at a time.
+# A position page lists the player's games from a board this many at a time.
 MOVE_GAMES_PAGE = 50
 
 # How many games a board may be rebuilt from before it counts as failed: one game whose stored
@@ -81,22 +81,24 @@ EVAL_SOURCES = 3
 # --- pricing ----------------------------------------------------------------------------------
 
 
-def board_es(eval_cp: Any, mate_in: Any, terminal: str | None, rob_is_white: bool, rob_to_move: bool) -> float | None:
-    """Rob's expected score (0-100) on a board from its stored row. A terminal board takes its
+def board_es(
+    eval_cp: Any, mate_in: Any, terminal: str | None, player_is_white: bool, player_to_move: bool
+) -> float | None:
+    """The player's expected score (0-100) on a board from its stored row. A terminal board takes its
     outcome: checkmate is 0 for the side to move and 100 for the other, a draw 50. Otherwise
     the detector's pricing (`position_es`): a forced mate is 0 or 100, a score the sigmoid. A
     stored mate of 0 that is not marked terminal, or no row at all, is unknown."""
     if terminal == CHECKMATE:
-        return 0.0 if rob_to_move else 100.0
+        return 0.0 if player_to_move else 100.0
     if terminal == DRAW:
         return 50.0
     if eval_cp is None and not mate_in:
         return None
-    return position_es(eval_cp, mate_in, rob_is_white)
+    return position_es(eval_cp, mate_in, player_is_white)
 
 
 def decision_loss(row: dict[str, Any]) -> float | None:
-    """A decision's loss (B before Rob's move, A after it), or None when either is unknown."""
+    """A decision's loss (B before the player's move, A after it), or None when either is unknown."""
     white = row["player_color"] == "white"
     before = board_es(row["b_cp"], row["b_mate"], row["b_terminal"], white, True)
     after = board_es(row["a_cp"], row["a_mate"], row["a_terminal"], white, False)
@@ -109,7 +111,7 @@ def decision_loss(row: dict[str, Any]) -> float | None:
 
 
 def _games_cte(scope: Scope) -> str:
-    """`asof` and `g`: Rob's games in the history under both filters that have a prefix."""
+    """`asof` and `g`: the player's games in the history under both filters that have a prefix."""
     time_sql = time_class_sql(scope.time_class, scope.config.time_class_focus)
     return f"""
     asof AS (
@@ -125,7 +127,7 @@ def _games_cte(scope: Scope) -> str:
     )"""
 
 
-# Rob's decisions: plies 0 .. max_ply - 1 where he is to move, one per (game, B, A).
+# The player's decisions: plies 0 .. max_ply - 1 where they are to move, one per (game, B, A).
 _DECISIONS = """
     dec AS (
         SELECT DISTINCT ON (g.id, g.opening_keys[p + 1], g.opening_keys[p + 2])
@@ -154,7 +156,7 @@ def _params(scope: Scope) -> dict[str, Any]:
 def decision_rows(
     conn: Connection[Any], scope: Scope, *, min_games: int, colour: str | None = None, key: int | None = None
 ) -> list[dict[str, Any]]:
-    """Every decision on a board Rob moved from in at least `min_games` games under the scope,
+    """Every decision on a board the player moved from in at least `min_games` games under the scope,
     in time order (`played_at`, game id, ply), with both boards' stored rows and the game's
     context for a position page. `colour` and `key` narrow it to one board."""
     one = "AND d.player_color = %(colour)s AND d.kb = %(key)s" if key is not None else ""
@@ -206,7 +208,7 @@ def coverage(conn: Connection[Any], scope: Scope) -> dict[str, int]:
 def line_rows(
     conn: Connection[Any], scope: Scope, boards: list[tuple[str, int]]
 ) -> dict[tuple[str, int], dict[str, Any]]:
-    """For each board, the line shown on it: the most frequent move sequence by which Rob's
+    """For each board, the line shown on it: the most frequent move sequence by which the player's
     decisions reached it (ties to the most recent game), with the position keys after each move
     of the line (the last is the board's), as `positions.line_rows` gives them."""
     if not boards:
@@ -347,8 +349,8 @@ def qualifies(board: Board, scope: Scope) -> bool:
 
 
 def moves_played(board: Board) -> list[dict[str, Any]]:
-    """The moves Rob played from the board: times, how many were evaluated, their mean loss,
-    how many were costly, and when he last played each. Most played first."""
+    """The moves the player played from the board: times, how many were evaluated, their mean loss,
+    how many were costly, and when they last played each. Most played first."""
     out: dict[str, dict[str, Any]] = {}
     for v, state in zip(board.visits, board.states, strict=True):
         san = str(v["san"])
@@ -436,7 +438,7 @@ def section(conn: Connection[Any], scope: Scope) -> dict[str, Any]:
 
 def board_detail(conn: Connection[Any], scope: Scope, colour: str, key: int) -> dict[str, Any] | None:
     """A position page's mistakes block: the board's numbers and moves at any game count; None
-    when Rob never moved from it under the scope. Its games are `move_games`, a page at a time."""
+    when the player never moved from it under the scope. Its games are `move_games`, a page at a time."""
     rows = decision_rows(conn, scope, min_games=1, colour=colour, key=key)
     if not rows:
         return None
@@ -450,10 +452,10 @@ def board_detail(conn: Connection[Any], scope: Scope, colour: str, key: int) -> 
 def move_games(
     conn: Connection[Any], scope: Scope, colour: str, key: int, *, move: str | None, page: int
 ) -> dict[str, Any] | None:
-    """Rob's games from the board, newest first, MOVE_GAMES_PAGE a page: every visit where he
+    """The player's games from the board, newest first, MOVE_GAMES_PAGE a page: every visit where they
     played `move` (fine, costly or not checked yet), or with no `move` every costly visit. Each row
-    keeps the ply he played it at; a game whose moves are no longer stored has `has_moves` false.
-    None when Rob never moved from the board under the scope."""
+    keeps the ply they played it at; a game whose moves are no longer stored has `has_moves` false.
+    None when the player never moved from the board under the scope."""
     rows = decision_rows(conn, scope, min_games=1, colour=colour, key=key)
     if not rows:
         return None
@@ -497,7 +499,7 @@ def eval_candidates(
     conn: Connection[Any], max_ply: int, months: int, limit: int | None
 ) -> tuple[int, list[dict[str, Any]]]:
     """(how many boards are pending, the first `limit` of them, or all when `limit` is None).
-    The boards: every board B Rob moved from in at least REVIEW_EVAL_MIN_GAMES distinct games of
+    The boards: every board B the player moved from in at least REVIEW_EVAL_MIN_GAMES distinct games of
     the history (either colour, every time class) at a ply below `max_ply`, and every board A
     one of those moves led to. Pending: no row, or a row with neither a best move nor a terminal
     outcome (rows written before migration 010). Most-played first (games through the board),

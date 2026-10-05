@@ -34,7 +34,7 @@ from core.ingest.store import store_game, upsert_game
 from core.review import evals, mistakes, positions
 from core.settings import Settings
 
-ME = "rob_test"
+ME = "player_test"
 NOW = datetime(2026, 10, 1, 12, tzinfo=UTC)
 _LONG = (
     "e4 d5 exd5 Qxd5 Nc3 Qa5 d4 Nf6 Nf3 Bf5 Bd2 c6 Bc4 e6 Qe2 Bb4 O-O-O Nbd7 Kb1 O-O-O "
@@ -493,15 +493,15 @@ def _canonical(fen: str) -> str:
     return " ".join(fen.split(" ")[:4] + ["0", "1"])
 
 
-def test_position_evals_evaluates_the_boards_before_and_after_robs_decisions(
+def test_position_evals_evaluates_the_boards_before_and_after_the_players_decisions(
     clean: psycopg.Connection[DictRow],
 ) -> None:
     conn = clean
     _player(conn)
     scandi: list[str] = ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qa5", "d4", "Nf6"]
-    _games(conn, "s", scandi, 3)  # Rob is Black: he moves at plies 1, 3, 5 (max ply 6)
+    _games(conn, "s", scandi, 3)  # The player is Black: they move at plies 1, 3, 5 (max ply 6)
     _games(conn, "r", ["e4", "e5"], 2)  # 1...e5 from the same board: its after-board comes too
-    _games(conn, "w", ["d4", "Nf6"], 2, color="white")  # Rob moved from the start in two games only
+    _games(conn, "w", ["d4", "Nf6"], 2, color="white")  # The player moved from the start in two games only
     _games(conn, "old", ["c4", "c5"], 3, days_ago=500)  # outside the 12 months before the newest game
     conn.commit()
     stub = _Stub()
@@ -611,7 +611,7 @@ def test_the_evaluated_depth_follows_the_ranked_depth(clean: psycopg.Connection[
     after the last decision included); lowering it removes nothing."""
     conn = clean
     _player(conn)
-    _games(conn, "l", LONG, 3)  # Rob is Black: decisions at odd plies
+    _games(conn, "l", LONG, 3)  # The player is Black: decisions at odd plies
     conn.commit()
     fens = moves_to_fen_sequence(LONG)
     at = {p: _key(conn, fens[p]) for p in range(0, 31)}
@@ -666,9 +666,9 @@ def test_a_board_is_rebuilt_from_the_next_game_and_fails_only_when_none_rebuilds
 
 
 def test_a_board_counts_per_colour(clean: psycopg.Connection[DictRow]) -> None:
-    """Rob moved from each board twice as one colour: under the floor of 3, nothing. A third
-    Black game brings in the boards Black moves from and the boards his moves led to (the board
-    after 1...c5 among them, though as White he moved from it only twice)."""
+    """The player moved from each board twice as one colour: under the floor of 3, nothing. A third
+    Black game brings in the boards Black moves from and the boards their moves led to (the board
+    after 1...c5 among them, though as White they moved from it only twice)."""
     conn = clean
     _player(conn)
     line: list[str] = ["c4", "c5", "Nc3", "Nc6"]

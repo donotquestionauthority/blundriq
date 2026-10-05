@@ -187,7 +187,7 @@ def test_the_occurrence_threshold_for_blunder_puzzles_defaults_to_three(
     clean: psycopg.Connection[DictRow],
 ) -> None:
     """The old system built a puzzle only after a position had cost three games. That is a
-    different setting from the Blunders page's own minimum, which Rob keeps at two."""
+    different setting from the Blunders page's own minimum, which defaults to two."""
     _player(clean)
     for game_id in (1, 2):
         _game(clean, game_id)
@@ -246,7 +246,7 @@ def test_a_chess960_game_is_not_evidence(clean: psycopg.Connection[DictRow]) -> 
 
 
 def test_a_blitz_game_is_not_evidence_under_the_default_focus(clean: psycopg.Connection[DictRow]) -> None:
-    """Blitz still occupies a slot in the recent-games window; it just is not what Rob
+    """Blitz still occupies a slot in the recent-games window; it just is not what the player
     is studying, so it does not make a puzzle."""
     _player(clean)
     _game(clean, 1)
@@ -610,8 +610,8 @@ def test_a_hand_made_mate_puzzle_is_not_the_generator_s_to_retire(clean: psycopg
 
 
 def test_a_hand_made_puzzle_survives_a_missed_mate_too(clean: psycopg.Connection[DictRow]) -> None:
-    """Both generators respect a puzzle Rob made himself. A missed mate is the stronger
-    lesson than a blunder, but not stronger than his own decision to practise a position —
+    """Both generators respect a puzzle the player made themselves. A missed mate is the stronger
+    lesson than a blunder, but not stronger than their own decision to practise a position —
     and displacing it would give the board a new puzzle id and throw the progress away."""
     _player(clean)
     _mate_event(clean, 1)

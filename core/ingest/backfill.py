@@ -1,7 +1,7 @@
 """`pipeline backfill-openings`: the opening prefix for games stored before it existed.
 
 Housekeeping nulls `moves` and `fen_sequence` outside the analysis window, so a game that left
-the window before migration 007 has no prefix to derive one from. This re-fetches Rob's own
+the window before migration 007 has no prefix to derive one from. This re-fetches the player's own
 games from both platforms and writes ONLY the prefix (`opening_moves`, `opening_keys`) onto
 rows that already exist and have none:
 
@@ -14,7 +14,7 @@ rows that already exist and have none:
   `chess960`).
 
 How far back is Review's own history, from the same SQL (`core.review.positions.history_start`):
-`months` calendar months before the newest of Rob's analysable games, inclusive. Chess.com is
+`months` calendar months before the newest of the player's analysable games, inclusive. Chess.com is
 walked by monthly archive from that month (its archives and `played_at` are both the game's end
 time). Lichess cannot be walked that way: its stream's lower bound is a game's CREATION time
 while `played_at` is its last move, so a correspondence game begun before the boundary and
@@ -105,7 +105,7 @@ def _apply(conn: Connection[Any], records: list[GameRecord | None], summary: Bac
 
 
 def _missing_lichess_ids(conn: Connection[Any], months: int) -> list[str]:
-    """Stored Lichess games of Rob's inside the history that have no prefix, oldest first."""
+    """The player's stored Lichess games inside the history that have no prefix, oldest first."""
     query = cast(
         LiteralString,
         f"""

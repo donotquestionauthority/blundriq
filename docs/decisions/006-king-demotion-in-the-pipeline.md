@@ -10,4 +10,4 @@ instead of the next page load, and no GET handler writes to the ladder. The step
 only on newly analysed games and is idempotent, which is what makes it a pipeline step
 in the first place.
 
-Ruled by Rob, 2026-09-20.
+Decided 2026-09-20.

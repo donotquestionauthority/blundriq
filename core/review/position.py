@@ -1,4 +1,4 @@
-"""One position's page: Rob's moves from it (`mistake`, `core.review.mistakes.board_detail`), its
+"""One position's page: the player's moves from it (`mistake`, `core.review.mistakes.board_detail`), its
 results numbers, what happens next, and the games through it.
 
 A position is (colour, board). Its numbers are the ranking's (`core.review.positions`) under the
@@ -6,10 +6,10 @@ same filters, at any game count, so a link stays valid when a filter narrows the
 the ranking's floor. A board deeper than `review_position_max_ply` (reached from "What happens
 next") is read over the whole opening prefix and carries no status.
 
-Every ply here is the game's first occurrence `p` of the board. Rob's first decision from the
-board is at `p` when he is to move there, else at `p + 1`; a turning point is looked for from that
+Every ply here is the game's first occurrence `p` of the board. The player's first decision from the
+board is at `p` when they are to move there, else at `p + 1`; a turning point is looked for from that
 decision on, inclusive: the costliest review event at or after it, else the largest one-move drop
-in his expected score over his own moves from it (the detector's curve), when it is at least
+in their expected score over their own moves from it (the detector's curve), when it is at least
 REVIEW_TURN_MIN_DROP. A game with neither has no turning point; nothing is invented.
 """
 
@@ -43,8 +43,8 @@ TURN_NONE = "none"
 TURN_NOT_ANALYSED = "not_analysed"
 
 
-def rob_to_move(ply: int, colour: str) -> bool:
-    """Whether Rob is to move in the position after `ply` half-moves of a standard game."""
+def player_to_move(ply: int, colour: str) -> bool:
+    """Whether the player is to move in the position after `ply` half-moves of a standard game."""
     return (ply % 2 == 0) == (colour == "white")
 
 
@@ -61,9 +61,9 @@ def turning_point(
     ply_analysis: list[Any] | None,
 ) -> tuple[str, int | None, float | None]:
     """(state, anchor ply, cost in expected-score points) for a game through the board at its
-    first-occurrence `ply`. The anchor `a` is the position before Rob's move, its cost
+    first-occurrence `ply`. The anchor `a` is the position before the player's move, its cost
     es[a] - es[a + 1]."""
-    first = ply if rob_to_move(ply, colour) else ply + 1
+    first = ply if player_to_move(ply, colour) else ply + 1
     later = [e for e in events if int(e["anchor_ply"]) >= first]
     if later:
         best = min(later, key=lambda e: (-float(e["cost"] or 0), int(e["anchor_ply"])))
@@ -83,7 +83,7 @@ def turning_point(
 
 
 def arrival_es(entry: Any, colour: str) -> float | None:
-    """Rob's expected score on arrival, from the stored analysis of that position."""
+    """The player's expected score on arrival, from the stored analysis of that position."""
     if not isinstance(entry, dict):
         return None
     analysed = cast(dict[str, Any], entry)
@@ -215,7 +215,7 @@ def position_page(conn: Connection[Any], scope: Scope, colour: str, key: int, pa
         if row is None:
             if mistake is None:
                 return None
-            # Only the start (ply 0) is a board Rob moves from that no game first reaches later:
+            # Only the start (ply 0) is a board the player moves from that no game first reaches later:
             # the page is its mistakes alone.
             empty: dict[str, Any] = {"rows": [], "total": 0, "page": page, "page_size": PAGE_SIZE, "total_pages": 1}
             return {"node": None, "children": [], "games": empty, "older_games": 0, "mistake": mistake}
@@ -229,7 +229,7 @@ def position_page(conn: Connection[Any], scope: Scope, colour: str, key: int, pa
     shown = games[start : start + PAGE_SIZE]
     stored = _analysis(conn, [int(r["chess_game_id"]) for r in shown])
     return {
-        "node": {**node_card, "rob_to_move": rob_to_move(ply, colour), "ply": ply},
+        "node": {**node_card, "player_to_move": player_to_move(ply, colour), "ply": ply},
         "children": _children(conn, scope, colour, key, max_ply),
         "games": {
             "rows": [_with_turning_point(r, colour, stored.get(int(r["chess_game_id"]))) for r in shown],

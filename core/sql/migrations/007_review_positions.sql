@@ -30,7 +30,7 @@ CREATE INDEX ix_chess_games_opening_keys ON public.chess_games USING gin (openin
 -- One engine evaluation per board (board_key = bq_position_key of the six-field fen), from
 -- White's point of view like ply_analysis: eval_cp, or mate_in in moves. Written by
 -- `pipeline position-evals`; read by the Review page to say whether a position was already
--- worse when Rob got there.
+-- worse when the player got there.
 CREATE TABLE public.position_evals (
     board_key bigint NOT NULL,
     fen text NOT NULL,

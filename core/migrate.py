@@ -48,8 +48,8 @@ _OWNED_GAME = (
 ANNOTATION_SOURCES = ("course", "manual")  # the new schema's CHECK; other sources are not migrated
 
 # The old system had two tiers of puzzle: the player's own, and a shared tier owned by
-# nobody (`player_id IS NULL`) that he could still solve. A puzzle survives here if it is
-# his, or if it is one of those shared ones his own history reaches — otherwise the
+# nobody (`player_id IS NULL`) that they could still solve. A puzzle survives here if it is
+# theirs, or if it is one of those shared ones their own history reaches — otherwise the
 # migration would quietly drop the attempts and the spaced-repetition progress behind
 # them, which is the one thing in this database that cannot be rebuilt. Endgame drills
 # do not exist here and do not survive either way.
@@ -172,7 +172,7 @@ def steps(mapping: Mapping) -> list[Step]:
             "puzzles",
             _SURVIVING_PUZZLE,
             order="t.id",
-            # There is one player here, so an adopted shared puzzle becomes his.
+            # There is one player here, so an adopted shared puzzle becomes theirs.
             overrides={"player_id": str(PLAYER_ID), "source_types": _SOURCE_TYPES},
         ),
         Step("puzzle_attempts", f"t.player_id = {PLAYER_ID} AND {_MY_PUZZLE}", order="t.id"),

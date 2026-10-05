@@ -319,7 +319,7 @@ def solved_attempts(conn: Connection[Any]) -> list[dict[str, Any]]:
 
 def old_visible_ids(conn: Connection[Any], lookahead_plies: int) -> set[int]:
     """The puzzles the old system would show the player, computed on the archived schema
-    with the old rules: active line puzzles he owns or that his sources reach, not
+    with the old rules: active line puzzles they own or that their sources reach, not
     contradicted by the repertoire, not redundant with it, not dismissed; repertoire
     puzzles with three deviations, one per presented position."""
     n = int(lookahead_plies)

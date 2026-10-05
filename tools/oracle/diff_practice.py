@@ -15,7 +15,7 @@ at its word, so those moves may be anything.
 database is compared with the old rules applied to the archive, restricted to the puzzles
 that came across. Puzzles adopted from the old shared tier are listed apart rather than
 counted: the old system showed one only while the player's sources still reached its
-position, and now it is his and always visible.
+position, and now it is theirs and always visible.
 
     python tools/oracle/diff_practice.py [--replay] [--due]
 

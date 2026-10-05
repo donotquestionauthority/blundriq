@@ -55,7 +55,7 @@ export function readOpenSnapshot(state: unknown, settings: ReviewSettings): Revi
 // --- opening mistakes ------------------------------------------------------------------------
 
 export type MistakeStatus = "still_costing" | "not_yet_checked" | "fixed" | "not_reached_lately";
-/** One of Rob's visits to a board: his move there was fine, costly, or is not evaluated yet. */
+/** One of the player's visits to a board: their move there was fine, costly, or is not evaluated yet. */
 export type VisitState = "fine" | "costly" | "unknown";
 
 export interface MistakeMove {
@@ -70,7 +70,7 @@ export interface MistakeMove {
   last_played: string | null;
 }
 
-/** A board Rob moved from, with what his moves there gave away by the engine's account. */
+/** A board the player moved from, with what their moves there gave away by the engine's account. */
 export interface MistakeNumbers {
   colour: "white" | "black";
   key: string;
@@ -104,7 +104,7 @@ export interface MistakeCard extends MistakeNumbers {
 
 export interface MistakeCoverage {
   decisions: number;
-  /** On boards Rob moved from in at least `eval_min_games` games: the ones the engine checks. */
+  /** On boards the player moved from in at least `eval_min_games` games: the ones the engine checks. */
   covered: number;
   evaluated: number;
   eval_min_games: number;
@@ -129,7 +129,7 @@ export interface MistakeDetail extends MistakeNumbers {
   ranked: boolean;
 }
 
-/** Rob's games from a board, newest first: every game with `move`, or with none the costly ones. */
+/** The player's games from a board, newest first: every game with `move`, or with none the costly ones. */
 export interface MoveGames extends Paged<MoveGame> {
   move: string | null;
 }
@@ -161,7 +161,7 @@ export interface ReviewPosition {
   fen: string | null;
   last_move: string | null;
   n: number;
-  /** Over the whole history, unweighted: Rob's score and the Elo expectation, as fractions. */
+  /** Over the whole history, unweighted: the player's score and the Elo expectation, as fractions. */
   score: number;
   expected: number;
   /** The same, weighted toward recent games. */
@@ -172,7 +172,7 @@ export interface ReviewPosition {
   leak_per_month: number;
   recent_games: number;
   status: PositionStatus | null;
-  /** Rob's expected score (0-100) at the board by the engine; null until it is evaluated. */
+  /** The player's expected score (0-100) at the board by the engine; null until it is evaluated. */
   es_at_node: number | null;
   /** Points below expectation per 100 games, one entry per 30 days, oldest first; null: too few games. */
   trend: (number | null)[];
@@ -271,11 +271,11 @@ export interface PositionChild {
 
 export interface PositionPage {
   /** The results numbers; null only for the starting position, which no game first reaches later. */
-  node: (ReviewPosition & { rob_to_move: boolean; ply: number }) | null;
+  node: (ReviewPosition & { player_to_move: boolean; ply: number }) | null;
   children: PositionChild[];
   games: Paged<PositionGame>;
   older_games: number;
-  /** Rob's moves from the board; null when he is never to move there. */
+  /** The player's moves from the board; null when they are never to move there. */
   mistake: MistakeDetail | null;
 }
 
@@ -300,7 +300,7 @@ export function readPositionPage(params: URLSearchParams): number {
   return pageOf(params.get("page"));
 }
 
-/** Which of Rob's games from the board are listed (`move`: one move's, null: the costly ones) and
+/** Which of the player's games from the board are listed (`move`: one move's, null: the costly ones) and
  *  their page, from the query string (`move`, `mpage`). */
 export interface MovesView {
   move: string | null;
@@ -351,7 +351,7 @@ export const STATUS_TONE: Record<PositionStatus, string> = {
   improving: GOOD,
 };
 
-/** Rob's expected score (0-100) below which a position is "already worse" (the server's
+/** The player's expected score (0-100) below which a position is "already worse" (the server's
  *  REVIEW_PLAYABLE_ES, which also orders a position's games). */
 export const PLAYABLE_ES = 40;
 

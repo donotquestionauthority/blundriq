@@ -8,7 +8,7 @@ core/settings.py, not here.
 # constant so the SQL stays portable and the value is never guessed.
 PLAYER_ID = 1
 
-# Stockfish depth for the scheduled analyzer (Rob's ruling: 18, as before).
+# Stockfish depth for the scheduled analyzer (18, as the previous system used).
 STOCKFISH_DEPTH = 18
 STOCKFISH_VERSION = "18"
 
@@ -47,9 +47,9 @@ REVIEW_CHILDREN_MAX = 8  # moves listed under "What happens next"
 # own floor: a rating-based deficit needs many games to tell a leak from luck.
 REVIEW_RESULTS_MIN_GAMES = 10
 
-# Review's opening mistakes (core/review/mistakes.py): Rob's own decisions in the opening, each
-# charged the engine's loss above the floor at the board he played it from.
-REVIEW_EVAL_MIN_GAMES = 3  # a board Rob moved from in this many games is evaluated (below the ranking's floor)
+# Review's opening mistakes (core/review/mistakes.py): the player's own decisions in the opening, each
+# charged the engine's loss above the floor at the board they played it from.
+REVIEW_EVAL_MIN_GAMES = 3  # a board the player moved from in this many games is evaluated (below the ranking's floor)
 REVIEW_FIXED_RUN = 3  # known-fine visits in a row, after a costly one, that make a board Fixed?
 REVIEW_STRIP_VISITS = 12  # visits shown on a card's strip, newest last
 
@@ -74,7 +74,7 @@ PUZZLE_SOURCES = ("blunder", "deviation", "own_mate", "lichess_cc0", "scout", "c
 
 # Lichess CC0 corpus themes served in motif practice (was app_settings.cc0_serve_themes).
 # The bare 'mate' tag is deliberately absent: the player's own missed mates are served from
-# his own games (BUCKET_OWN_MISSED_MATE) and corpus mates arrive by the mateInN and
+# their own games (BUCKET_OWN_MISSED_MATE) and corpus mates arrive by the mateInN and
 # named-mate tags. The dump's metadata tags (length, phase, eval, source, castling,
 # collinearMove) are not motifs and are never served.
 CC0_SERVE_THEMES = (
@@ -129,7 +129,7 @@ CC0_SERVE_THEMES = (
 )
 
 # --- Practice: the five buckets a play batch is drawn from -----------------------------
-# Two are bounded by spaced repetition (the player's own puzzles and his own missed mates);
+# Two are bounded by spaced repetition (the player's own puzzles and their own missed mates);
 # three rotate through the corpus by theme class. The order is the fill order when minting.
 BUCKET_YOUR_PUZZLES = "your_puzzles"
 BUCKET_MOTIFS_FIRST_CLASS = "motifs_first_class"

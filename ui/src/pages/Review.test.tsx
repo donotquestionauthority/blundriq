@@ -130,7 +130,7 @@ const habitGames = (): { rows: HabitGame[]; total: number; page: number; page_si
 });
 
 const positionPage = (over: Partial<PositionPage> = {}): PositionPage => ({
-  node: { ...position({ key: BIG }), rob_to_move: false, ply: 2 },
+  node: { ...position({ key: BIG }), player_to_move: false, ply: 2 },
   children: [
     { san: "c4", key: "-12", linkable: true, n: 60, score: 0.4, expected: 0.5 },
     { san: "Nf3", key: "13", linkable: true, n: 30, score: 0.55, expected: 0.5 },
@@ -494,7 +494,7 @@ describe("A position's page", () => {
     expect(where()).toBe("/review?tc=all");
   });
 
-  it("leads with Rob's moves from the board: the table, the engine's move and the games where it cost him", async () => {
+  it("leads with the player's moves from the board: the table, the engine's move and the games where it cost them", async () => {
     getPositionPage.mockResolvedValue(positionPage({ mistake: detail() }));
     renderApp({ pathname: `/review/positions/black/${BIG}`, state: { from: { pathname: "/review", search: "" } } });
     const moves = await screen.findByTestId("your-moves");
@@ -557,7 +557,7 @@ describe("A position's page", () => {
     await waitFor(() => expect(getPositionMoveGames).toHaveBeenLastCalledWith("black", BIG, "focus", "__all__", null, 1));
   });
 
-  it("the starting position has Rob's moves and no results", async () => {
+  it("the starting position has the player's moves and no results", async () => {
     getPositionPage.mockResolvedValue(positionPage({ node: null, children: [], mistake: detail({ line_san: [], fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", last_move: null, colour: "white" }) }));
     renderApp(`/review/positions/white/${BIG}`);
     expect(await screen.findByText("Starting position")).toBeInTheDocument();
@@ -574,7 +574,7 @@ describe("A position's page", () => {
     expect(await screen.findByText("What happens next")).toBeInTheDocument();
   });
 
-  it("a stale-opening answer that lands after Back leaves the page Rob went back to alone", async () => {
+  it("a stale-opening answer that lands after Back leaves the page the player went back to alone", async () => {
     let reject: (e: unknown) => void = () => {};
     getPositionPage.mockImplementation(() => new Promise((_resolve, rej) => (reject = rej)));
     renderApp(["/review?tc=all", { pathname: `/review/positions/black/${BIG}`, search: "?tc=all&opening=white%3AGone", state: { from: { pathname: "/review", search: "?tc=all" } } }]);

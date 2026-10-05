@@ -22,7 +22,7 @@ from core.ingest.records import FetchError
 from core.ingest.run import import_chesscom, import_lichess
 from core.ingest.store import store_game, upsert_game
 
-ME = "rob_test"
+ME = "player_test"
 FEN_960_SHREDDER = "bbqnnrkr/pppppppp/8/8/8/8/PPPPPPPP/BBQNNRKR w HFhf - 0 1"
 FEN_960_XFEN = "bbqnnrkr/pppppppp/8/8/8/8/PPPPPPPP/BBQNNRKR w KQkq - 0 1"
 

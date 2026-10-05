@@ -80,7 +80,7 @@ export function TrendBars({ trend, height = 28 }: { trend: (number | null)[]; he
   );
 }
 
-/** A static board: oriented to Rob's side, the move that reached it highlighted. Every board on a
+/** A static board: oriented to the player's side, the move that reached it highlighted. Every board on a
  *  page needs its own id (react-chessboard looks its squares up by element id). A small board
  *  leaves the coordinates out: at card size they sit on the pieces. */
 export function PositionBoard({ fen, colour, lastMove, small = false }: { fen: string; colour: "white" | "black"; lastMove: string | null; small?: boolean }) {
@@ -141,12 +141,12 @@ export function PositionCard({ p, to, from, parentLine, fixed = false, months = 
 
 const loss = (x: number | null) => (x == null ? "not checked" : x < 0.5 ? "no loss" : `−${x.toFixed(0)}`);
 
-/** "…Nf6 ×12 (−15)": a move Rob played from the board, how often, and what it gave away on average. */
+/** "…Nf6 ×12 (−15)": a move the player played from the board, how often, and what it gave away on average. */
 function moveSummary(ply: number, mv: MistakeMove): string {
   return `${moveLabel(ply, mv.san)} ×${mv.n} (${mv.mates ? "mate" : loss(mv.mean_loss)})`;
 }
 
-/** An opening mistake: where Rob moves, what he played there, how often it cost him, how much a
+/** An opening mistake: where the player moves, what they played there, how often it cost them, how much a
  *  month now (in Fixed?: over the history, what it is ranked by), its status and its last visits.
  *  The whole card opens the position's page. */
 export function MistakeCard({ m, to, from, parentLine, fixed = false, months = 12 }: { m: Mistake; to: string; from: From; parentLine: string | null; fixed?: boolean; months?: number }) {

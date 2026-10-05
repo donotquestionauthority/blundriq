@@ -1,4 +1,4 @@
-"""The Deviations page: where the player keeps leaving his own repertoire, ranked.
+"""The Deviations page: where the player keeps leaving their own repertoire, ranked.
 
 The unit is the **pattern** — a book, a chapter, the ply, and the move the line expected there
 (`game_repertoire_results` rows with `deviation_by = 'me'`) — and how often it recurs is

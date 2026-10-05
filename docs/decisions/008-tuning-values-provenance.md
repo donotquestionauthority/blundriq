@@ -11,21 +11,21 @@ inventory, so nobody re-derives a number that was never derived.
 - `miss_contested_gate`: a loss from a decided position is noise; drop the move.
 - `motif_min_material_gain` (the old SEE > 0 rule), `motif_found_material_tolerance`
   (one piece, from six misclassified positions), and the eval-tolerance "found" test
-  that replaced `move == best`, all ratified by Rob.
+  that replaced `move == best`, all ratified by the original user.
 - The puzzle mix's hybrid supply rule (rotation buckets fill, SRS buckets serve only
   what is due), each batch targeting its percentages independently — the old system's
   trailing-window catch-up was removed because repaying a shortfall flooded the queue —
   and the shift of first-class share down / remaining up (five themes at 30 % made every
   batch look the same).
-- Weak-motif weighting by raw miss count (Rob, over the design's severity weighting) in
+- Weak-motif weighting by raw miss count (the original user, over the design's severity weighting) in
   the old system's capped pool; this serve keeps the frequency principle as an ordering
   only (see the divergences below).
-- Corpus: the −325 default offset (Rob's paired accounts), the 1050–2700 import range,
+- Corpus: the −325 default offset (one player's paired accounts), the 1050–2700 import range,
   the 500-per-cell cap (database size), the top-K candidate pool (150 distinct puzzles
   ever served under `LIMIT 1`), and the theme classes (first class = what the tagger
   detects; bare `mate` excluded on purpose).
 - Review: candidates measured at a settled endpoint, CONF 15 (validated on ~1,000
-  games) and 20 at depth ≤ 12, pool floors 5/8 (Rob: 2-event pools are noise), cost
+  games) and 20 at depth ≤ 12, pool floors 5/8 (2-event pools are noise), cost
   charged once per decision, shape metrics never used for severity — though the old
   code labelled every review knob provisional regardless (next section).
 - Blunder, deviation and repertoire recurrence counts are distinct games, after an
@@ -51,14 +51,14 @@ than another K; `scout_bayesian_prior_strength`.
 ## What the export had already moved, and the divergences to know about
 
 Two seeded defaults differed from the live values at export (admin edits; the rebuild
-keeps the live values): `srs_advance_threshold` 2 → 1 (May 2026, the month Rob recorded
+keeps the live values): `srs_advance_threshold` 2 → 1 (May 2026, the month the original user recorded
 that promotions felt too slow; the observation itself stayed open), and the mix
 25/30/15/10/20 → 25/20/35/10/10.
 
 The old puzzle path centred the corpus window with the single `default` offset only;
 the per-time-class offsets were read by Scout's opponent comparison and were never
 calibrated against the corpus. `core/puzzles/serve.py` applies the time-class value
-when the latest game has one. At Rob's ratings the difference is inside the tier band
+when the latest game has one. At the original user's ratings the difference is inside the tier band
 (rapid −250 vs default −325); it is recorded here rather than changed.
 
 The old system kept a materialised pool of weak-motif puzzles, `weak_motif_target_count`
