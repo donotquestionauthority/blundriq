@@ -53,3 +53,22 @@ def test_parameter_boundaries(client: TestClient) -> None:
 def test_the_worklist_pool_routes_are_gone(client: TestClient) -> None:
     assert client.get("/review/pools/v1:route:faded/events").status_code == 404
     assert client.post("/review/pools/v1:route:faded/shown").status_code in (404, 405)
+
+
+def test_a_positions_move_games(client: TestClient, corpus: psycopg.Connection[DictRow]) -> None:  # noqa: F811
+    from tests.review.position_helpers import ITALIAN, key_of
+
+    start = key_of(corpus, ITALIAN[:2])  # White moves from here in the twelve Italian games
+    base = f"/review/positions/white/{start}/games?time_class=all"
+    costly = client.get(base)
+    assert costly.status_code == 200
+    assert set(costly.json()) == {"move", "rows", "total", "page", "page_size", "total_pages"}
+    played = client.get(f"{base}&move={ITALIAN[2]}").json()
+    assert played["total"] == 12 and {(r["san"], r["ply"], r["state"]) for r in played["rows"]} == {
+        (ITALIAN[2], 2, "unknown")  # nothing evaluated in this corpus
+    }
+    assert client.get(f"{base}&move=a%20b").status_code == 422
+    assert client.get(f"{base}&page=0").status_code == 422
+    assert client.get(f"/review/positions/black/{start}/games?time_class=all").status_code == 404
+    stale = client.get(f"{base}&opening=white:Nonsense")
+    assert stale.status_code == 422 and "unknown opening key" in stale.json()["detail"]

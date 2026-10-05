@@ -52,7 +52,6 @@ REVIEW_RESULTS_MIN_GAMES = 10
 REVIEW_EVAL_MIN_GAMES = 3  # a board Rob moved from in this many games is evaluated (below the ranking's floor)
 REVIEW_FIXED_RUN = 3  # known-fine visits in a row, after a costly one, that make a board Fixed?
 REVIEW_STRIP_VISITS = 12  # visits shown on a card's strip, newest last
-REVIEW_COSTLY_GAMES_MAX = 50  # games listed under a position's costly moves
 
 # Review's mistake habits (core/review/habits.py).
 REVIEW_HABIT_MIN_EVENTS = 3

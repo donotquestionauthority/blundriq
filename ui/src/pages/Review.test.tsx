@@ -6,12 +6,13 @@ import ReviewPosition from "./ReviewPosition";
 import { ApiError } from "../api";
 import { returnTarget } from "../utils/returnTo";
 import { lineText, readPositionPage, whyThisGame } from "../review";
-import type { HabitGame, MistakeCard, MistakeDetail, PositionPage, ReviewHabit, ReviewPage, ReviewPosition as Position } from "../review";
+import type { HabitGame, MistakeCard, MistakeDetail, MoveGame, MoveGames, PositionPage, ReviewHabit, ReviewPage, ReviewPosition as Position } from "../review";
 
 // The network calls are mocked; the labels and helpers are the real ones.
 const getReviewPage = vi.fn();
 const getHabitGames = vi.fn();
 const getPositionPage = vi.fn();
+const getPositionMoveGames = vi.fn();
 vi.mock("../review", async () => {
   const actual = await vi.importActual<typeof import("../review")>("../review");
   return {
@@ -19,6 +20,7 @@ vi.mock("../review", async () => {
     getReviewPage: (...args: unknown[]) => getReviewPage(...args),
     getHabitGames: (...args: unknown[]) => getHabitGames(...args),
     getPositionPage: (...args: unknown[]) => getPositionPage(...args),
+    getPositionMoveGames: (...args: unknown[]) => getPositionMoveGames(...args),
   };
 });
 vi.mock("react-chessboard", () => ({
@@ -151,16 +153,19 @@ const positionPage = (over: Partial<PositionPage> = {}): PositionPage => ({
 
 const detail = (over: Partial<MistakeDetail> = {}): MistakeDetail => {
   const { parent_key: _parent, ...rest } = mistake();
-  return {
-    ...rest,
-    ranked: true,
-    costly_rows: [
-      { chess_game_id: 601, ply: 7, san: "Nf6", loss: 16.2, played_at: "2026-09-29T12:00:00Z", opponent_username: "bfour", opponent_rating: 1510, result: "loss", has_moves: true },
-      { chess_game_id: 402, ply: 7, san: "Nf6", loss: 14.9, played_at: "2026-03-01T12:00:00Z", opponent_username: "oldone", opponent_rating: 1480, result: "win", has_moves: false },
-    ],
-    ...over,
-  };
+  return { ...rest, ranked: true, ...over };
 };
+
+const moveGame = (over: Partial<MoveGame> = {}): MoveGame => ({ chess_game_id: 601, ply: 7, san: "Nf6", state: "costly", loss: 16.2, played_at: "2026-09-29T12:00:00Z", opponent_username: "bfour", opponent_rating: 1510, result: "loss", has_moves: true, ...over });
+const moveGames = (over: Partial<MoveGames> = {}): MoveGames => ({
+  move: null,
+  rows: [moveGame(), moveGame({ chess_game_id: 402, loss: 14.9, played_at: "2026-03-01T12:00:00Z", opponent_username: "oldone", result: "win", has_moves: false })],
+  total: 55,
+  page: 1,
+  page_size: 50,
+  total_pages: 2,
+  ...over,
+});
 
 /** A game review stand-in with the review's two ways back. */
 function GameStub() {
@@ -241,6 +246,7 @@ beforeEach(() => {
   getReviewPage.mockReset().mockResolvedValue(page());
   getHabitGames.mockReset().mockResolvedValue(habitGames());
   getPositionPage.mockReset().mockResolvedValue(positionPage());
+  getPositionMoveGames.mockReset().mockResolvedValue(moveGames());
 });
 afterEach(cleanup);
 
@@ -496,11 +502,59 @@ describe("A position's page", () => {
     expect(moves).toHaveTextContent("The engine plays 4…cxd4 here.");
     const rows = within(moves).getAllByRole("row");
     expect(rows[1]).toHaveTextContent("4…Nf61215.112");
-    const costly = within(moves).getAllByTestId("costly-game");
-    expect(within(costly[0]).getByRole("link", { name: "Review →" })).toHaveAttribute("href", "/review/601?ply=7");
-    expect(within(costly[1]).queryByRole("link")).toBeNull();
-    expect(costly[1]).toHaveTextContent("Opening only");
+    // The costly games, newest first; one whose moves are gone has no link.
+    const list = await screen.findByTestId("move-games");
+    await waitFor(() => expect(within(list).getAllByTestId("move-game")).toHaveLength(2));
+    expect(getPositionMoveGames).toHaveBeenLastCalledWith("black", BIG, "focus", "__all__", null, 1);
+    expect(list).toHaveTextContent("Games where it cost you (55)");
+    const games = within(list).getAllByTestId("move-game");
+    expect(within(games[0]).getByRole("link", { name: "Review →" })).toHaveAttribute("href", "/review/601?ply=7");
+    expect(within(games[1]).queryByRole("link")).toBeNull();
+    expect(games[1]).toHaveTextContent("Opening only");
     expect(screen.getByTestId("results")).toHaveTextContent("Results below rating expectation");
+  });
+
+  it("every move opens its games, a page at a time, and a game's Close comes back to the same list", async () => {
+    getPositionPage.mockResolvedValue(positionPage({ mistake: detail() }));
+    renderApp({ pathname: `/review/positions/black/${BIG}`, search: "?tc=all", state: { from: { pathname: "/review", search: "?tc=all" } } });
+    const moves = await screen.findByTestId("your-moves");
+    getPositionMoveGames.mockResolvedValue(moveGames({ move: "Bf5", total: 2, total_pages: 1, rows: [moveGame({ san: "Bf5", state: "fine", loss: 1.1, has_moves: false }), moveGame({ chess_game_id: 9, san: "Bf5", state: "unknown", loss: null })] }));
+    fireEvent.click(within(moves).getByRole("button", { name: "4…Bf5" }));
+    await waitFor(() => expect(where()).toBe(`/review/positions/black/${BIG}?tc=all&move=Bf5`));
+    await waitFor(() => expect(getPositionMoveGames).toHaveBeenLastCalledWith("black", BIG, "all", "__all__", "Bf5", 1));
+    const list = screen.getByTestId("move-games");
+    await waitFor(() => expect(list).toHaveTextContent("Your games with 4…Bf5 (2)"));
+    expect(within(moves).getByRole("button", { name: "4…Bf5" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(list).getAllByTestId("move-game").map((g) => g.getAttribute("data-state"))).toEqual(["fine", "unknown"]);
+    expect(within(list).getAllByTestId("move-game")[1]).toHaveTextContent("not checked");
+    // Back to the costly games, then their second page.
+    getPositionMoveGames.mockResolvedValue(moveGames());
+    fireEvent.click(within(list).getByRole("button", { name: "Show the costly games" }));
+    await waitFor(() => expect(where()).toBe(`/review/positions/black/${BIG}?tc=all`));
+    fireEvent.click(await within(list).findByRole("button", { name: "Older" }));
+    await waitFor(() => expect(where()).toBe(`/review/positions/black/${BIG}?tc=all&mpage=2`));
+    await waitFor(() => expect(getPositionMoveGames).toHaveBeenLastCalledWith("black", BIG, "all", "__all__", null, 2));
+    // A game opened from the list comes back to the same page of the same list.
+    fireEvent.click(within(screen.getByTestId("move-games")).getAllByRole("link", { name: "Review →" })[0]);
+    fireEvent.click(screen.getByRole("button", { name: "close" }));
+    await screen.findByTestId("move-games");
+    expect(where()).toBe(`/review/positions/black/${BIG}?tc=all&mpage=2`);
+    await waitFor(() => expect(getPositionMoveGames).toHaveBeenLastCalledWith("black", BIG, "all", "__all__", null, 2));
+    // This page's Back still returns to the Review page.
+    fireEvent.click(screen.getByRole("button", { name: "← Back" }));
+    await screen.findAllByTestId("mistake-card");
+    expect(where()).toBe("/review?tc=all");
+  });
+
+  it("a move's games follow the page's filters, and a move the URL names that is not a move is ignored", async () => {
+    getPositionPage.mockResolvedValue(positionPage({ mistake: detail() }));
+    renderApp(`/review/positions/black/${BIG}?opening=black%3AScandinavian+Defense&move=Nf6&mpage=3`);
+    await screen.findByTestId("move-games");
+    await waitFor(() => expect(getPositionMoveGames).toHaveBeenLastCalledWith("black", BIG, "focus", "black:Scandinavian Defense", "Nf6", 3));
+    cleanup();
+    renderApp(`/review/positions/black/${BIG}?move=a%20b`);
+    await screen.findByTestId("move-games");
+    await waitFor(() => expect(getPositionMoveGames).toHaveBeenLastCalledWith("black", BIG, "focus", "__all__", null, 1));
   });
 
   it("the starting position has Rob's moves and no results", async () => {

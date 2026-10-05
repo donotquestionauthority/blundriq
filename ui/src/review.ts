@@ -110,11 +110,13 @@ export interface MistakeCoverage {
   eval_min_games: number;
 }
 
-export interface CostlyGame {
+export interface MoveGame {
   chess_game_id: number;
   ply: number;
   san: string;
-  loss: number;
+  state: VisitState;
+  /** Expected-score points the move gave away; null until the engine has checked it. */
+  loss: number | null;
   played_at: string | null;
   opponent_username: string | null;
   opponent_rating: number | null;
@@ -125,7 +127,11 @@ export interface CostlyGame {
 
 export interface MistakeDetail extends MistakeNumbers {
   ranked: boolean;
-  costly_rows: CostlyGame[];
+}
+
+/** Rob's games from a board, newest first: every game with `move`, or with none the costly ones. */
+export interface MoveGames extends Paged<MoveGame> {
+  move: string | null;
 }
 
 export const MISTAKE_STATUS_LABELS: Record<MistakeStatus, string> = {
@@ -281,17 +287,37 @@ export const getHabitGames = (habitId: string, timeClass: ReviewTimeClass, openi
 
 export const getPositionPage = (colour: string, key: string, timeClass: ReviewTimeClass, opening: string, page: number) => api.get<PositionPage>(`/review/positions/${encodeURIComponent(colour)}/${encodeURIComponent(key)}?${q({ time_class: timeClass, opening, page })}`);
 
+export const getPositionMoveGames = (colour: string, key: string, timeClass: ReviewTimeClass, opening: string, move: string | null, page: number) =>
+  api.get<MoveGames>(`/review/positions/${encodeURIComponent(colour)}/${encodeURIComponent(key)}/games?${q({ time_class: timeClass, opening, page, ...(move ? { move } : {}) })}`);
+
+const pageOf = (raw: string | null) => {
+  const n = raw && /^[0-9]{1,5}$/.test(raw) ? Number(raw) : 1;
+  return n >= 1 ? n : 1;
+};
+
 /** The page of a position's games from its query string: a positive integer, else 1. */
 export function readPositionPage(params: URLSearchParams): number {
-  const raw = params.get("page") ?? "";
-  const n = /^[0-9]{1,5}$/.test(raw) ? Number(raw) : 1;
-  return n >= 1 ? n : 1;
+  return pageOf(params.get("page"));
 }
 
-/** A position page's query string: the settings, then the page when it is not the first. */
-export function positionSearch(s: ReviewSettings, page: number): string {
+/** Which of Rob's games from the board are listed (`move`: one move's, null: the costly ones) and
+ *  their page, from the query string (`move`, `mpage`). */
+export interface MovesView {
+  move: string | null;
+  page: number;
+}
+export function readMovesView(params: URLSearchParams): MovesView {
+  const move = params.get("move");
+  return { move: move && /^[A-Za-z0-9+#=-]{2,10}$/.test(move) ? move : null, page: pageOf(params.get("mpage")) };
+}
+
+/** A position page's query string: the settings, then the games' page and the moves view when
+ *  they are not the defaults. */
+export function positionSearch(s: ReviewSettings, page: number, moves: MovesView = { move: null, page: 1 }): string {
   const q = new URLSearchParams(reviewSettingsSearch(s));
   if (page > 1) q.set("page", String(page));
+  if (moves.move) q.set("move", moves.move);
+  if (moves.page > 1) q.set("mpage", String(moves.page));
   const qs = q.toString();
   return qs ? `?${qs}` : "";
 }

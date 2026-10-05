@@ -1,4 +1,4 @@
-"""GET /review, GET /review/positions/{colour}/{key}, GET /review/habits/{habit_id} — the Review page.
+"""GET /review, GET /review/positions/{colour}/{key} (and /games), GET /review/habits/{habit_id}.
 
 Every route reads only and takes the same two filters. A bad parameter is 422: an opening key
 that is not one of the page's options says `unknown opening key` (the client's stale-key
@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Path, Query
 
 from api import auth
 from core import db, settings
-from core.review import habits, position, positions, read
+from core.review import habits, mistakes, position, positions, read
 from core.review.filters import OPENING_ALL, ReviewParamError
 
 router = APIRouter(prefix="/review", tags=["review"], dependencies=[auth.Authed])
@@ -56,6 +56,33 @@ def position_page(
         result = position.position_page(conn, positions.Scope(config, time_class, parsed), colour, board, page)
     if result is None:
         raise HTTPException(404, "no counted game reaches this position")
+    return result
+
+
+@router.get("/positions/{colour}/{key}/games")
+def position_move_games(
+    colour: Colour,
+    key: str = Path(pattern=r"^-?[0-9]{1,19}$"),
+    time_class: TimeClass = Query("focus"),
+    opening: str = Query(OPENING_ALL, max_length=200),
+    move: str | None = Query(None, pattern=r"^[A-Za-z0-9+#=\-]{2,10}$"),
+    page: int = Query(1, ge=1, le=10000),
+) -> dict[str, Any]:
+    """Rob's games from the board: every visit with `move`, or with no `move` every costly one."""
+    board = int(key)
+    if not _BIGINT[0] <= board <= _BIGINT[1]:
+        raise HTTPException(422, "position key out of range")
+    with db.transaction() as conn:
+        config = settings.load(conn)
+        try:
+            parsed, _ = read.checked_opening(conn, config, time_class, opening)
+        except ReviewParamError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        result = mistakes.move_games(
+            conn, positions.Scope(config, time_class, parsed), colour, board, move=move, page=page
+        )
+    if result is None:
+        raise HTTPException(404, "you never moved from this position under this filter")
     return result
 
 

@@ -45,7 +45,6 @@ from psycopg import Connection
 from core.chess.eligibility import analysable_sql
 from core.constants import (
     PLAYER_ID,
-    REVIEW_COSTLY_GAMES_MAX,
     REVIEW_EVAL_MIN_GAMES,
     REVIEW_FIXED_MAX,
     REVIEW_FIXED_RUN,
@@ -70,6 +69,9 @@ CHECKMATE = "checkmate"
 DRAW = "draw"
 
 _LN2 = math.log(2)
+
+# A position page lists Rob's games from a board this many at a time.
+MOVE_GAMES_PAGE = 50
 
 # How many games a board may be rebuilt from before it counts as failed: one game whose stored
 # prefix does not replay must not keep the board unevaluated (and the step failing) for ever.
@@ -433,33 +435,59 @@ def section(conn: Connection[Any], scope: Scope) -> dict[str, Any]:
 
 
 def board_detail(conn: Connection[Any], scope: Scope, colour: str, key: int) -> dict[str, Any] | None:
-    """A position page's mistakes block: the board's numbers and moves at any game count, and
-    the games where Rob's move from it was costly, newest first; None when Rob never moved from
-    it under the scope."""
+    """A position page's mistakes block: the board's numbers and moves at any game count; None
+    when Rob never moved from it under the scope. Its games are `move_games`, a page at a time."""
     rows = decision_rows(conn, scope, min_games=1, colour=colour, key=key)
     if not rows:
         return None
     board = boards_of(rows, scope)[0]
     out = card(board, line_rows(conn, scope, [(colour, key)]).get((colour, key)), None)
     del out["parent_key"]
-    costly = [(v, s) for v, s in zip(board.visits, board.states, strict=True) if s == COSTLY]
-    costly.reverse()
     out["ranked"] = qualifies(board, scope)
-    out["costly_rows"] = [
-        {
-            "chess_game_id": int(v["id"]),
-            "ply": int(v["ply"]),
-            "san": v["san"],
-            "loss": round(float(v["loss"]), 1),
-            "played_at": v["played_at"].isoformat() if v["played_at"] else None,
-            "opponent_username": v["opponent_username"],
-            "opponent_rating": v["opponent_rating"],
-            "result": v["result"],
-            "has_moves": bool(v["has_moves"]),
-        }
-        for v, _ in costly[:REVIEW_COSTLY_GAMES_MAX]
-    ]
     return out
+
+
+def move_games(
+    conn: Connection[Any], scope: Scope, colour: str, key: int, *, move: str | None, page: int
+) -> dict[str, Any] | None:
+    """Rob's games from the board, newest first, MOVE_GAMES_PAGE a page: every visit where he
+    played `move` (fine, costly or not checked yet), or with no `move` every costly visit. Each row
+    keeps the ply he played it at; a game whose moves are no longer stored has `has_moves` false.
+    None when Rob never moved from the board under the scope."""
+    rows = decision_rows(conn, scope, min_games=1, colour=colour, key=key)
+    if not rows:
+        return None
+    board = boards_of(rows, scope)[0]
+    chosen = [
+        (v, st)
+        for v, st in zip(board.visits, board.states, strict=True)
+        if (st == COSTLY if move is None else v["san"] == move)
+    ]
+    chosen.reverse()
+    total = len(chosen)
+    start = (page - 1) * MOVE_GAMES_PAGE
+    return {
+        "move": move,
+        "rows": [
+            {
+                "chess_game_id": int(v["id"]),
+                "ply": int(v["ply"]),
+                "san": v["san"],
+                "state": st,
+                "loss": round(float(v["loss"]), 1) if v["loss"] is not None else None,
+                "played_at": v["played_at"].isoformat() if v["played_at"] else None,
+                "opponent_username": v["opponent_username"],
+                "opponent_rating": v["opponent_rating"],
+                "result": v["result"],
+                "has_moves": bool(v["has_moves"]),
+            }
+            for v, st in chosen[start : start + MOVE_GAMES_PAGE]
+        ],
+        "total": total,
+        "page": page,
+        "page_size": MOVE_GAMES_PAGE,
+        "total_pages": max(1, -(-total // MOVE_GAMES_PAGE)),
+    }
 
 
 # --- what the evaluator evaluates -------------------------------------------------------------

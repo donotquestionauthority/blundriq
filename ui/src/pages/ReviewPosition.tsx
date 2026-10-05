@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { useApi } from "../hooks/useApi";
 import { daysAgo } from "../blunders";
-import { OPENING_ALL, belowExpectation, getPositionPage, givenAway, isStaleOpeningError, lineText, moveLabel, pct, positionPath, positionSearch, readPositionPage, readReviewSettings, reviewSettingsSearch, whyThisGame } from "../review";
-import type { CostlyGame, MistakeDetail, PositionGame } from "../review";
+import { OPENING_ALL, belowExpectation, getPositionMoveGames, getPositionPage, givenAway, isStaleOpeningError, lineText, moveLabel, pct, positionPath, positionSearch, readMovesView, readPositionPage, readReviewSettings, reviewSettingsSearch, whyThisGame } from "../review";
+import type { MistakeDetail, MoveGame, MovesView, PositionGame, ReviewTimeClass } from "../review";
 import { MistakeChip, PositionBoard, StatusChip, TrendBars, VisitStrip } from "../components/ReviewBits";
 import { returnTarget } from "../utils/returnTo";
 import type { From } from "../utils/returnTo";
@@ -12,7 +13,8 @@ import type { From } from "../utils/returnTo";
  * One position's page at `/review/positions/:colour/:key`, under the Review page's two settings
  * (the same query string, plus `page` for the games past the first fifty). The board as Rob reached it, the line most of his games took to it;
  * when he is to move there, his moves from it (how often, what each gave away, the engine's move)
- * and the games where his move cost him; then the results below rating expectation: numbers and trend, what happens next (each move a link to that position's page, except a return to the start), and his games
+ * and his games from it, fifty at a time: the costly ones, or every game with one move (`move`
+ * and `mpage` in the query string, so a game's Close, Back and a reload come back to them); then the results below rating expectation: numbers and trend, what happens next (each move a link to that position's page, except a return to the start), and his games
  * through it whose moves are still stored: playable-then-not-won first, each with one sentence on
  * why it is worth opening. "Review" opens the game at its turning point, "From here" at the board;
  * both carry this page's whole state as the way back, so a game's Close returns here and this page's
@@ -23,9 +25,9 @@ import type { From } from "../utils/returnTo";
 const btn = "rounded border border-zinc-300 px-3 py-1 text-sm text-zinc-600 hover:border-zinc-500 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-400";
 const resultWord = (r: string | null) => (r === "win" ? "Won" : r === "draw" ? "Drew" : r === "loss" ? "Lost" : "—");
 
-function CostlyRow({ g, from }: { g: CostlyGame; from: From }) {
+function MoveGameRow({ g, from }: { g: MoveGame; from: From }) {
   return (
-    <li className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-1.5 text-xs" data-testid="costly-game">
+    <li className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-1.5 text-xs" data-testid="move-game" data-state={g.state}>
       {g.has_moves ? (
         <Link to={`/review/${g.chess_game_id}?ply=${g.ply}`} state={{ from }} className="whitespace-nowrap underline">
           Review →
@@ -36,7 +38,7 @@ function CostlyRow({ g, from }: { g: CostlyGame; from: From }) {
         </span>
       )}
       <span className="font-mono">{moveLabel(g.ply, g.san)}</span>
-      <span className="tabular-nums text-zinc-500">−{Math.round(g.loss)}</span>
+      <span className="tabular-nums text-zinc-500">{g.loss == null ? "not checked" : g.state === "costly" ? `−${Math.round(g.loss)}` : "fine"}</span>
       <span>
         {g.opponent_username ?? "—"}
         {g.opponent_rating ? ` (${g.opponent_rating})` : ""}
@@ -47,9 +49,63 @@ function CostlyRow({ g, from }: { g: CostlyGame; from: From }) {
   );
 }
 
+/** Rob's games from the board, fifty at a time, newest first: the costly ones, or every game with
+ *  the chosen move (fine, costly or not checked yet). */
+function MoveGamesList({ colour, boardKey, timeClass, opening, view, ply, onView, from }: { colour: string; boardKey: string; timeClass: ReviewTimeClass; opening: string; view: MovesView; ply: number; onView: (v: MovesView) => void; from: From }) {
+  const fetchGames = useCallback(() => getPositionMoveGames(colour, boardKey, timeClass, opening, view.move, view.page), [colour, boardKey, timeClass, opening, view.move, view.page]);
+  const { data, isLoading, error, isStale } = useApi(fetchGames, [colour, boardKey, timeClass, opening, view.move, view.page]);
+  return (
+    <div className="mt-3" data-testid="move-games">
+      <div className="mb-1 flex flex-wrap items-baseline gap-x-3">
+        <h3 className="text-sm font-medium">
+          {view.move ? `Your games with ${moveLabel(ply, view.move)}` : "Games where it cost you"}
+          {data ? ` (${data.total})` : ""}
+        </h3>
+        {view.move && (
+          <button type="button" className="text-xs underline" onClick={() => onView({ move: null, page: 1 })}>
+            Show the costly games
+          </button>
+        )}
+      </div>
+      {error && (
+        <p role="alert" className="text-xs text-red-600 dark:text-red-400">
+          {error}
+        </p>
+      )}
+      {isLoading && !data && <p className="text-xs text-zinc-500">Loading…</p>}
+      {data && (
+        <div className={isStale ? "opacity-50" : ""}>
+          {data.total === 0 ? (
+            <p className="text-xs text-zinc-500">{view.move ? "No game under this filter." : "None of your moves from here was costly under this filter."}</p>
+          ) : (
+            <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
+              {data.rows.map((g) => (
+                <MoveGameRow key={`${g.chess_game_id}:${g.ply}`} g={g} from={from} />
+              ))}
+            </ul>
+          )}
+          {data.total_pages > 1 && (
+            <div className="mt-2 flex items-center gap-3 text-xs text-zinc-500">
+              <button type="button" className={btn} disabled={view.page <= 1} onClick={() => onView({ ...view, page: view.page - 1 })}>
+                Newer
+              </button>
+              <span>
+                Page {data.page} of {data.total_pages}
+              </span>
+              <button type="button" className={btn} disabled={view.page >= data.total_pages} onClick={() => onView({ ...view, page: view.page + 1 })}>
+                Older
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Rob's moves from the board: the numbers the opening-mistakes card has, every move he played
- *  there with the engine's, and the games where his move was costly, newest first. */
-function YourMoves({ m, ply, from }: { m: MistakeDetail; ply: number; from: From }) {
+ *  there with the engine's (each opens its games), and the games listed below. */
+function YourMoves({ m, ply, children, view, onView }: { m: MistakeDetail; ply: number; children: ReactNode; view: MovesView; onView: (v: MovesView) => void }) {
   const unchecked = m.decisions - m.evaluated;
   return (
     <section data-testid="your-moves">
@@ -78,7 +134,11 @@ function YourMoves({ m, ply, from }: { m: MistakeDetail; ply: number; from: From
         <tbody>
           {m.moves.map((mv) => (
             <tr key={mv.san} className="border-t border-zinc-200 dark:border-zinc-800">
-              <td className="py-1 pr-3 font-mono">{moveLabel(ply, mv.san)}</td>
+              <td className="py-1 pr-3 font-mono">
+                <button type="button" className={`underline ${view.move === mv.san ? "font-semibold" : ""}`} aria-pressed={view.move === mv.san} onClick={() => onView({ move: view.move === mv.san ? null : mv.san, page: 1 })}>
+                  {moveLabel(ply, mv.san)}
+                </button>
+              </td>
               <td className="py-1 pr-3 text-right tabular-nums">{mv.n}</td>
               <td className="py-1 pr-3 text-right tabular-nums">{mv.mates ? "mate" : mv.mean_loss == null ? "—" : mv.mean_loss.toFixed(1)}</td>
               <td className="py-1 pr-3 text-right tabular-nums">{mv.costly}</td>
@@ -87,16 +147,7 @@ function YourMoves({ m, ply, from }: { m: MistakeDetail; ply: number; from: From
           ))}
         </tbody>
       </table>
-      {m.costly_rows.length > 0 && (
-        <>
-          <h3 className="mb-1 mt-3 text-sm font-medium">Games where it cost you</h3>
-          <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
-            {m.costly_rows.map((g) => (
-              <CostlyRow key={`${g.chess_game_id}:${g.ply}`} g={g} from={from} />
-            ))}
-          </ul>
-        </>
-      )}
+      {children}
     </section>
   );
 }
@@ -135,7 +186,9 @@ export default function ReviewPosition() {
   // back to it. A settings change or another position's link starts again from page 1, since
   // neither carries it.
   const page = readPositionPage(new URLSearchParams(location.search));
-  const setPage = (next: number) => navigate({ pathname: location.pathname, search: positionSearch(settings, next) }, { replace: true, state: location.state });
+  const movesView = readMovesView(new URLSearchParams(location.search));
+  const setPage = (next: number) => navigate({ pathname: location.pathname, search: positionSearch(settings, next, movesView) }, { replace: true, state: location.state });
+  const setMovesView = (next: MovesView) => navigate({ pathname: location.pathname, search: positionSearch(settings, page, next) }, { replace: true, state: location.state });
 
   // A response belongs to the view it was asked for: one that lands after Back, a link or a
   // settings change must not act on whatever is showing now.
@@ -213,7 +266,11 @@ export default function ReviewPosition() {
             );
           })()}
 
-          {data.mistake && <YourMoves m={data.mistake} ply={data.mistake.line_san.length} from={from} />}
+          {data.mistake && (
+            <YourMoves m={data.mistake} ply={data.mistake.line_san.length} view={movesView} onView={setMovesView}>
+              <MoveGamesList colour={colour} boardKey={key} timeClass={timeClass} opening={opening} view={movesView} ply={data.mistake.line_san.length} onView={setMovesView} from={from} />
+            </YourMoves>
+          )}
 
           {node && (
             <section data-testid="results">

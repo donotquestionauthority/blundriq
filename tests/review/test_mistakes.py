@@ -300,7 +300,7 @@ def test_a_breadcrumb_points_to_the_ranked_board_earlier_on_the_line(clean: psyc
     assert cards[later]["parent_key"] == first and cards[first]["parent_key"] is None
 
 
-def test_the_position_page_carries_robs_moves_and_his_costly_games(clean: psycopg.Connection[DictRow]) -> None:
+def test_the_position_page_carries_robs_moves(clean: psycopg.Connection[DictRow]) -> None:
     from core.review import position as pp
 
     g = Games(clean)
@@ -310,10 +310,7 @@ def test_the_position_page_carries_robs_moves_and_his_costly_games(clean: psycop
     assert page is not None
     detail = page["mistake"]
     assert detail["ranked"] is True and detail["best_move"] == "Nf3"
-    assert [r["san"] for r in detail["costly_rows"]] == ["Qa5", "Qa5", "Qa5"]
-    assert [r["played_at"] for r in detail["costly_rows"]] == sorted(
-        (r["played_at"] for r in detail["costly_rows"]), reverse=True
-    )
+    assert [(r["san"], r["n"], r["costly"]) for r in detail["moves"]] == [("Qa5", 3, 3), ("Qd8", 2, 0)]
     # Rob is not to move after 3...Qa5: no mistakes block there.
     after = pp.position_page(clean, scope(results_min_games=3), "black", key_of(clean, LINE[:6]), 1)
     assert after is not None and after["mistake"] is None
@@ -376,3 +373,55 @@ def test_fixed_is_ordered_by_what_the_board_cost_over_the_history(clean: psycopg
     fixed = _section(clean)["fixed"]
     assert [c["key"] for c in fixed] == [str(key_of(clean, ["e4"])), str(key_of(clean, ["d4"]))]
     assert fixed[0]["per_month"] < fixed[1]["per_month"]
+
+
+def test_every_game_of_every_move_is_reachable_a_page_at_a_time(clean: psycopg.Connection[DictRow]) -> None:
+    """55 costly games (two still with their moves), an older fine alternative and a move the
+    engine has not checked: the costly list is complete over two pages, newest first, and each
+    move opens all of its games, fine and unknown included, at the ply played."""
+    g = Games(clean)
+    qd8: list[str] = [*LINE[:5], "Qd8"]
+    bd7: list[str] = [*LINE[:5], "Bd7"]
+    for i in range(55):
+        g.add(LINE, days=1 + i, keep_moves=i < 2)
+    for i in range(3):
+        g.add(qd8, days=200 + i)
+    g.add(bd7, days=300)
+    _flat(clean, [LINE, qd8])
+    _plant(clean, LINE[:6], 70.0)
+    clean.commit()
+    board = key_of(clean, LINE[:5])
+    sc = scope()
+
+    first = m.move_games(clean, sc, "black", board, move=None, page=1)
+    second = m.move_games(clean, sc, "black", board, move=None, page=2)
+    assert first is not None and second is not None
+    assert (first["total"], first["total_pages"], len(first["rows"]), len(second["rows"])) == (55, 2, 50, 5)
+    rows = first["rows"] + second["rows"]
+    assert len({r["chess_game_id"] for r in rows}) == 55 and {r["state"] for r in rows} == {m.COSTLY}
+    assert [r["played_at"] for r in rows] == sorted((r["played_at"] for r in rows), reverse=True)
+    assert [r["has_moves"] for r in rows[:3]] == [True, True, False]
+    assert {(r["san"], r["ply"]) for r in rows} == {("Qa5", 5)}
+
+    fine = m.move_games(clean, sc, "black", board, move="Qd8", page=1)
+    assert fine is not None and fine["total"] == 3
+    assert {(r["state"], r["ply"], r["has_moves"]) for r in fine["rows"]} == {(m.FINE, 5, False)}
+    unknown = m.move_games(clean, sc, "black", board, move="Bd7", page=1)
+    assert unknown is not None and [(r["state"], r["loss"]) for r in unknown["rows"]] == [(m.UNKNOWN, None)]
+    nothing = m.move_games(clean, sc, "black", board, move="Nf6", page=1)
+    assert nothing is not None and nothing["total"] == 0 and nothing["rows"] == []
+    assert m.move_games(clean, sc, "white", board, move=None, page=1) is None
+
+
+def test_a_moves_games_follow_the_filters(clean: psycopg.Connection[DictRow]) -> None:
+    g = Games(clean)
+    qd8: list[str] = [*LINE[:5], "Qd8"]
+    g.add(qd8, days=1, time_class="blitz")
+    g.add(qd8, days=2, time_class="rapid")
+    _flat(clean, [qd8])
+    clean.commit()
+    board = key_of(clean, LINE[:5])
+    every = m.move_games(clean, scope(time_class="all"), "black", board, move="Qd8", page=1)
+    focus = m.move_games(clean, scope(time_class="focus"), "black", board, move="Qd8", page=1)
+    assert every is not None and focus is not None
+    assert (every["total"], focus["total"]) == (2, 1)
