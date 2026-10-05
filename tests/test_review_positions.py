@@ -864,47 +864,93 @@ class _Dies:
         yield analyse
 
 
-def _bounded(fn: Any, seconds: float = 60.0) -> Any:
-    """Run `fn` in a thread; fail the test (rather than hang the suite) if it does not return."""
-    import threading
+_RUN_IN_CHILD = """
+import json, sys
+import psycopg
+from psycopg.rows import dict_row
+from core.review import evals
+from core.settings import Settings
+from tests import test_review_positions as t
 
-    out: dict[str, Any] = {}
-    thread = threading.Thread(target=lambda: out.setdefault("value", fn()), daemon=True)
-    thread.start()
-    thread.join(seconds)
-    assert not thread.is_alive(), "the run did not return"
-    return out["value"]
+engine = {"none": None, "no_start": t._NoStart(), "dies": t._Dies()}[sys.argv[2]]
+with psycopg.connect(sys.argv[1], row_factory=dict_row) as conn:
+    kw = {} if engine is None else {"engine": engine}
+    out = evals.run(conn, Settings(review_position_max_ply=4), limit=None, workers=2, **kw)
+print(json.dumps(out))
+"""
+
+
+def _run_in_a_process(url: str, engine: str, seconds: int = 90) -> tuple[dict[str, Any], str]:
+    """Run position-evals with two workers in a fresh process, from its main thread as the CLI
+    does (a pool behaves differently at shutdown when started from another thread), and kill it
+    rather than hang the suite; nothing it started may outlive it. (summary, its stderr)."""
+    import os
+    import signal
+    import subprocess
+    import sys
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _RUN_IN_CHILD, url, engine],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+        cwd=Path(__file__).resolve().parents[1],
+    )
+    try:
+        out, err = proc.communicate(timeout=seconds)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        pytest.fail("the run did not return")
+    assert proc.returncode == 0, err[-2000:]
+    try:  # nothing it started (workers, engines) is still running
+        os.killpg(proc.pid, 0)
+    except ProcessLookupError:
+        pass
+    else:
+        os.killpg(proc.pid, signal.SIGKILL)
+        pytest.fail("the run left processes behind")
+    return json.loads(out.strip().splitlines()[-1]), err
 
 
 def test_engines_that_do_not_start_stop_the_run_promptly_and_quietly(
-    clean: psycopg.Connection[DictRow], capfd: pytest.CaptureFixture[str]
+    clean: psycopg.Connection[DictRow], fresh_db_url: str
 ) -> None:
-    import multiprocessing
-
     conn = clean
     _player(conn)
-    _games(conn, "s", ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qa5"], 3)
+    _games(conn, "s", ["e4", "d5", "exd5", "Qxd5"], 3)
     conn.commit()
-    out = _bounded(lambda: evals.run(conn, _config(), limit=None, engine=_NoStart(), workers=2))
-    assert out["evaluated"] == 0 and out["failed"] == out["pending"] == 6 and _evaluated(conn) == {}
+    out, printed = _run_in_a_process(fresh_db_url, "no_start")
+    assert out["evaluated"] == 0 and out["failed"] == out["pending"] == 4 and _evaluated(conn) == {}
     assert any("engine did not start: FileNotFoundError" in f for f in out["failures"])
-    printed = capfd.readouterr()
-    assert "Traceback" not in printed.err + printed.out and "secret-looking" not in printed.err + printed.out
-    assert "secret-looking" not in str(out)
-    assert multiprocessing.active_children() == []
+    assert "Traceback" not in printed and "secret-looking" not in printed + json.dumps(out)
     # The one-engine path raises, as before: the CLI reports the class chain.
     with pytest.raises(FileNotFoundError):
         evals.run(conn, _config(), limit=None, engine=_NoStart())
 
 
-def test_a_worker_that_dies_ends_the_run_with_every_board_counted(clean: psycopg.Connection[DictRow]) -> None:
-    import multiprocessing
-
+def test_a_worker_that_dies_ends_the_run_with_every_board_counted(
+    clean: psycopg.Connection[DictRow], fresh_db_url: str
+) -> None:
     conn = clean
     _player(conn)
-    _games(conn, "s", ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qa5"], 3)
+    _games(conn, "s", ["e4", "d5", "exd5", "Qxd5"], 3)
     conn.commit()
-    out = _bounded(lambda: evals.run(conn, _config(), limit=None, engine=_Dies(), workers=2))
-    assert out["evaluated"] == 0 and out["failed"] == 6 and _evaluated(conn) == {}
-    assert all(f.endswith("BrokenProcessPool") for f in out["failures"])
-    assert multiprocessing.active_children() == []
+    out, printed = _run_in_a_process(fresh_db_url, "dies")
+    assert out["evaluated"] == 0 and out["failed"] == 4 and _evaluated(conn) == {}
+    assert all(f.endswith("BrokenProcessPool") for f in out["failures"]) and "Traceback" not in printed
+
+
+@pytest.mark.skipif(__import__("shutil").which("stockfish") is None, reason="stockfish not installed")
+def test_workers_close_their_engines_so_the_run_ends(clean: psycopg.Connection[DictRow], fresh_db_url: str) -> None:
+    """python-chess drives Stockfish from a non-daemon thread, and a worker process waits for
+    its non-daemon threads before it ends: with the engine left open, the pool's shutdown waited
+    for ever after the last board. Only the real engine shows it."""
+    conn = clean
+    _player(conn)
+    _games(conn, "s", ["e4", "d5", "exd5", "Qxd5"], 3)
+    conn.commit()
+    out, _ = _run_in_a_process(fresh_db_url, "none")
+    assert out == {"pending": 4, "evaluated": 4, "terminal": 0, "failed": 0, "fallbacks": 0}
+    assert all(r["best_move"] for r in _evaluated(conn).values())

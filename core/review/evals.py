@@ -142,14 +142,27 @@ NO_ENGINE = "engine did not start: "
 def _init_worker(engine: Engine) -> None:
     """Open this worker's engine. A failure is kept, never raised: a pool whose initializer raises
     replaces the worker and tries again for ever, and the child would print the traceback. The
-    engine is never closed explicitly: the pool ends its workers, and Stockfish exits when its
-    input closes."""
+    engine is closed when the worker exits: python-chess drives Stockfish from a non-daemon
+    thread, and a worker process waits for its non-daemon threads before it ends, so an engine
+    left open would keep the pool's shutdown waiting for ever."""
+    from multiprocessing import util
+
     from core.notify import error_label
 
     try:
-        _worker["analyse"] = engine().__enter__()
+        manager = engine()
+        _worker["analyse"] = manager.__enter__()
     except Exception as exc:
         _worker["startup"] = error_label(exc)
+        return
+    util.Finalize(None, _close_quietly, args=(manager,), exitpriority=10)
+
+
+def _close_quietly(manager: AbstractContextManager[Analyser]) -> None:
+    try:
+        manager.__exit__(None, None, None)
+    except Exception:  # the engine may already be gone; the worker is ending either way
+        pass
 
 
 def _analyse_in_worker(item: tuple[int, str]) -> Answer:
