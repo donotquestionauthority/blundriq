@@ -196,7 +196,9 @@ def coverage(conn: Connection[Any], scope: Scope) -> dict[str, int]:
         """,
     )
     row: dict[str, Any] = dict(conn.execute(query, _params(scope)).fetchone() or {})
-    return {k: int(row.get(k) or 0) for k in ("decisions", "covered", "evaluated")}
+    out = {k: int(row.get(k) or 0) for k in ("decisions", "covered", "evaluated")}
+    out["eval_min_games"] = REVIEW_EVAL_MIN_GAMES
+    return out
 
 
 def line_rows(

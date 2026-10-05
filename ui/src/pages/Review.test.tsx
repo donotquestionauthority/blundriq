@@ -6,7 +6,7 @@ import ReviewPosition from "./ReviewPosition";
 import { ApiError } from "../api";
 import { returnTarget } from "../utils/returnTo";
 import { lineText, readPositionPage, whyThisGame } from "../review";
-import type { HabitGame, PositionPage, ReviewHabit, ReviewPage, ReviewPosition as Position } from "../review";
+import type { HabitGame, MistakeCard, MistakeDetail, PositionPage, ReviewHabit, ReviewPage, ReviewPosition as Position } from "../review";
 
 // The network calls are mocked; the labels and helpers are the real ones.
 const getReviewPage = vi.fn();
@@ -50,6 +50,35 @@ const position = (over: Partial<Position> = {}): Position => ({
   ...over,
 });
 
+const mistake = (over: Partial<MistakeCard> = {}): MistakeCard => ({
+  colour: "black",
+  key: "4242",
+  line_san: ["d4", "d5", "Bf4", "c5", "e3", "Nc6", "Nc3"],
+  fen: "r1bqkbnr/pp2pppp/2n5/2pp4/3P1B2/2N1P3/PPP2PPP/R2QKBNR b KQkq - 2 4",
+  last_move: "b1c3",
+  games: 15,
+  costly_games: 12,
+  decisions: 15,
+  evaluated: 15,
+  costly: 12,
+  per_month: 0.27,
+  per_month_12: 0.13,
+  per_visit: 0.15,
+  status: "still_costing",
+  fixed: false,
+  strip: ["costly", "costly", "fine", "costly"],
+  moves: [
+    { san: "Nf6", n: 12, evaluated: 12, mean_loss: 15.1, costly: 12, mates: false, last_played: "2026-09-29T12:00:00Z" },
+    { san: "Bf5", n: 2, evaluated: 2, mean_loss: 2.1, costly: 0, mates: false, last_played: "2026-09-01T12:00:00Z" },
+    { san: "cxd4", n: 1, evaluated: 1, mean_loss: 0.3, costly: 0, mates: false, last_played: "2026-08-01T12:00:00Z" },
+  ],
+  best_move: "cxd4",
+  terminal: null,
+  last_costly: "2026-09-29T12:00:00Z",
+  parent_key: null,
+  ...over,
+});
+
 const habit = (over: Partial<ReviewHabit> = {}): ReviewHabit => ({
   id: "missed:fork",
   label: "Missed a fork",
@@ -64,6 +93,11 @@ const habit = (over: Partial<ReviewHabit> = {}): ReviewHabit => ({
 });
 
 const page = (over: Partial<ReviewPage> = {}): ReviewPage => ({
+  mistakes: {
+    ranked: [mistake(), mistake({ key: BIG, line_san: ["d4", "d5", "Bf4", "c5", "e3", "Nc6", "Nc3", "Nf6", "Nf3"], parent_key: "4242", per_month: 0.12, evaluated: 6, decisions: 7, status: "not_yet_checked", strip: ["costly", "fine", "unknown"] })],
+    fixed: [mistake({ key: "77", colour: "white", line_san: ["e4", "e5", "Nf3", "Nc6", "Bc4", "f5"], status: "not_reached_lately", fixed: true, strip: ["costly", "fine", "fine", "fine"] })],
+    coverage: { decisions: 72834, covered: 33783, evaluated: 33783, eval_min_games: 3 },
+  },
   positions: {
     ranked: [position(), position({ key: BIG, line_san: ["d4", "d5", "c4", "c6"], parent_key: "4242", leak_per_month: 2.07, status: "new_leak", es_at_node: 35 })],
     fixed: [position({ key: "77", colour: "white", line_san: ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3"], status: "looks_fixed", leak_per_month: -0.1, current_score: 0.6 })],
@@ -111,8 +145,22 @@ const positionPage = (over: Partial<PositionPage> = {}): PositionPage => ({
     total_pages: 1,
   },
   older_games: 212,
+  mistake: null,
   ...over,
 });
+
+const detail = (over: Partial<MistakeDetail> = {}): MistakeDetail => {
+  const { parent_key: _parent, ...rest } = mistake();
+  return {
+    ...rest,
+    ranked: true,
+    costly_rows: [
+      { chess_game_id: 601, ply: 7, san: "Nf6", loss: 16.2, played_at: "2026-09-29T12:00:00Z", opponent_username: "bfour", opponent_rating: 1510, result: "loss", has_moves: true },
+      { chess_game_id: 402, ply: 7, san: "Nf6", loss: 14.9, played_at: "2026-03-01T12:00:00Z", opponent_username: "oldone", opponent_rating: 1480, result: "win", has_moves: false },
+    ],
+    ...over,
+  };
+};
 
 /** A game review stand-in with the review's two ways back. */
 function GameStub() {
@@ -197,33 +245,52 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Review page", () => {
-  it("leads with the positions costing points, each a card with its line, numbers, status, engine word, trend and breadcrumb", async () => {
+  it("leads with the opening mistakes, each a card with its line, moves, cost, status, visits and breadcrumb", async () => {
     renderApp();
-    const cards = await screen.findAllByTestId("position-card");
+    const cards = await screen.findAllByTestId("mistake-card");
     expect(cards).toHaveLength(2);
-    expect(cards[0]).toHaveTextContent("1.d4 d5");
-    expect(cards[0]).toHaveTextContent("181 games · 42% (expected 50%) · ≈3.3 points a month");
-    expect(cards[0]).toHaveTextContent("Still leaking");
-    expect(cards[0]).toHaveTextContent("Fine when you get here");
-    expect(within(cards[0]).getAllByTestId("trend")[0].querySelectorAll("[data-bar]")).toHaveLength(4);
-    expect(within(cards[0]).getAllByTestId("trend")[0].querySelectorAll('[data-bar="empty"]')).toHaveLength(1);
-    expect(cards[1]).toHaveTextContent("Inside 1.d4 d5");
-    expect(cards[1]).toHaveTextContent("Already worse when you get here");
+    expect(cards[0]).toHaveTextContent("Black1.d4 d5 2.Bf4 c5 3.e3 Nc6 4.Nc3");
+    expect(cards[0]).toHaveTextContent("You played 4…Nf6 ×12 (−15), 4…Bf5 ×2 (−2), 4…cxd4 ×1 (no loss) · engine: 4…cxd4");
+    expect(cards[0]).toHaveTextContent("Costly in 12 of 15 games · ≈0.27 points given away a month");
+    expect(cards[0]).not.toHaveTextContent("visits checked");
+    expect(cards[0]).toHaveTextContent("Still costing you");
+    expect(within(cards[0]).getByTestId("strip").querySelectorAll('[data-visit="costly"]')).toHaveLength(3);
+    // The second has a visit the engine has not checked: it says so, and the strip shows it grey.
+    expect(cards[1]).toHaveTextContent("Inside 1.d4 d5 2.Bf4 c5 3.e3 Nc6 4.Nc3");
+    expect(cards[1]).toHaveTextContent("6 of 7 visits checked");
+    expect(cards[1]).toHaveTextContent("Not yet checked");
+    expect(within(cards[1]).getByTestId("strip").querySelectorAll('[data-visit="unknown"]')).toHaveLength(1);
     // Keys stay strings all the way into the URL.
     expect(cards[1].getAttribute("href")).toBe(`/review/positions/black/${BIG}`);
-    expect(screen.getByText(/Your last 12 months prove a leak/)).toBeInTheDocument();
-    // Fixed? and Lost wins start collapsed; the habits start open.
+    expect(screen.getByTestId("coverage")).toHaveTextContent("From your last 12 months: 72,834 opening moves; 33,783 from positions you reached at least 3 times, all of them checked by the engine.");
+    // Fixed?, the results and Lost wins start collapsed; the habits start open.
     expect(screen.getByRole("button", { name: /Fixed\?/ })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: /Results below rating expectation/ })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("position-card")).toBeNull();
     expect(screen.getByRole("button", { name: /Lost wins/ })).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByText("From your last 1,000 analysed games.")).toBeInTheDocument();
   });
 
-  it("Fixed? shows the history beside now", async () => {
+  it("Fixed? lists the boards whose last visits were fine, not-reached-lately ones with that chip", async () => {
     renderApp();
     fireEvent.click(await screen.findByRole("button", { name: /Fixed\?/ }));
-    const card = screen.getAllByTestId("position-card").find((c) => c.getAttribute("data-key") === "77");
-    expect(card).toHaveTextContent("12 months: 42% (expected 50%) · now: 60% (expected 50%)");
-    expect(card).toHaveTextContent("Looks fixed");
+    const card = screen.getAllByTestId("mistake-card").find((c) => c.getAttribute("data-key") === "77");
+    expect(card).toHaveTextContent("Not reached lately");
+    expect(within(card as HTMLElement).getByTestId("strip").querySelectorAll('[data-visit="fine"]')).toHaveLength(3);
+  });
+
+  it("the results below rating expectation explain themselves and keep their numbers, status and trend", async () => {
+    renderApp();
+    fireEvent.click(await screen.findByRole("button", { name: /Results below rating expectation/ }));
+    expect(screen.getByText(/This does not identify where those games went wrong/)).toBeInTheDocument();
+    const cards = screen.getAllByTestId("position-card");
+    expect(cards[0]).toHaveTextContent("181 games · 42% (expected 50%) · ≈3.3 below expectation a month");
+    expect(cards[0]).toHaveTextContent("Still leaking");
+    expect(cards[0]).not.toHaveTextContent("when you get here");
+    expect(within(cards[0]).getAllByTestId("trend")[0].querySelectorAll("[data-bar]")).toHaveLength(4);
+    const fixed = cards.find((c) => c.getAttribute("data-key") === "77");
+    expect(fixed).toHaveTextContent("12 months: 42% (expected 50%) · now: 60% (expected 50%)");
+    expect(fixed).toHaveTextContent("Looks fixed");
   });
 
   it("a habit row shows its rate, trend and cost, links Practice only for a served theme, and expands to its games", async () => {
@@ -249,14 +316,14 @@ describe("Review page", () => {
   });
 
   it("explains an empty page by the games still waiting for their opening moves", async () => {
-    getReviewPage.mockResolvedValue(page({ positions: { ranked: [], fixed: [] }, meta: { ...page().meta, games_counted: 0, games_without_prefix: 812 } }));
+    getReviewPage.mockResolvedValue(page({ mistakes: { ranked: [], fixed: [], coverage: { decisions: 0, covered: 0, evaluated: 0, eval_min_games: 3 } }, positions: { ranked: [], fixed: [] }, meta: { ...page().meta, games_counted: 0, games_without_prefix: 812 } }));
     renderApp();
     expect(await screen.findByText(/812 games still need their opening moves fetched/)).toBeInTheDocument();
   });
 
   it("the opening filter lists colour-labelled openings and refetches; the time class too", async () => {
     renderApp();
-    await screen.findAllByTestId("position-card");
+    await screen.findAllByTestId("mistake-card");
     expect([...combo("Opening").options].map((o) => o.textContent)).toEqual(["All openings", "Scandinavian Defense · Black (2003)", "Italian Game · White (1057)"]);
     fireEvent.change(combo("Opening"), { target: { value: "black:Scandinavian Defense" } });
     await waitFor(() => expect(lastPageCall()).toEqual(["focus", "black:Scandinavian Defense"]));
@@ -291,7 +358,7 @@ describe("Review page", () => {
 describe("Review keeps its settings in the URL and its expansion in the entry", () => {
   it("a setting change replaces the entry, defaults left out; Reset filters returns to them", async () => {
     renderApp(["/elsewhere", "/review"]);
-    await screen.findAllByTestId("position-card");
+    await screen.findAllByTestId("mistake-card");
     fireEvent.change(combo("Time class"), { target: { value: "all" } });
     await waitFor(() => expect(where()).toBe("/review?tc=all"));
     fireEvent.click(screen.getByRole("button", { name: "Reset filters" }));
@@ -301,7 +368,7 @@ describe("Review keeps its settings in the URL and its expansion in the entry", 
 
   it("an unknown time class is the default", async () => {
     renderApp("/review?tc=constructor");
-    await screen.findAllByTestId("position-card");
+    await screen.findAllByTestId("mistake-card");
     expect(lastPageCall()).toEqual(["focus", "__all__"]);
   });
 
@@ -322,7 +389,7 @@ describe("Review keeps its settings in the URL and its expansion in the entry", 
 
   it("a snapshot taken under other settings is ignored", async () => {
     renderApp({ pathname: "/review", search: "?tc=all", state: { open: { sections: ["lost"], habits: [], key: "focus|__all__" } } });
-    await screen.findAllByTestId("position-card");
+    await screen.findAllByTestId("mistake-card");
     expect(screen.getByRole("button", { name: /Lost wins/ })).toHaveAttribute("aria-expanded", "false");
   });
 });
@@ -331,12 +398,12 @@ describe("A position's page", () => {
   it("opens from a card with the page's settings, and its Back returns to the page as it was", async () => {
     renderApp("/review?tc=all");
     fireEvent.click(await screen.findByRole("button", { name: /Lost wins/ }));
-    fireEvent.click(screen.getAllByTestId("position-card")[1]);
+    fireEvent.click(screen.getAllByTestId("mistake-card")[1]);
     await screen.findByText("What happens next");
     expect(where()).toBe(`/review/positions/black/${BIG}?tc=all`);
     expect(getPositionPage).toHaveBeenCalledWith("black", BIG, "all", "__all__", 1);
     fireEvent.click(screen.getByRole("button", { name: "← Back" }));
-    await screen.findAllByTestId("position-card");
+    await screen.findAllByTestId("mistake-card");
     expect(where()).toBe("/review?tc=all");
     expect(screen.getByRole("button", { name: /Lost wins/ })).toHaveAttribute("aria-expanded", "true");
   });
@@ -369,7 +436,7 @@ describe("A position's page", () => {
     fireEvent.click(screen.getByRole("button", { name: "Previous" }));
     await waitFor(() => expect(where()).toBe(`/review/positions/black/${BIG}?tc=all`));
     fireEvent.click(screen.getByRole("button", { name: "← Back" }));
-    await screen.findAllByTestId("position-card");
+    await screen.findAllByTestId("mistake-card");
     expect(where()).toBe("/review?tc=all");
   });
 
@@ -396,8 +463,32 @@ describe("A position's page", () => {
     await screen.findByText("What happens next");
     expect(where()).toBe(`/review/positions/black/${BIG}`);
     fireEvent.click(screen.getByRole("button", { name: "← Back" }));
-    await screen.findAllByTestId("position-card");
+    await screen.findAllByTestId("mistake-card");
     expect(where()).toBe("/review?tc=all");
+  });
+
+  it("leads with Rob's moves from the board: the table, the engine's move and the games where it cost him", async () => {
+    getPositionPage.mockResolvedValue(positionPage({ mistake: detail() }));
+    renderApp({ pathname: `/review/positions/black/${BIG}`, state: { from: { pathname: "/review", search: "" } } });
+    const moves = await screen.findByTestId("your-moves");
+    expect(moves).toHaveTextContent("Costly in 12 of 15 games · ≈0.27 points given away a month");
+    expect(moves).toHaveTextContent("The engine plays 4…cxd4 here.");
+    const rows = within(moves).getAllByRole("row");
+    expect(rows[1]).toHaveTextContent("4…Nf61215.112");
+    const costly = within(moves).getAllByTestId("costly-game");
+    expect(within(costly[0]).getByRole("link", { name: "Review →" })).toHaveAttribute("href", "/review/601?ply=7");
+    expect(within(costly[1]).queryByRole("link")).toBeNull();
+    expect(costly[1]).toHaveTextContent("Opening only");
+    expect(screen.getByTestId("results")).toHaveTextContent("Results below rating expectation");
+  });
+
+  it("the starting position has Rob's moves and no results", async () => {
+    getPositionPage.mockResolvedValue(positionPage({ node: null, children: [], mistake: detail({ line_san: [], fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", last_move: null, colour: "white" }) }));
+    renderApp(`/review/positions/white/${BIG}`);
+    expect(await screen.findByText("Starting position")).toBeInTheDocument();
+    expect(screen.getByTestId("your-moves")).toHaveTextContent("1.Nf6");
+    expect(screen.queryByTestId("results")).toBeNull();
+    expect(screen.queryByText("What happens next")).toBeNull();
   });
 
   it("a stale focused opening drops to all openings with a notice", async () => {
@@ -414,7 +505,7 @@ describe("A position's page", () => {
     renderApp(["/review?tc=all", { pathname: `/review/positions/black/${BIG}`, search: "?tc=all&opening=white%3AGone", state: { from: { pathname: "/review", search: "?tc=all" } } }]);
     await waitFor(() => expect(getPositionPage).toHaveBeenCalled());
     fireEvent.click(screen.getByRole("button", { name: "← Back" }));
-    await screen.findAllByTestId("position-card");
+    await screen.findAllByTestId("mistake-card");
     reject(new ApiError(422, "unknown opening key: 'white:Gone'"));
     await new Promise((r) => setTimeout(r, 20));
     expect(where()).toBe("/review?tc=all");

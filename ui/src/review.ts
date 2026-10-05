@@ -1,5 +1,5 @@
 /** Types and calls for the Review page and a position's page. Shapes follow core/review/read.py,
- *  core/review/position.py and core/review/habits.py. Position keys are 64-bit integers and travel
+ *  core/review/mistakes.py, core/review/position.py and core/review/habits.py. Position keys are 64-bit integers and travel
  *  as decimal strings everywhere: in JSON, in these types and in the URL. */
 import { api, ApiError } from "./api";
 import { ARROWS } from "./utils/board";
@@ -52,7 +52,99 @@ export function readOpenSnapshot(state: unknown, settings: ReviewSettings): Revi
   return { sections: open.sections.filter((c): c is string => typeof c === "string"), habits: open.habits.filter((n): n is string => typeof n === "string"), key: open.key };
 }
 
-// --- positions --------------------------------------------------------------------------------
+// --- opening mistakes ------------------------------------------------------------------------
+
+export type MistakeStatus = "still_costing" | "not_yet_checked" | "fixed" | "not_reached_lately";
+/** One of Rob's visits to a board: his move there was fine, costly, or is not evaluated yet. */
+export type VisitState = "fine" | "costly" | "unknown";
+
+export interface MistakeMove {
+  san: string;
+  n: number;
+  /** How many of the `n` are evaluated; `mean_loss` is over those (expected-score points, 0-100). */
+  evaluated: number;
+  mean_loss: number | null;
+  costly: number;
+  /** The move gives checkmate. */
+  mates: boolean;
+  last_played: string | null;
+}
+
+/** A board Rob moved from, with what his moves there gave away by the engine's account. */
+export interface MistakeNumbers {
+  colour: "white" | "black";
+  key: string;
+  line_san: string[];
+  fen: string | null;
+  last_move: string | null;
+  /** Distinct games, and of those how many had a costly move here. */
+  games: number;
+  costly_games: number;
+  /** Visits (one per game, board and move), how many are evaluated, how many were costly. */
+  decisions: number;
+  evaluated: number;
+  costly: number;
+  /** Expected points (a game is 1) given away a month at the current rate, and over the history. */
+  per_month: number;
+  per_month_12: number;
+  per_visit: number;
+  status: MistakeStatus | null;
+  fixed: boolean;
+  /** The last visits, oldest first. */
+  strip: VisitState[];
+  moves: MistakeMove[];
+  best_move: string | null;
+  terminal: "checkmate" | "draw" | null;
+  last_costly: string | null;
+}
+
+export interface MistakeCard extends MistakeNumbers {
+  parent_key: string | null;
+}
+
+export interface MistakeCoverage {
+  decisions: number;
+  /** On boards Rob moved from in at least `eval_min_games` games: the ones the engine checks. */
+  covered: number;
+  evaluated: number;
+  eval_min_games: number;
+}
+
+export interface CostlyGame {
+  chess_game_id: number;
+  ply: number;
+  san: string;
+  loss: number;
+  played_at: string | null;
+  opponent_username: string | null;
+  opponent_rating: number | null;
+  result: string | null;
+  /** Its moves are still stored, so it opens in the game review. */
+  has_moves: boolean;
+}
+
+export interface MistakeDetail extends MistakeNumbers {
+  ranked: boolean;
+  costly_rows: CostlyGame[];
+}
+
+export const MISTAKE_STATUS_LABELS: Record<MistakeStatus, string> = {
+  still_costing: "Still costing you",
+  not_yet_checked: "Not yet checked",
+  fixed: "Fixed?",
+  not_reached_lately: "Not reached lately",
+};
+
+/** "4…Nf6" for the move played from a board reached after `ply` half-moves. */
+export function moveLabel(ply: number, san: string): string {
+  const n = Math.floor(ply / 2) + 1;
+  return ply % 2 === 0 ? `${n}.${san}` : `${n}…${san}`;
+}
+
+/** "≈0.27 points a month" given away: small numbers keep two decimals. */
+export const givenAway = (x: number) => `≈${x >= 1 ? x.toFixed(1) : x.toFixed(2)} point${Math.abs(x - 1) < 0.005 ? "" : "s"} given away a month`;
+
+// --- results below rating expectation --------------------------------------------------------
 
 export type PositionStatus = "still_leaking" | "new_leak" | "too_early" | "not_reached_lately" | "looks_fixed" | "improving";
 
@@ -115,6 +207,7 @@ export interface OpeningOption {
 }
 
 export interface ReviewPage {
+  mistakes: { ranked: MistakeCard[]; fixed: MistakeCard[]; coverage: MistakeCoverage };
   positions: { ranked: ReviewPosition[]; fixed: ReviewPosition[] };
   habits: ReviewHabit[];
   lost_wins: { games: LostWin[]; total: number };
@@ -171,10 +264,13 @@ export interface PositionChild {
 }
 
 export interface PositionPage {
-  node: ReviewPosition & { rob_to_move: boolean; ply: number };
+  /** The results numbers; null only for the starting position, which no game first reaches later. */
+  node: (ReviewPosition & { rob_to_move: boolean; ply: number }) | null;
   children: PositionChild[];
   games: Paged<PositionGame>;
   older_games: number;
+  /** Rob's moves from the board; null when he is never to move there. */
+  mistake: MistakeDetail | null;
 }
 
 const q = (params: Record<string, string | number>) => new URLSearchParams(Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)]))).toString();
@@ -233,12 +329,6 @@ export const STATUS_TONE: Record<PositionStatus, string> = {
  *  REVIEW_PLAYABLE_ES, which also orders a position's games). */
 export const PLAYABLE_ES = 40;
 
-/** The engine's word on a position, from Rob's expected score there. */
-export function engineLabel(es: number | null): string {
-  if (es == null) return "Engine check pending";
-  return es < PLAYABLE_ES ? "Already worse when you get here — prep it" : "Fine when you get here — results are the problem";
-}
-
 export const pct = (x: number) => `${Math.round(x * 100)}%`;
 
 /** "1.e4 d5 2.exd5 Qxd5" — a line from the start position, with move numbers. */
@@ -246,7 +336,10 @@ export function lineText(moves: string[]): string {
   return moves.map((m, i) => (i % 2 === 0 ? `${i / 2 + 1}.${m}` : m)).join(" ");
 }
 
-/** "≈1.7 points a month": a leak in game points. */
+/** "≈1.7 below expectation a month": how far results trail the rating expectation, in game points. */
+export const belowExpectation = (x: number) => `≈${x >= 10 ? x.toFixed(0) : x.toFixed(1)} below expectation a month`;
+
+/** "≈1.7 points a month": a habit's cost in game points. */
 export const pointsAMonth = (x: number) => `≈${x >= 10 ? x.toFixed(0) : x.toFixed(1)} point${Math.abs(x) >= 0.95 && Math.abs(x) < 1.05 ? "" : "s"} a month`;
 
 /** The one sentence that says why a game is worth opening:

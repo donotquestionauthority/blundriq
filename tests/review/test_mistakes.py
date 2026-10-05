@@ -174,7 +174,7 @@ def test_a_clean_opening_charges_nothing_however_the_game_ends(clean: psycopg.Co
     _flat(clean, [LINE])
     got = _section(clean)
     assert got["ranked"] == [] and got["fixed"] == []
-    assert got["coverage"] == {"decisions": 40, "covered": 40, "evaluated": 40}
+    assert got["coverage"] == {"decisions": 40, "covered": 40, "evaluated": 40, "eval_min_games": 3}
 
 
 def _scandi_with_costly_qa5(conn: psycopg.Connection[DictRow], g: Games, costly: int, fine: int) -> int:
