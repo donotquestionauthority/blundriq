@@ -286,3 +286,25 @@ def test_settings_seed_refuses_what_the_preferences_page_refuses(
     bad["ai_prompts"]["a"]["thinking_enabled"] = True
     path.write_text(json.dumps(bad))
     assert cli.main(["settings", "seed", str(path)]) == 0
+
+
+def test_player_set_names_the_platforms_never_the_handles(
+    clean: psycopg.Connection[DictRow], app_env: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Console output can end up in a public log or a pasted transcript: it reports which
+    platforms are configured, and the handles stay in the database."""
+    assert cli.main(["player", "set", "--chesscom", "handle-marker-c4e1", "--lichess", "handle-marker-9d0b"]) == 0
+    first = capsys.readouterr()
+    assert cli.main(["player", "set", "--lichess", "handle-marker-77aa"]) == 0
+    second = capsys.readouterr()
+    for out in (first, second):
+        assert "handle-marker" not in out.out + out.err
+    assert first.out.strip() == "player saved (chesscom: updated, lichess: updated)"
+    assert second.out.strip() == "player saved (chesscom: unchanged, lichess: updated)"
+    row = clean.execute(
+        "SELECT chesscom_username, lichess_username FROM players WHERE id = %s", (PLAYER_ID,)
+    ).fetchone()
+    assert row is not None and (row["chesscom_username"], row["lichess_username"]) == (
+        "handle-marker-c4e1",
+        "handle-marker-77aa",
+    )
