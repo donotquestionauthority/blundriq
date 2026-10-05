@@ -20,13 +20,16 @@ id = "postgres-dsn"
 description = "Postgres connection string"
 regex = '''postgres(ql)?://[^\s"'`]+'''
 [[rules.allowlists]]
-# Only CI's scratch server (user postgres, throwaway password "ci", localhost) and the doc
-# example. Nothing else on localhost is exempt: a localhost DSN can still carry a real
-# password (tunnels), so other credentials are never allowed.
+# Only CI's scratch server (user postgres, throwaway password "ci", localhost), the doc
+# example, and a bare local-socket DSN (`postgresql:///name`: no user, host, password or
+# parameters, so it cannot carry a credential). Nothing else on localhost is exempt: a
+# localhost DSN can still carry a real password (tunnels), so other credentials are never
+# allowed.
 regexTarget = "match"
 regexes = [
   '''^postgresql://postgres:ci@localhost:5432/[a-z_]+$''',
   '''^postgresql://localhost/blundriq_test$''',
+  '''^postgresql:///[a-z_]+$''',
 ]
 
 [[rules]]
