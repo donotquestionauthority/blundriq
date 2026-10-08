@@ -11,6 +11,7 @@ import type { PlayablePuzzlePayload, PracticeType, Puzzle, RepertoireScopeBook, 
 import { enqueue as enqueueAttempt, hasPendingAttempt, hasPendingAttemptForPuzzle, initQueueTriggers, isQueueModeAvailable, markCompleted as markAttemptCompleted, type PendingAttempt } from "../utils/attemptQueue";
 import { RepertoireScopeFilter } from "../components/RepertoireScopeFilter";
 import TodayCount from "../components/TodayCount";
+import { errorLabel } from "../utils/errorLabel";
 
 /**
  * Practice: the puzzle queue. `srs=due` is the play queue (a streaming batch consumer);
@@ -213,7 +214,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
         }
         onRecorded();
       } catch (err) {
-        console.error("Blocking-mode recordAttempt failed:", err);
+        console.error("Blocking-mode recordAttempt failed:", errorLabel(err));
         // Still held (since before the request) unless a retry from elsewhere — the recovery
         // banner, after this solver was left — landed it meanwhile.
         if (getUnsavedAttempt()?.attempt_id === attemptId) {
@@ -250,7 +251,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
       try {
         await enqueueAttempt({ attempt_id: attemptId, puzzle_id: attemptPuzzleId, solved, moves_played: movesPlayed.join(","), session_id: sessionId, presentation_ply: shownPly });
       } catch (err) {
-        console.warn("Queue enqueue failed, falling back to blocking mode:", err);
+        console.warn("Queue enqueue failed, falling back to blocking mode:", errorLabel(err));
         inFlightRef.current.delete(attemptId);
         await runBlockingMode(attemptId, solved, movesPlayed, attemptPuzzleId, sessionId, shownPly);
         return;
@@ -272,7 +273,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
         }
         onRecorded();
       } catch (err) {
-        console.error("Foreground recordAttempt failed; queued for retry:", err);
+        console.error("Foreground recordAttempt failed; queued for retry:", errorLabel(err));
         if (activePuzzleIdRef.current === attemptPuzzleId) {
           // A background tick may already have won the race; only flag a still-queued attempt.
           if (hasPendingAttempt(attemptId)) {
@@ -310,7 +311,7 @@ function HeldAttemptBanner({ attempt, onSaved }: { attempt: UnsavedAttempt; onSa
       releaseUnsavedAttempt(attempt.attempt_id);
       onSaved();
     } catch (err) {
-      console.error("Retry of a held attempt failed:", err);
+      console.error("Retry of a held attempt failed:", errorLabel(err));
     } finally {
       setSubmitting(false);
     }
@@ -504,7 +505,7 @@ function PlayMode({
       advance();
       if (status === "STATE_MISS") onNeedRefetch();
     } catch (err) {
-      console.error("skipPuzzle failed:", err);
+      console.error("skipPuzzle failed:", errorLabel(err));
     } finally {
       setSkipping(false);
     }

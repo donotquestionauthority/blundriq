@@ -7,6 +7,7 @@ import type { CreatePuzzleSource } from "../components/CreatePuzzleModal";
 import { PositionList } from "../components/PositionCard/PositionList";
 import { useApi } from "../hooks/useApi";
 import { lichessAnalyzeUrl } from "../utils/chess";
+import { errorLabel } from "../utils/errorLabel";
 
 /**
  * Recurring positions where I go wrong, new ones first, then worst first. A position is a
@@ -50,7 +51,7 @@ function List({ filters, setFilters }: { filters: BlunderFilters; setFilters: (f
   useEffect(() => {
     if (!data || isStale) return;
     stay.current ??= data.stay;
-    markSeen(data.to_acknowledge).catch((e: unknown) => console.warn("could not acknowledge the list:", e));
+    markSeen(data.to_acknowledge).catch((e: unknown) => console.warn("could not acknowledge the list:", errorLabel(e)));
   }, [data, isStale]);
 
   useEffect(() => {

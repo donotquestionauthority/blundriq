@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { configure, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import Layout from "../components/Layout";
 import { _resetUnsavedAttemptForTests, disownUnsavedAttempt, getUnsavedAttempt, holdUnsavedAttempt, isUnsavedAttemptOwned, releaseUnsavedAttempt } from "../utils/unsavedAttempt";
@@ -9,16 +9,39 @@ import { _resetRemovalsForTests } from "../utils/puzzleRemoval";
 import type { Puzzle, PuzzlesResponse } from "../practice";
 import { _resetPracticeTodayForTests } from "../practiceToday";
 
+// Headroom for a busy runner (a second jsdom file alongside); a passing test is no slower for it.
+configure({ asyncUtilTimeout: 3000 });
+
 // The board is not under test: the mock exposes a button that drops the move the test set up.
+// The solver resets itself in an effect when it mounts, and a loaded runner can show the board
+// before that effect has run: a drop dispatched in between is played, then wiped by the reset.
+// So a drop waits for this board's own mount effect, which runs in the same pass as the solver's.
+// This covers a mount only; the reset also runs if the puzzle's props change in place, which no
+// test does.
 type DropArgs = { piece: unknown; sourceSquare: string; targetSquare: string | null };
 let nextDrop: { from: string; to: string } = { from: "a1", to: "a8" };
-vi.mock("react-chessboard", () => ({
-  Chessboard: ({ options }: { options: { onPieceDrop?: (a: DropArgs) => boolean } }) => (
-    <button type="button" onClick={() => options.onPieceDrop?.({ piece: null, sourceSquare: nextDrop.from, targetSquare: nextDrop.to })}>
-      drop
-    </button>
-  ),
-}));
+vi.mock("react-chessboard", async () => {
+  const { useEffect, useRef } = await import("react");
+  return {
+    Chessboard: ({ options }: { options: { onPieceDrop?: (a: DropArgs) => boolean } }) => {
+      const latest = useRef(options);
+      latest.current = options; // the handler of the latest render, for a drop that had to wait
+      const mounted = useRef(false);
+      useEffect(() => {
+        mounted.current = true;
+      }, []);
+      const drop = (move: { from: string; to: string }) => {
+        if (!mounted.current) return void setTimeout(() => drop(move), 0);
+        latest.current.onPieceDrop?.({ piece: null, sourceSquare: move.from, targetSquare: move.to });
+      };
+      return (
+        <button type="button" onClick={() => drop(nextDrop)}>
+          drop
+        </button>
+      );
+    },
+  };
+});
 
 const puzzle = (id: number, batch: number, over: Partial<Puzzle> = {}): Puzzle => ({
   id,
@@ -647,8 +670,7 @@ describe("Practice page", () => {
   const solveTruncated = async () => {
     nextDrop = { from: "a1", to: "a7" };
     fireEvent.click(screen.getByText("drop"));
-    await vi.waitFor(() => expect(screen.getByText("drop")).toBeInTheDocument(), { timeout: 2000 });
-    await new Promise((r) => setTimeout(r, 500)); // the opponent's reply auto-plays
+    expect(await screen.findByText("Your turn", { exact: true })).toBeInTheDocument(); // the opponent's reply has played
     nextDrop = { from: "a7", to: "b7" };
     fireEvent.click(screen.getByText("drop"));
   };
@@ -1058,7 +1080,7 @@ describe("Practice page", () => {
     const saved = { status: 200, body: { detail: "attempt recorded", solved: true, attempt_summary: { total: 1, solved: 1, streak: 1 }, srs: { level: "knight", correct_at_level: 0, advance_threshold: 1, transition: null } } };
     const counter = () => {
       let solved = 3;
-      return () => ({ status: 200, body: { date: "2026-10-08", solved: solved++, tried: 5, target: 10, next_day_at: new Date(Date.now() + 3_600_000).toISOString(), now: new Date().toISOString() } });
+      return () => ({ status: 200, body: { date: "2026-10-08", solved: solved++, target: 10, next_day_at: new Date(Date.now() + 3_600_000).toISOString(), now: new Date().toISOString() } });
     };
     const reads = (calls: Array<{ path: string }>) => calls.filter((c) => c.path === "/practice/today").length;
 
@@ -1069,9 +1091,9 @@ describe("Practice page", () => {
         "/practice/today": counter(),
       });
       renderPage();
-      expect(await screen.findByRole("status", { name: "Puzzles today: 3 of 10 solved, 5 tried" })).toBeInTheDocument();
+      expect(await screen.findByRole("status", { name: "Puzzles today: 3 of 10 solved" })).toBeInTheDocument();
       fireEvent.click(screen.getByText("drop"));
-      expect(await screen.findByRole("status", { name: "Puzzles today: 4 of 10 solved, 5 tried" })).toBeInTheDocument();
+      expect(await screen.findByRole("status", { name: "Puzzles today: 4 of 10 solved" })).toBeInTheDocument();
       expect(reads(calls)).toBe(2);
     });
 
@@ -1119,10 +1141,12 @@ describe("Practice page", () => {
       renderPage();
       expect(await screen.findByText("#11")).toBeInTheDocument();
       await flush();
-      expect(screen.queryByText(/solved ·/)).toBeNull();
+      expect(screen.queryByRole("status", { name: /^Puzzles today/ })).toBeNull();
+      expect(document.body.textContent).not.toMatch(/\d+ \/ \d+ solved/);
       fireEvent.click(screen.getByText("drop"));
       expect(await screen.findByText("Next Puzzle →")).toBeInTheDocument();
-      expect(screen.queryByText(/solved ·/)).toBeNull();
+      expect(screen.queryByRole("status", { name: /^Puzzles today/ })).toBeNull();
+      expect(document.body.textContent).not.toMatch(/\d+ \/ \d+ solved/);
     });
 
     it("a count that cannot be read is absent from the dialog too, leaving no empty line", async () => {
@@ -1135,7 +1159,8 @@ describe("Practice page", () => {
       renderPage("/practice?puzzle=11");
       const dialog = await screen.findByRole("dialog", { name: "Puzzle 11" });
       await flush();
-      expect(within(dialog).queryByText(/solved ·/)).toBeNull();
+      expect(within(dialog).queryByRole("status", { name: /^Puzzles today/ })).toBeNull();
+      expect(dialog.textContent).not.toMatch(/\d+ \/ \d+ solved/);
       expect(dialog.querySelector(".basis-full")).toBeNull();
     });
   });

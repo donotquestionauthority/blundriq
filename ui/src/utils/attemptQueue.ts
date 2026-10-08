@@ -29,6 +29,8 @@
  * logger when one is set.
  */
 
+import { errorLabel } from "./errorLabel";
+
 export const QUEUE_STORE = "blundriq_pending_attempts_v1";
 const EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
 const LOG_TAG = "[attemptQueue]";
@@ -70,7 +72,7 @@ function _fireDropLog(payload: DropLogPayload): void {
   try {
     _dropLogger(payload);
   } catch (err) {
-    console.warn(`${LOG_TAG} dropLogger threw; breadcrumb lost`, err);
+    console.warn(`${LOG_TAG} dropLogger threw; breadcrumb lost`, errorLabel(err));
   }
 }
 
@@ -230,7 +232,7 @@ export async function markCompleted(attempt_id: string): Promise<void> {
       try {
         queue = readQueueStrict();
       } catch (err) {
-        console.warn(`${LOG_TAG} markCompleted skipped; read failed`, err);
+        console.warn(`${LOG_TAG} markCompleted skipped; read failed`, errorLabel(err));
         return;
       }
       const filtered = queue.filter((r) => r.attempt_id !== attempt_id);
@@ -238,11 +240,11 @@ export async function markCompleted(attempt_id: string): Promise<void> {
       try {
         writeQueue(filtered);
       } catch (err) {
-        console.warn(`${LOG_TAG} failed to remove completed attempt from queue`, err);
+        console.warn(`${LOG_TAG} failed to remove completed attempt from queue`, errorLabel(err));
       }
     });
   } catch (err) {
-    console.warn(`${LOG_TAG} markCompleted lock acquisition failed`, err);
+    console.warn(`${LOG_TAG} markCompleted lock acquisition failed`, errorLabel(err));
   }
 }
 
@@ -259,7 +261,7 @@ export function hasPendingAttemptForPuzzle(puzzle_id: number): boolean {
   try {
     return readQueueStrict().some((r) => r.puzzle_id === puzzle_id);
   } catch (err) {
-    console.warn(`${LOG_TAG} hasPendingAttemptForPuzzle read failed; assuming still pending`, err);
+    console.warn(`${LOG_TAG} hasPendingAttemptForPuzzle read failed; assuming still pending`, errorLabel(err));
     return true;
   }
 }
@@ -269,7 +271,7 @@ export function hasPendingAttempt(attempt_id: string): boolean {
   try {
     return readQueueStrict().some((r) => r.attempt_id === attempt_id);
   } catch (err) {
-    console.warn(`${LOG_TAG} hasPendingAttempt read failed; assuming still pending`, err);
+    console.warn(`${LOG_TAG} hasPendingAttempt read failed; assuming still pending`, errorLabel(err));
     return true;
   }
 }
@@ -291,7 +293,7 @@ export async function expireOldEntries(): Promise<{ expired: PendingAttempt[] }>
       try {
         queue = readQueueStrict();
       } catch (err) {
-        console.warn(`${LOG_TAG} expireOldEntries skipped; read failed`, err);
+        console.warn(`${LOG_TAG} expireOldEntries skipped; read failed`, errorLabel(err));
         return { expired: [] as PendingAttempt[] };
       }
       const now = Date.now();
@@ -301,7 +303,7 @@ export async function expireOldEntries(): Promise<{ expired: PendingAttempt[] }>
       try {
         writeQueue(remaining);
       } catch (err) {
-        console.warn(`${LOG_TAG} failed to write expiry-pruned queue`, err);
+        console.warn(`${LOG_TAG} failed to write expiry-pruned queue`, errorLabel(err));
         return { expired: [] as PendingAttempt[] };
       }
       const breadcrumbAt = Date.now();
@@ -327,7 +329,7 @@ export async function expireOldEntries(): Promise<{ expired: PendingAttempt[] }>
       return { expired };
     });
   } catch (err) {
-    console.warn(`${LOG_TAG} expireOldEntries lock acquisition failed`, err);
+    console.warn(`${LOG_TAG} expireOldEntries lock acquisition failed`, errorLabel(err));
     return { expired: [] };
   }
 }
@@ -350,7 +352,7 @@ export async function processPending(handler: (record: PendingAttempt) => Promis
     try {
       queue = readQueueStrict();
     } catch (err) {
-      console.warn(`${LOG_TAG} processPending skipped; read failed`, err);
+      console.warn(`${LOG_TAG} processPending skipped; read failed`, errorLabel(err));
       return;
     }
     for (const record of queue) {
@@ -371,7 +373,7 @@ export async function processPending(handler: (record: PendingAttempt) => Promis
             writeQueue(current);
           });
         } catch (err) {
-          console.warn(`${LOG_TAG} failed to bump attempt counters`, err);
+          console.warn(`${LOG_TAG} failed to bump attempt counters`, errorLabel(err));
         }
       }
       if (recordAlreadyRemoved) continue;
@@ -383,11 +385,11 @@ export async function processPending(handler: (record: PendingAttempt) => Promis
           try {
             onSuccess(updatedRecord);
           } catch (cbErr) {
-            console.warn(`${LOG_TAG} onSuccess callback threw`, cbErr);
+            console.warn(`${LOG_TAG} onSuccess callback threw`, errorLabel(cbErr));
           }
         }
       } catch (err) {
-        console.warn(`${LOG_TAG} retry failed for attempt ${record.attempt_id}`, err);
+        console.warn(`${LOG_TAG} retry failed for attempt ${record.attempt_id}`, errorLabel(err));
       }
     }
   } finally {

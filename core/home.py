@@ -15,7 +15,7 @@ is the run of consecutive days that met the target, ending today if today alread
 otherwise ending yesterday: an unfinished day never breaks a streak. The activity strip
 (games in the last 24 h / 7 d / 30 d / ever) is `core.activity`, the same counts Scout shows
 for an opponent. The Practice page's count of today's puzzles (`puzzles_today`) is the same
-solved number, plus the puzzles tried, and Home reads its `solved_today` from it.
+solved number, and Home reads its `solved_today` from it.
 """
 
 from __future__ import annotations
@@ -91,8 +91,7 @@ e AS (
     FROM b
 )
 SELECT e.today, e.next_day_at, e.at,
-       count(DISTINCT a.puzzle_id) FILTER (WHERE a.solved) AS solved,
-       count(DISTINCT a.puzzle_id) AS tried
+       count(DISTINCT a.puzzle_id) FILTER (WHERE a.solved) AS solved
 FROM e LEFT JOIN puzzle_attempts a
   ON a.player_id = %(pid)s
  AND a.attempt_at >= e.lo AND a.attempt_at < e.late_end + interval '3 hours'
@@ -102,24 +101,22 @@ GROUP BY e.today, e.next_day_at, e.at
 
 
 def _today_counts(conn: Connection[Any], tz: str, at: datetime | None = None) -> dict[str, Any]:
-    """Today's distinct puzzles solved and tried, the day taken at `at` (default: now) in `tz`,
-    the instant the next day starts there, and the server's own clock (`now`), so a client
-    can time the rollover without trusting its own."""
+    """Today's distinct puzzles solved, the day taken at `at` (default: now) in `tz`, the instant
+    the next day starts there, and the server's own clock (`now`), so a client can time the
+    rollover without trusting its own."""
     row = conn.execute(_TODAY_COUNTS, {"at": at, "tz": tz, "pid": PLAYER_ID}).fetchone()
     assert row is not None
     return {
         "date": row["today"].isoformat(),
         "solved": int(row["solved"]),
-        "tried": int(row["tried"]),
         "next_day_at": row["next_day_at"].astimezone(UTC).isoformat(),
         "now": row["at"].astimezone(UTC).isoformat(),
     }
 
 
 def puzzles_today(conn: Connection[Any], config: Settings) -> dict[str, Any]:
-    """Today's puzzle count for the Practice page: distinct puzzles solved (Home's number) and
-    tried (any attempt, right or wrong), the daily target, when the day rolls over, and the
-    server's clock."""
+    """Today's puzzle count for the Practice page: distinct puzzles solved (Home's number), the
+    daily target, when the day rolls over, and the server's clock."""
     return {**_today_counts(conn, config.timezone), "target": config.daily_puzzle_target}
 
 

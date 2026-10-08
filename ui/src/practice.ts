@@ -200,8 +200,6 @@ export interface PracticeToday {
   date: string;
   /** Distinct puzzles with a correct attempt today — the same number as Home's. */
   solved: number;
-  /** Distinct puzzles with any attempt today, right or wrong. */
-  tried: number;
   /** `daily_puzzle_target`; applies to `solved`. */
   target: number;
   /** When the next day starts in that zone (an instant, ISO 8601). */
