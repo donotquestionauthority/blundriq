@@ -52,7 +52,7 @@ def close_pool() -> None:
 
 
 @contextmanager
-def transaction() -> Generator[psycopg.Connection[DictRow], None, None]:
+def transaction() -> Generator[psycopg.Connection[DictRow]]:
     """Pooled connection that commits on success and rolls back on any exception."""
     with pool().connection() as conn:
         try:

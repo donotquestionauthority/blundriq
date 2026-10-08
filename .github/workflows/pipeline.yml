@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.14"
           cache: pip
       - name: Stockfish 18 (pinned to core/constants.STOCKFISH_VERSION)
         run: |

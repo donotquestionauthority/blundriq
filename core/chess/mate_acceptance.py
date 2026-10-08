@@ -236,7 +236,7 @@ def build_acceptance_map(
         return None
     try:
         start = chess.Board(fen)
-    except (ValueError, AssertionError):
+    except ValueError, AssertionError:
         return None
     if start.is_game_over():
         return None
@@ -352,7 +352,7 @@ def walk_acceptance_map(fen: str, acceptance_map: object, submitted_player_sans:
 
     try:
         board = chess.Board(fen)
-    except (ValueError, AssertionError):
+    except ValueError, AssertionError:
         return False
 
     for index, san_text in enumerate(submitted_player_sans):
@@ -374,7 +374,7 @@ def walk_acceptance_map(fen: str, acceptance_map: object, submitted_player_sans:
             return False
         try:
             board.push(chess.Move.from_uci(defence))
-        except (ValueError, AssertionError):
+        except ValueError, AssertionError:
             return False
         if board.is_game_over():
             return False

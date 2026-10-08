@@ -210,7 +210,7 @@ def build_context(row: dict[str, Any], ply: int) -> dict[str, Any]:
     white_to_move = len(fields) > 1 and fields[1] == "w"
     try:
         fullmove = int(fields[5])
-    except (IndexError, ValueError):
+    except IndexError, ValueError:
         fullmove = 1
     if len(fields) >= 6:
         fields[4] = "0"
@@ -307,7 +307,7 @@ def line_context(line: dict[str, Any], ply: int, question: str) -> dict[str, Any
     white_first = len(fields) > 1 and fields[1] == "w"
     try:
         first_number = int(fields[5])
-    except (IndexError, ValueError):
+    except IndexError, ValueError:
         first_number = 1
 
     def label(k: int) -> str:
@@ -431,7 +431,7 @@ def _failure(response: httpx.Response) -> ExplainError:
         candidate = str(error.get("type") or error.get("code") or "")
         if re.fullmatch(r"[a-z_]{1,40}", candidate):
             kind = f", {candidate}"
-    except (ValueError, AttributeError):
+    except ValueError, AttributeError:
         pass
     return ExplainError(502, f"AI provider refused the call (HTTP {response.status_code}{kind})")
 
@@ -466,7 +466,7 @@ def call_provider(model: str, rendered: str, eff: dict[str, Any], client: httpx.
             cut_off = data.get("stop_reason") == "max_tokens"
             usage = data.get("usage") or {}
             tokens = (usage.get("input_tokens"), usage.get("output_tokens"))
-    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+    except ValueError, KeyError, IndexError, TypeError, AttributeError:
         raise ExplainError(502, "AI provider sent a reply that could not be read") from None
     if not text:
         raise ExplainError(502, "AI provider sent a reply with no text (raise max tokens?)")

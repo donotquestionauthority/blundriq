@@ -151,7 +151,7 @@ def sample(rows: Iterable[list[str]], config: Settings, stats: ImportStats) -> d
                 nb_plays=int(fields[_NB_PLAYS]),
                 themes=sorted(themes),
             )
-        except (IndexError, ValueError):
+        except IndexError, ValueError:
             continue
 
         for theme in matched:
@@ -193,7 +193,7 @@ def materialise(survivors: dict[str, Candidate], stats: ImportStats) -> list[Row
                     raise ValueError(uci)  # python-chess will happily push an illegal move
                 solution.append(board.san(move))
                 board.push(move)
-        except (ValueError, AssertionError, IndexError):
+        except ValueError, AssertionError, IndexError:
             stats.unreplayable += 1
             continue
         if not solution:

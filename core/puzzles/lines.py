@@ -22,7 +22,7 @@ def fen_sequence(fen: str, solution_line: list[str]) -> list[str]:
     fens = [fen]
     try:
         board = chess.Board(fen)
-    except (ValueError, AssertionError):
+    except ValueError, AssertionError:
         return fens
     for move_san in solution_line:
         move = parse_san(board, move_san)
@@ -44,7 +44,7 @@ def is_mate_line(fen: str, solution_line: list[str], color: str) -> tuple[bool, 
     """
     try:
         board = chess.Board(fen)
-    except (ValueError, AssertionError):
+    except ValueError, AssertionError:
         return False, -1
     player_is_white = color == "w"
     last_player_ply = -1

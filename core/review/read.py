@@ -73,7 +73,7 @@ def _peak(events: list[Event]) -> float | None:
     for e in events:
         try:
             peaks.append(float(e["evidence"].get("game_peak_es")))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             pass
     return max(peaks) if peaks else None
 

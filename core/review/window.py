@@ -78,7 +78,7 @@ def _as_list(value: Any) -> Any:
     if isinstance(value, str):
         try:
             return json.loads(value)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return None
     return value
 

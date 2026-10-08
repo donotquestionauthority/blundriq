@@ -67,7 +67,7 @@ def with_dbname(url: str, name: str) -> str:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _close_the_api_pool() -> Generator[None, None, None]:
+def _close_the_api_pool() -> Generator[None]:
     """API tests open `core.db`'s pool; close it before the interpreter exits, where its
     threads could no longer be joined."""
     yield
@@ -75,7 +75,7 @@ def _close_the_api_pool() -> Generator[None, None, None]:
 
 
 @pytest.fixture(scope="session")
-def fresh_db_url() -> Generator[str, None, None]:
+def fresh_db_url() -> Generator[str]:
     if not TEST_DB_URL:
         pytest.skip("TEST_DATABASE_URL not set")
     refused = scratch_refusal(TEST_DB_URL, APP_DB_URL)
@@ -91,7 +91,7 @@ def fresh_db_url() -> Generator[str, None, None]:
 
 
 @pytest.fixture()
-def conn(fresh_db_url: str) -> Generator[psycopg.Connection[DictRow], None, None]:
+def conn(fresh_db_url: str) -> Generator[psycopg.Connection[DictRow]]:
     with psycopg.Connection[DictRow].connect(fresh_db_url, row_factory=dict_row) as c:
         c.execute("DELETE FROM settings")  # tests start from defaults; API tests may have committed a row
         c.commit()
@@ -110,7 +110,7 @@ def reset_game_data(conn: psycopg.Connection[DictRow]) -> None:
 
 
 @pytest.fixture()
-def clean(conn: psycopg.Connection[DictRow]) -> Generator[psycopg.Connection[DictRow], None, None]:
+def clean(conn: psycopg.Connection[DictRow]) -> Generator[psycopg.Connection[DictRow]]:
     """A connection over a database with no game data; tests using it may commit.
     The data is cleared again afterwards so explicit ids never collide with later serial ones."""
     reset_game_data(conn)

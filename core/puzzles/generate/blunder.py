@@ -61,7 +61,7 @@ def truncate_solution(fen: str, best_line: str | None, max_player_plies: int) ->
         return None
     try:
         board = chess.Board(fen)
-    except (ValueError, AssertionError):
+    except ValueError, AssertionError:
         return None
     best_move = parse_san(board, tokens[0])
     if best_move is None:

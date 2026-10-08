@@ -22,7 +22,7 @@ from tests.review.helpers import analysed_game, events_of, qh_ctx
 
 
 @pytest.fixture()
-def url(fresh_db_url: str) -> Generator[str, None, None]:
+def url(fresh_db_url: str) -> Generator[str]:
     with psycopg.Connection[DictRow].connect(fresh_db_url, row_factory=dict_row) as c:
         reset_game_data(c)
     yield fresh_db_url

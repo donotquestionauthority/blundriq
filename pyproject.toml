@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "blundriq"
 version = "0.1.0"
 description = "Personal chess improvement tool: blunders, repertoire deviations, puzzles, scouting, review."
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = [
@@ -40,7 +40,7 @@ core = ["sql/schema.sql", "sql/migrations/*"]
 # --- ruff -------------------------------------------------------------------
 [tool.ruff]
 line-length = 120
-target-version = "py311"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "TID", "UP"]
@@ -65,7 +65,7 @@ select = ["E", "F", "I", "B", "TID", "UP"]
 include = ["core", "api", "pipeline", "tests"]
 venvPath = "."
 venv = ".venv"
-pythonVersion = "3.11"
+pythonVersion = "3.14"
 typeCheckingMode = "standard"
 strict = ["core"]
 
