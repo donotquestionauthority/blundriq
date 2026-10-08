@@ -85,12 +85,6 @@
     -150,
     600
   ],
-  "coverage_mastered_success_pct": 80,
-  "coverage_practice_min_attempts": 3,
-  "coverage_recent_games_window": 1000,
-  "coverage_strength_found_rate_pct": 80,
-  "coverage_weakness_min_occurrences": 5,
-  "coverage_weakness_miss_rate_pct": 50,
   "daily_game_target": 1,
   "daily_puzzle_target": 10,
   "deviation_puzzle_min_occurrences": 3,
@@ -132,7 +126,6 @@
   "puzzle_mix_motifs_first_class_pct": 20,
   "puzzle_mix_motifs_remaining_pct": 35,
   "puzzle_mix_own_missed_mate_pct": 10,
-  "puzzle_mix_window": 50,
   "puzzle_mix_your_puzzles_pct": 25,
   "repertoire_puzzle_lookahead_moves": 1,
   "reply_cap": 4,
@@ -148,13 +141,10 @@
   "review_min_costly_games": 3,
   "review_missed_win_shed": 15,
   "review_mistake_floor_es": 3,
-  "review_pool_floor_eco": 8,
-  "review_pool_floor_line": 5,
   "review_position_max_ply": 24,
   "review_position_min_games": 5,
   "review_quiesce_max_plies": 6,
   "review_recency_half_life_days": 30,
-  "review_recency_half_life_games": 200,
   "review_show_timer": true,
   "scout_bayesian_prior_strength": 10,
   "scout_default_last_n_games": 500,
@@ -174,7 +164,5 @@
   "srs_wrong_retry_hours": 1,
   "time_class_focus": "rapid_plus",
   "timezone": "America/New_York",
-  "weak_motif_min_occurrences": 2,
-  "weak_motif_target_count": 20,
-  "weak_motif_theme_cap_pct": 40
+  "weak_motif_min_occurrences": 2
 }
