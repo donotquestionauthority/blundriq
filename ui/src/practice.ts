@@ -181,9 +181,36 @@ export interface AttemptBody {
  * the original verdict without re-applying SRS); `session_id` is stable across the retries of
  * one play-through, and only the first attempt of a session scores.
  */
-export function recordAttempt(puzzleId: number, body: AttemptBody): Promise<AttemptResponse> {
-  return api.post<AttemptResponse>(`/practice/puzzles/${puzzleId}/attempt`, body);
+export async function recordAttempt(puzzleId: number, body: AttemptBody): Promise<AttemptResponse> {
+  const response = await api.post<AttemptResponse>(`/practice/puzzles/${puzzleId}/attempt`, body);
+  window.dispatchEvent(new Event(ATTEMPT_SAVED_EVENT));
+  return response;
 }
+
+/**
+ * Fired on `window` after the server acknowledged an attempt, never after a failure. Every save
+ * path (the solver, blocking mode and its Retry, the held-attempt banner, the durable queue)
+ * goes through `recordAttempt`, so this is the one place that knows an attempt landed.
+ */
+export const ATTEMPT_SAVED_EVENT = "blundriq:attempt-saved";
+
+/** Today's puzzles, the day taken in the `timezone` setting (GET /practice/today). */
+export interface PracticeToday {
+  /** The calendar day, YYYY-MM-DD. */
+  date: string;
+  /** Distinct puzzles with a correct attempt today — the same number as Home's. */
+  solved: number;
+  /** Distinct puzzles with any attempt today, right or wrong. */
+  tried: number;
+  /** `daily_puzzle_target`; applies to `solved`. */
+  target: number;
+  /** When the next day starts in that zone (an instant, ISO 8601). */
+  next_day_at: string;
+  /** The server's clock when it answered: the rollover is timed from this, not the browser's. */
+  now: string;
+}
+
+export const getPracticeToday = () => api.get<PracticeToday>("/practice/today");
 
 export async function getPuzzleById(id: number): Promise<PlayablePuzzlePayload> {
   return withThemes(await api.get<PlayablePuzzlePayload>(`/practice/puzzles/${id}`));

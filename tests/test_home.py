@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import psycopg
@@ -355,6 +355,96 @@ def test_days_are_bucketed_in_the_configured_timezone(db: psycopg.Connection[Dic
     ):
         assert home._per_day(db, home._PUZZLE_DAYS, tz) == {day: 1}, tz
         assert home._per_day(db, home._GAME_DAYS, tz) == {day: 1}, tz
+
+
+def _attempt_at(conn: psycopg.Connection[DictRow], puzzle_id: int, at: str, *, solved: bool) -> None:
+    conn.execute(
+        "INSERT INTO puzzle_attempts (puzzle_id, player_id, solved, attempt_at) VALUES (%s, %s, %s, %s)",
+        (puzzle_id, PLAYER_ID, solved, at),
+    )
+
+
+def test_todays_count_is_distinct_puzzles_solved_and_tried(db: psycopg.Connection[DictRow]) -> None:
+    """Wrong, wrong, right on one puzzle and wrong on another: one solved, two tried."""
+    a, b = _puzzle(db), _puzzle(db, fen=B, line=["e4"])
+    _attempt(db, a, solved=False)
+    _attempt(db, a, solved=False)
+    _attempt(db, a)
+    _attempt(db, b, solved=False)
+    _attempt(db, b, days_ago=1)  # yesterday's counts for nothing today
+    today = home.puzzles_today(db, Settings(timezone="UTC", daily_puzzle_target=7))
+    assert (today["solved"], today["tried"], today["target"]) == (1, 2, 7)
+    assert today["date"] == home._today(db, "UTC").isoformat()
+
+
+def test_nothing_today_is_zero_and_the_day_still_has_an_end(db: psycopg.Connection[DictRow]) -> None:
+    today = home.puzzles_today(db, Settings(timezone="UTC"))
+    assert (today["solved"], today["tried"]) == (0, 0)
+    assert datetime.fromisoformat(today["next_day_at"]) > datetime.now(UTC)
+
+
+def test_todays_count_takes_the_day_in_the_settings_zone_not_the_sessions(db: psycopg.Connection[DictRow]) -> None:
+    """23:59 and 00:01 in New York are two days there, whatever zone the connection is in."""
+    db.execute("SELECT set_config('TimeZone', 'Asia/Tokyo', false)")
+    p, q = _puzzle(db), _puzzle(db, fen=B, line=["e4"])
+    _attempt_at(db, p, "2026-03-03T23:59:00-05:00", solved=True)
+    _attempt_at(db, q, "2026-03-04T00:01:00-05:00", solved=False)
+    ny = "America/New_York"
+    before = home._today_counts(db, ny, datetime.fromisoformat("2026-03-03T23:59:30-05:00"))
+    after = home._today_counts(db, ny, datetime.fromisoformat("2026-03-04T00:00:30-05:00"))
+    assert (before["date"], before["solved"], before["tried"]) == ("2026-03-03", 1, 1)
+    assert (after["date"], after["solved"], after["tried"]) == ("2026-03-04", 0, 1)
+    assert before["next_day_at"] == "2026-03-04T05:00:00+00:00"
+
+
+def test_the_next_day_starts_at_local_midnight_across_a_clock_change(db: psycopg.Connection[DictRow]) -> None:
+    """New York springs forward on 8 March 2026 and falls back on 1 November."""
+    ny = "America/New_York"
+    spring = home._today_counts(db, ny, datetime.fromisoformat("2026-03-08T12:00:00-04:00"))
+    fall = home._today_counts(db, ny, datetime.fromisoformat("2026-10-31T12:00:00-04:00"))
+    autumn = home._today_counts(db, ny, datetime.fromisoformat("2026-11-01T12:00:00-05:00"))
+    assert spring["next_day_at"] == "2026-03-09T04:00:00+00:00"
+    assert fall["next_day_at"] == "2026-11-01T04:00:00+00:00"
+    assert autumn["next_day_at"] == "2026-11-02T05:00:00+00:00"
+
+
+def test_an_attempt_at_midnight_exactly_belongs_to_the_new_day(db: psycopg.Connection[DictRow]) -> None:
+    p = _puzzle(db)
+    _attempt_at(db, p, "2026-03-04T00:00:00-05:00", solved=True)
+    ny = "America/New_York"
+    assert home._today_counts(db, ny, datetime.fromisoformat("2026-03-03T23:00:00-05:00"))["tried"] == 0
+    assert home._today_counts(db, ny, datetime.fromisoformat("2026-03-04T01:00:00-05:00"))["tried"] == 1
+
+
+def test_a_midnight_the_clocks_repeat_splits_the_days_as_home_does(db: psycopg.Connection[DictRow]) -> None:
+    """Havana goes back from 01:00 to 00:00 on 1 November 2026: local midnight happens twice,
+    at 04:00 and 05:00 UTC. An attempt at 04:30 UTC is already the 1st there (00:30), for the
+    streak's bucketing and for today's count alike, and the 31st ends at the FIRST midnight."""
+    havana = "America/Havana"
+    p = _puzzle(db)
+    _attempt_at(db, p, "2026-11-01T04:30:00Z", solved=True)
+    oct31 = home._today_counts(db, havana, datetime.fromisoformat("2026-10-31T20:00:00Z"))
+    nov1 = home._today_counts(db, havana, datetime.fromisoformat("2026-11-01T12:00:00Z"))
+    assert (oct31["date"], oct31["tried"]) == ("2026-10-31", 0)
+    assert (nov1["date"], nov1["solved"], nov1["tried"]) == ("2026-11-01", 1, 1)
+    assert oct31["next_day_at"] == "2026-11-01T04:00:00+00:00"
+    assert home._per_day(db, home._PUZZLE_DAYS, havana) == {date(2026, 11, 1): 1}
+
+
+def test_the_answer_carries_the_servers_clock(db: psycopg.Connection[DictRow]) -> None:
+    at = datetime.fromisoformat("2026-03-03T12:00:00-05:00")
+    assert home._today_counts(db, "America/New_York", at)["now"] == "2026-03-03T17:00:00+00:00"
+
+
+def test_home_and_practice_count_the_same_solved_puzzles(db: psycopg.Connection[DictRow]) -> None:
+    config = Settings(timezone="UTC", daily_puzzle_target=3)
+    a, b = _puzzle(db), _puzzle(db, fen=B, line=["e4"])
+    _attempt(db, a)
+    _attempt(db, a)
+    _attempt(db, b, solved=False)
+    page, today = home.page(db, config), home.puzzles_today(db, config)
+    assert page["puzzles"]["solved_today"] == today["solved"] == 1
+    assert page["puzzles"]["target"] == today["target"] == 3
 
 
 def test_the_page_reports_new_blunders_until_the_list_has_shown_them(db: psycopg.Connection[DictRow]) -> None:
