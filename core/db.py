@@ -41,6 +41,16 @@ def pool() -> ConnectionPool[psycopg.Connection[DictRow]]:
     return _pool
 
 
+def close_pool() -> None:
+    """Close the API's pool if one was opened, and forget it. Its worker threads are joined
+    here, while the interpreter is still running; left to the garbage collector at exit they
+    cannot be (Python 3.14 refuses to join threads during finalization)."""
+    global _pool
+    if _pool is not None:
+        _pool.close()
+        _pool = None
+
+
 @contextmanager
 def transaction() -> Generator[psycopg.Connection[DictRow], None, None]:
     """Pooled connection that commits on success and rolls back on any exception."""

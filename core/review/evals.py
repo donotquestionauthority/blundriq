@@ -23,11 +23,12 @@ so a row written before migration 010 (no best move) is re-evaluated once and co
 as a new one would.
 
 Idempotent: a board with a best move or a terminal outcome is never a candidate again. Each
-evaluation is committed on its own, so an interrupted run keeps what it did. `workers` engines
-run in separate processes (one thread each, as the analyser runs them); the parent keeps the
-connection and writes every row. A worker whose engine does not start answers with that and
-the run stops, counting what it did not evaluate as failed; nothing a worker raises reaches
-the console beyond its class chain.
+evaluation is committed on its own, so an interrupted run keeps what it did. With `workers`
+above one the boards go out in chunks to that many processes; each chunk opens one engine (one
+thread, as the analyser runs it), evaluates its boards and closes the engine before it returns,
+so no worker ends with an engine still running. The parent keeps the connection and writes
+every row. An engine that does not start answers with that and the run stops, counting what it
+did not evaluate as failed; nothing a worker raises reaches the console beyond its class chain.
 """
 
 from __future__ import annotations
@@ -130,52 +131,41 @@ _WRITE = """
         computed_at = EXCLUDED.computed_at
 """
 
-# A worker process's engine, opened once by `_init_worker`, or the class chain of the error that
-# kept it from opening.
-_worker: dict[str, Any] = {}
-
 # An answer whose label starts with this says the worker's engine never started: the run stops
 # there rather than feeding the rest of the work to engines that cannot answer.
 NO_ENGINE = "engine did not start: "
 
+# Boards per worker task. Each task opens and closes its own engine: python-chess drives
+# Stockfish from a non-daemon thread, a process joins its non-daemon threads before it exits (and
+# Python 3.14's workers do so before any exit hook), so an engine must be closed by the task that
+# opened it, never left for the worker's exit. Small enough that an interrupted run loses little.
+EVAL_CHUNK = 25
 
-def _init_worker(engine: Engine) -> None:
-    """Open this worker's engine. A failure is kept, never raised: a pool whose initializer raises
-    replaces the worker and tries again for ever, and the child would print the traceback. The
-    engine is closed when the worker exits: python-chess drives Stockfish from a non-daemon
-    thread, and a worker process waits for its non-daemon threads before it ends, so an engine
-    left open would keep the pool's shutdown waiting for ever."""
-    from multiprocessing import util
 
+def _analyse_chunk(engine: Engine, items: list[tuple[int, str]]) -> list[Answer]:
+    """One worker task: open an engine, answer every (key, fen), close the engine. A failure to
+    start is an answer for every board in the chunk, never raised (the child would print it)."""
     from core.notify import error_label
 
     try:
         manager = engine()
-        _worker["analyse"] = manager.__enter__()
+        analyse = manager.__enter__()
     except Exception as exc:
-        _worker["startup"] = error_label(exc)
-        return
-    util.Finalize(None, _close_quietly, args=(manager,), exitpriority=10)
-
-
-def _close_quietly(manager: AbstractContextManager[Analyser]) -> None:
+        label = NO_ENGINE + error_label(exc)
+        return [(key, None, label) for key, _ in items]
+    answers: list[Answer] = []
     try:
-        manager.__exit__(None, None, None)
-    except Exception:  # the engine may already be gone; the worker is ending either way
-        pass
-
-
-def _analyse_in_worker(item: tuple[int, str]) -> Answer:
-    """(key, the engine's answer, the class chain of an exception if it raised)."""
-    from core.notify import error_label
-
-    key, fen = item
-    if "startup" in _worker:
-        return key, None, NO_ENGINE + str(_worker["startup"])
-    try:
-        return key, _worker["analyse"](chess.Board(fen)), None
-    except Exception as exc:
-        return key, None, error_label(exc)
+        for key, fen in items:
+            try:
+                answers.append((key, analyse(chess.Board(fen)), None))
+            except Exception as exc:
+                answers.append((key, None, error_label(exc)))
+    finally:
+        try:
+            manager.__exit__(None, None, None)
+        except Exception:  # the engine may already be gone; the answers stand
+            pass
+    return answers
 
 
 @contextmanager
@@ -193,16 +183,18 @@ def _answers(engine: Engine, work: list[tuple[int, str]], workers: int) -> Gener
 
             yield serial()
         return
-    pool = ProcessPoolExecutor(max_workers=workers, initializer=_init_worker, initargs=(engine,))
+    pool = ProcessPoolExecutor(max_workers=workers)
     try:
-        futures = {pool.submit(_analyse_in_worker, item): item[0] for item in work}
+        chunks = [work[i : i + EVAL_CHUNK] for i in range(0, len(work), EVAL_CHUNK)]
+        futures = {pool.submit(_analyse_chunk, engine, chunk): chunk for chunk in chunks}
 
         def pooled() -> Iterator[Answer]:
             for future in as_completed(futures):
                 try:
-                    yield future.result()
+                    yield from future.result()
                 except BrokenProcessPool:
-                    yield futures[future], None, "BrokenProcessPool"
+                    for key, _ in futures[future]:
+                        yield key, None, "BrokenProcessPool"
 
         yield pooled()
     finally:

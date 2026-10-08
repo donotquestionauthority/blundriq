@@ -18,7 +18,7 @@ import pytest
 from psycopg import sql
 from psycopg.rows import DictRow, dict_row
 
-from core import schema
+from core import db, schema
 
 TEST_DB_URL: str = os.environ.get("TEST_DATABASE_URL", "")  # noqa: TID251
 APP_DB_URL: str = os.environ.get("DATABASE_URL", "")  # noqa: TID251 — only compared, never connected to
@@ -64,6 +64,14 @@ def with_dbname(url: str, name: str) -> str:
     from psycopg.conninfo import make_conninfo
 
     return make_conninfo(url, dbname=name)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _close_the_api_pool() -> Generator[None, None, None]:
+    """API tests open `core.db`'s pool; close it before the interpreter exits, where its
+    threads could no longer be joined."""
+    yield
+    db.close_pool()
 
 
 @pytest.fixture(scope="session")

@@ -888,6 +888,7 @@ def _run_in_a_process(url: str, engine: str, seconds: int = 90) -> tuple[dict[st
     import signal
     import subprocess
     import sys
+    import time
 
     proc = subprocess.Popen(
         [sys.executable, "-c", _RUN_IN_CHILD, url, engine],
@@ -904,13 +905,22 @@ def _run_in_a_process(url: str, engine: str, seconds: int = 90) -> tuple[dict[st
         proc.communicate()
         pytest.fail("the run did not return")
     assert proc.returncode == 0, err[-2000:]
-    try:  # nothing it started (workers, engines) is still running
-        os.killpg(proc.pid, 0)
-    except ProcessLookupError:
-        pass
-    else:
-        os.killpg(proc.pid, signal.SIGKILL)
-        pytest.fail("the run left processes behind")
+    # Nothing it started (workers, engines) may outlive it. Where the start method is
+    # `forkserver` (the Linux default since Python 3.14) the server exits on its own once its
+    # parent has gone, a moment after the run returns, so the group gets a few seconds to empty.
+    deadline = time.monotonic() + 5.0
+    while True:
+        try:
+            os.killpg(proc.pid, 0)
+        except ProcessLookupError:
+            break
+        if time.monotonic() >= deadline:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:  # it emptied in between
+                break
+            pytest.fail("the run left processes behind")
+        time.sleep(0.1)
     return json.loads(out.strip().splitlines()[-1]), err
 
 
