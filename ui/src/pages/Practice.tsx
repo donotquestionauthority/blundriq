@@ -10,6 +10,7 @@ import { getPuzzleById, getPuzzles, getRepertoireScopes, isRotationPuzzle, LAST_
 import type { PlayablePuzzlePayload, PracticeType, Puzzle, RepertoireScopeBook, PuzzleGameLink, PuzzleSrs, SrsFilter, SrsLevel } from "../practice";
 import { enqueue as enqueueAttempt, hasPendingAttempt, hasPendingAttemptForPuzzle, initQueueTriggers, isQueueModeAvailable, markCompleted as markAttemptCompleted, type PendingAttempt } from "../utils/attemptQueue";
 import { RepertoireScopeFilter } from "../components/RepertoireScopeFilter";
+import TodayCount from "../components/TodayCount";
 
 /**
  * Practice: the puzzle queue. `srs=due` is the play queue (a streaming batch consumer);
@@ -604,8 +605,13 @@ function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onNavigationLock }:
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4" role="dialog" aria-label={`Puzzle ${puzzle.id}`}>
       <div className="max-h-[90svh] w-full max-w-xl overflow-y-auto rounded border border-zinc-200 bg-white p-4 shadow-xl dark:border-zinc-800 dark:bg-zinc-950">
-        <div className="flex items-start justify-between gap-3">
-          <PuzzleHeader puzzle={puzzle} />
+        {/* The count sits beside Close; on a phone it drops to its own line under the title,
+            still above the board, where the dialog opens. */}
+        <div className="flex flex-wrap items-start justify-between gap-x-3">
+          <div className="min-w-0 flex-1">
+            <PuzzleHeader puzzle={puzzle} />
+          </div>
+          <TodayCount variant="dialog" className="order-last mb-3 basis-full sm:order-none sm:basis-auto" />
           <button
             type="button"
             onClick={onClose}
@@ -932,6 +938,8 @@ export default function Practice() {
   // its puzzles is on the page; fetched only while the Repertoire type is showing.
   const { data: scopeData, error: scopeError } = useApi(() => (type === "repertoire" ? getRepertoireScopes() : Promise.resolve(null)), [type]);
   const repertoireScopes = type === "repertoire" ? (scopeData ?? null) : undefined;
+  // The dialog covers the toolbar and carries its own copy of the count.
+  const dialogOpen = !orphaned && (deepLinkPuzzle !== null || openPuzzle !== null);
 
   return (
     <div>
@@ -960,6 +968,7 @@ export default function Practice() {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          <TodayCount variant="toolbar" quiet={dialogOpen} />
           {data && srsFilter === "due" && <span className="text-xs text-zinc-500">{data.mastered_count} mastered</span>}
           <FiltersPopover disabled={navLocked} subtype={subtype} onSubtypeChange={setSubtype} subtypeOptions={subtypeOptions} repertoireScopes={repertoireScopes} repertoireScopesError={type === "repertoire" ? scopeError : null} srsFilter={srsFilter} onSrsChange={setSrsFilter} lastNGames={lastNGames} onPeriodChange={setLastNGames} />
         </div>

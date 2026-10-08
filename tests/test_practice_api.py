@@ -1,4 +1,4 @@
-"""The four Practice routes over a seeded database."""
+"""The Practice routes over a seeded database."""
 
 from __future__ import annotations
 
@@ -65,6 +65,7 @@ def test_the_routes_need_a_session(app_env: None) -> None:
     assert c.post("/practice/puzzles/1/attempt", json={"solved": True}).status_code == 401
     assert c.post("/practice/skip", json={"batch_id": 1, "puzzle_id": 1}).status_code == 401
     assert c.get("/practice/repertoire-scopes").status_code == 401
+    assert c.get("/practice/today").status_code == 401
 
 
 def test_the_queue_serves_a_batch_with_the_page_s_context(client: tuple[TestClient, int]) -> None:
@@ -189,3 +190,20 @@ def test_the_list_routes_and_the_scopes_route_serve_a_scope_s_own_puzzle(
         (2, 1, [(3, 1)]),
     ]
     assert [line["id"] for line in tree[0]["chapters"][0]["lines"]] == [1]
+
+
+def test_today_counts_the_attempts_the_attempt_route_recorded(client: tuple[TestClient, int]) -> None:
+    c, pid = client
+    before = c.get("/practice/today")
+    assert before.status_code == 200
+    body = before.json()
+    assert set(body) == {"date", "solved", "tried", "target", "next_day_at", "now"}
+    assert (body["solved"], body["tried"]) == (0, 0)
+    for solved, moves in ((False, "Qh5"), (True, "Nxe5,d4")):
+        r = c.post(
+            f"/practice/puzzles/{pid}/attempt",
+            json={"solved": solved, "moves_played": moves, "attempt_id": str(uuid.uuid4())},
+        )
+        assert r.status_code == 200, r.text
+    after = c.get("/practice/today").json()
+    assert (after["solved"], after["tried"]) == (1, 1)

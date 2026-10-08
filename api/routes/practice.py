@@ -5,6 +5,7 @@ POST /practice/puzzles/{id}/attempt grade and record one attempt
 POST /practice/skip                 defer a served item
 GET  /practice/puzzles/{id}         the immutable solver payload for `?puzzle=<id>`
 GET  /practice/repertoire-scopes    books, chapters and lines that have a repertoire puzzle, with counts
+GET  /practice/today                today's puzzles solved and tried, the target, and when the day rolls over
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from api import auth
-from core import db, settings
+from core import db, home, settings
 from core.constants import CC0_SERVE_THEMES
 from core.puzzles import attempts, serve, srs, visibility
 
@@ -62,6 +63,12 @@ def get_puzzles(
         "mint_ahead_threshold": threshold,
         "served_themes": list(CC0_SERVE_THEMES),
     }
+
+
+@router.get("/today")
+def get_today() -> dict[str, Any]:
+    with db.transaction() as conn:
+        return home.puzzles_today(conn, settings.load(conn))
 
 
 def _rep_scope(ptype: str, subtype: str | None) -> visibility.RepScope | None:

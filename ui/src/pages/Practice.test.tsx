@@ -7,6 +7,7 @@ import Practice from "./Practice";
 import { _resetProbesForTests, QUEUE_STORE } from "../utils/attemptQueue";
 import { _resetRemovalsForTests } from "../utils/puzzleRemoval";
 import type { Puzzle, PuzzlesResponse } from "../practice";
+import { _resetPracticeTodayForTests } from "../practiceToday";
 
 // The board is not under test: the mock exposes a button that drops the move the test set up.
 type DropArgs = { piece: unknown; sourceSquare: string; targetSquare: string | null };
@@ -94,6 +95,7 @@ describe("Practice page", () => {
     _resetProbesForTests();
     _resetUnsavedAttemptForTests();
     _resetRemovalsForTests();
+    _resetPracticeTodayForTests();
   });
   afterEach(() => {
     Object.defineProperty(navigator, "locks", { value: undefined, configurable: true });
@@ -1050,5 +1052,91 @@ describe("Practice page", () => {
     expect(await screen.findByText("#22")).toBeInTheDocument();
     expect(calls.some((c) => c.path === "/practice/skip")).toBe(false); // stepped off, not skipped
     expect(screen.getByText("← Previous")).toBeDisabled();
+  });
+
+  describe("today's count", () => {
+    const saved = { status: 200, body: { detail: "attempt recorded", solved: true, attempt_summary: { total: 1, solved: 1, streak: 1 }, srs: { level: "knight", correct_at_level: 0, advance_threshold: 1, transition: null } } };
+    const counter = () => {
+      let solved = 3;
+      return () => ({ status: 200, body: { date: "2026-10-08", solved: solved++, tried: 5, target: 10, next_day_at: new Date(Date.now() + 3_600_000).toISOString(), now: new Date().toISOString() } });
+    };
+    const reads = (calls: Array<{ path: string }>) => calls.filter((c) => c.path === "/practice/today").length;
+
+    it("sits in the toolbar in every view and moves after a solve in the queue", async () => {
+      const calls = stubFetch({
+        "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1), puzzle(12, 1)], 1, 1) }),
+        "/practice/puzzles/11/attempt": () => saved,
+        "/practice/today": counter(),
+      });
+      renderPage();
+      expect(await screen.findByRole("status", { name: "Puzzles today: 3 of 10 solved, 5 tried" })).toBeInTheDocument();
+      fireEvent.click(screen.getByText("drop"));
+      expect(await screen.findByRole("status", { name: "Puzzles today: 4 of 10 solved, 5 tried" })).toBeInTheDocument();
+      expect(reads(calls)).toBe(2);
+    });
+
+    it("shows inside the dialog over the list, where only that copy announces, and both copies update after a solve", async () => {
+      const calls = stubFetch({
+        "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1)], 1, 1) }),
+        "/practice/puzzles/11/attempt": () => saved,
+        "/practice/today": counter(),
+      });
+      renderPage("/practice?srs=all");
+      expect(await screen.findByRole("status", { name: /3 of 10 solved/ })).toBeInTheDocument();
+      fireEvent.click(await screen.findByText("#11"));
+      const dialog = await screen.findByRole("dialog", { name: "Puzzle 11" });
+      expect(within(dialog).getByRole("status", { name: /3 of 10 solved/ })).toBeInTheDocument();
+      expect(screen.getAllByRole("status", { name: /solved/ })).toHaveLength(1); // the covered toolbar copy is quiet
+      expect(screen.getAllByText(/3 \/ 10/)).toHaveLength(2);
+      fireEvent.click(within(dialog).getByText("drop"));
+      expect(await within(dialog).findByRole("status", { name: /4 of 10 solved/ })).toBeInTheDocument();
+      expect(screen.getAllByText(/4 \/ 10/)).toHaveLength(2);
+      expect(reads(calls)).toBe(2); // one store, one read per change
+    });
+
+    it("shows inside a deep-linked dialog", async () => {
+      stubFetch({
+        "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1)], 1, 1) }),
+        "/practice/puzzles/11": () => ({ status: 200, body: { id: 11, fen: puzzle(11, 1).fen, solution_line: ["Ra8#"], color: "w", acceptance_map: null, source_types: ["blunder"], themes: [], is_repertoire: false, presentation_ply: null } }),
+        "/practice/puzzles/11/attempt": () => saved,
+        "/practice/today": counter(),
+      });
+      renderPage("/practice?puzzle=11");
+      const dialog = await screen.findByRole("dialog", { name: "Puzzle 11" });
+      expect(await within(dialog).findByRole("status", { name: /3 of 10 solved/ })).toBeInTheDocument();
+      expect(screen.getAllByRole("status", { name: /solved/ })).toHaveLength(1); // the covered toolbar copy is quiet here too
+      fireEvent.click(within(dialog).getAllByText("drop")[0]);
+      expect(await within(dialog).findByRole("status", { name: /4 of 10 solved/ })).toBeInTheDocument();
+    });
+
+    it("a count that cannot be read is simply absent, and practice goes on", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      stubFetch({
+        "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1)], 1, 1) }),
+        "/practice/puzzles/11/attempt": () => saved,
+        "/practice/today": () => ({ status: 500, body: { detail: "boom" } }),
+      });
+      renderPage();
+      expect(await screen.findByText("#11")).toBeInTheDocument();
+      await flush();
+      expect(screen.queryByText(/solved ·/)).toBeNull();
+      fireEvent.click(screen.getByText("drop"));
+      expect(await screen.findByText("Next Puzzle →")).toBeInTheDocument();
+      expect(screen.queryByText(/solved ·/)).toBeNull();
+    });
+
+    it("a count that cannot be read is absent from the dialog too, leaving no empty line", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      stubFetch({
+        "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1)], 1, 1) }),
+        "/practice/puzzles/11": () => ({ status: 200, body: { id: 11, fen: puzzle(11, 1).fen, solution_line: ["Ra8#"], color: "w", acceptance_map: null, source_types: ["blunder"], themes: [], is_repertoire: false, presentation_ply: null } }),
+        "/practice/today": () => ({ status: 500, body: { detail: "boom" } }),
+      });
+      renderPage("/practice?puzzle=11");
+      const dialog = await screen.findByRole("dialog", { name: "Puzzle 11" });
+      await flush();
+      expect(within(dialog).queryByText(/solved ·/)).toBeNull();
+      expect(dialog.querySelector(".basis-full")).toBeNull();
+    });
   });
 });
