@@ -6,7 +6,7 @@ One deployment serves one player behind one password; there are no accounts. To 
 
 ## Try it locally
 
-You need Python 3.14, Node 22, Postgres 16 or later (CI runs 17) where you can create databases, and Stockfish 18 on `PATH` (the hourly job pins the same version; analyses are labelled with it).
+You need Python 3.14, Node 24, Postgres 16 or later (CI runs 17) where you can create databases, and Stockfish 18 on `PATH` (the hourly job pins the same version; analyses are labelled with it).
 
 ```
 git clone <your fork> blundriq && cd blundriq
