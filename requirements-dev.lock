@@ -708,6 +708,7 @@ pyyaml==6.0.3 \
     --hash=sha256:fc09d0aa354569bc501d4e787133afc08552722d3ab34836a80547331bb5d4a0
     # via
     #   -c requirements.lock
+    #   blundriq (pyproject.toml)
     #   uvicorn
 ruff==0.16.10 \
     --hash=sha256:1dfc6f0088149fb6a362c1c446bcbb3fd2157b3852fe2fa68409276eab9ad9b3 \

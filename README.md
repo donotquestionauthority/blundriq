@@ -74,7 +74,7 @@ The original runs on free tiers: Postgres on Supabase, the API on Render, the UI
 
 **UI** (Vercel or any static host): build `ui/` with `npm run build`, with `VITE_API_URL=https://api.example.org` set at build time. Point `app.example.org` at it.
 
-**Hourly pipeline**: `.github/workflows/pipeline.yml` runs `pipeline run` every hour. Add `DATABASE_URL`, `RESEND_API_KEY`, `ALERT_EMAIL` and `ALERT_FROM` as repository secrets and enable Actions on your copy (scheduled workflows start disabled on a fork). Its console output is public on a public repository, so the code prints counts and error class names only, never messages or handles; keep it that way in anything you add.
+**Hourly pipeline**: `.github/workflows/pipeline.yml` runs `pipeline run` every hour. Add `DATABASE_URL`, `RESEND_API_KEY`, `ALERT_EMAIL` and `ALERT_FROM` as repository secrets and enable Actions on your copy (scheduled workflows start disabled on a fork). GitHub also disables a public repository's schedules after 60 days without commits, silently; the job re-enables its own workflow after every run and sends the failure email if it cannot, but GitHub does not promise that this resets the 60 days, so glance at the Actions tab every few weeks. Its console output is public on a public repository, so the code prints counts and error class names only, never messages or handles; keep it that way in anything you add.
 
 ## Developing
 

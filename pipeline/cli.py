@@ -315,6 +315,19 @@ def _migrate(args: argparse.Namespace) -> int:
     return 0
 
 
+# A failure outside the chain that still has to reach the operator: name -> the fixed label the
+# email carries. Never anything the failing tool printed: the label is all the email says.
+ALERTS = {"keepalive": "KeepaliveFailed"}
+
+
+def _alert(args: argparse.Namespace) -> int:
+    """Send the failure email for `args.what`. 0 when the provider accepted it; 1 otherwise,
+    missing alert secrets included, so an alert that could not go out is itself a failure."""
+    sent = notify.send_failure(args.what, None, ALERTS[args.what])
+    print(f"alert {args.what}: {'sent' if sent else 'NOT SENT'}", file=sys.stdout if sent else sys.stderr)
+    return 0 if sent else 1
+
+
 def _at_least(low: int) -> Callable[[str], int]:
     def parse(text: str) -> int:
         value = int(text)
@@ -424,6 +437,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("blunder-funnel", help="boards surviving each gate of the blunder generator").set_defaults(
         func=_blunder_funnel
     )
+    p_alert = sub.add_parser("alert", help="send the failure email for a failure outside the chain")
+    p_alert.add_argument("what", choices=sorted(ALERTS))
+    p_alert.set_defaults(func=_alert)
     p_mig = sub.add_parser("migrate", help="copy the old database into this one (once)")
     p_mig.add_argument("--mapping", required=True, help="JSON file with the old schema's column renames and value maps")
     p_mig.add_argument("--only", help="comma-separated tables to migrate; the emptiness check applies to just those")

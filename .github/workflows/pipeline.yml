@@ -18,11 +18,17 @@ concurrency:
 
 jobs:
   run:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 55
+    permissions:
+      contents: read
+      actions: write # the keepalive step re-enables this workflow
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      # The token can write to Actions in this job (the keepalive); nothing but that step gets it.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
           cache: pip
@@ -40,3 +46,25 @@ jobs:
           ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
           ALERT_FROM: ${{ secrets.ALERT_FROM }}
         run: pipeline run --analyze-limit 60
+      # GitHub disables a public repository's scheduled workflows after 60 days without
+      # repository activity, silently. Enabling the workflow on every run is meant to keep it
+      # on; GitHub does not document that this resets the clock, so the operator also checks
+      # the Actions tab now and then. Runs whether or not the chain succeeded.
+      - name: Keep this schedule enabled
+        id: keepalive
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # The console is public: the reply is discarded and a failure is one fixed line.
+        run: |
+          gh api -X PUT "repos/${{ github.repository }}/actions/workflows/pipeline.yml/enable" --silent >/dev/null 2>&1 \
+            || { echo "keepalive: FAILED"; exit 1; }
+      # A failed keepalive turns the job red, which reaches no one; this sends the
+      # application's own failure email, with a fixed label and nothing from the API's reply.
+      - name: Alert when the keepalive failed
+        if: always() && steps.keepalive.outcome == 'failure'
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          ALERT_FROM: ${{ secrets.ALERT_FROM }}
+        run: pipeline alert keepalive

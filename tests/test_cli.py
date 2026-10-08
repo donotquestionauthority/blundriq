@@ -308,3 +308,45 @@ def test_player_set_names_the_platforms_never_the_handles(
         "handle-marker-c4e1",
         "handle-marker-77aa",
     )
+
+
+def test_the_keepalive_alert_sends_one_fixed_label(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sent = _capture_alerts(monkeypatch)
+    assert cli.main(["alert", "keepalive"]) == 0
+    assert sent == [("keepalive", None, "KeepaliveFailed")]
+    assert "sent" in capsys.readouterr().out
+
+
+def test_an_alert_that_could_not_be_sent_is_a_failure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[tuple[str, int | None, str]] = []
+
+    def refused(step: str, run_id: int | None, error: str) -> bool:
+        calls.append((step, run_id, error))
+        return False
+
+    monkeypatch.setattr(notify, "send_failure", refused)
+    assert cli.main(["alert", "keepalive"]) == 1
+    assert calls == [("keepalive", None, "KeepaliveFailed")]
+    assert "NOT SENT" in capsys.readouterr().err
+
+
+def test_an_alert_with_missing_secrets_fails_without_calling_the_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ALERT_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+    def no_network(*_: object, **__: object) -> None:
+        raise AssertionError("the provider was called")
+
+    monkeypatch.setattr(httpx, "post", no_network)
+    assert cli.main(["alert", "keepalive"]) == 1
+
+
+def test_the_alert_command_accepts_only_known_names(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["alert", "something-else"])
+    assert exit_info.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err

@@ -15,10 +15,7 @@ def test_alert_body_keeps_only_the_error_class() -> None:
     assert body.splitlines()[0] == "blundriq step import failed (run 42): FetchError"
     for fragment in ("somebody", "example", "postgresql", "sk-abc", "http", "@"):
         assert fragment not in body
-    assert (
-        notify.alert_body("analyze", None, "")
-        == "blundriq step analyze failed (run -): error\nSee pipeline_runs for detail."
-    )
+    assert notify.alert_body("analyze", None, "") == "blundriq step analyze failed: error"
     assert "Runtime" in notify.alert_body("x", 1, "RuntimeError: at https://h/x")
     assert "https" not in notify.alert_body("x", 1, "RuntimeError: at https://h/x")
 

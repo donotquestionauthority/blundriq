@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   python:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     services:
       postgres:
         image: postgres:17
@@ -21,14 +21,14 @@ jobs:
     env:
       TEST_DATABASE_URL: postgresql://postgres:ci@localhost:5432/blundriq_test
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
           cache: pip
       - name: Install gitleaks (the rule-probe tests run it)
         run: |
-          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz \
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
             | sudo tar -xz -C /usr/local/bin gitleaks
       - name: Install from the locks (build dependencies included)
         run: bash tools/install.sh python dev
@@ -56,15 +56,15 @@ jobs:
           grep -qx "database: ${expected}; latest: ${expected}" /tmp/version.txt || { echo "unexpected version output"; exit 1; }
 
   ui:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: ui
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - run: npm ci
@@ -77,14 +77,14 @@ jobs:
     # this catches anything that got past it and blocks the merge. Runs the
     # gitleaks binary directly over the FULL history (the marketplace action
     # computes a commit range that breaks on a repository's first push).
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Install gitleaks 8.24.3
+      - name: Install gitleaks 8.30.1
         run: |
-          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz \
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
             | sudo tar -xz -C /usr/local/bin gitleaks
       - name: Scan every commit
         run: gitleaks git --config .gitleaks.toml --redact --no-banner --exit-code 1 .

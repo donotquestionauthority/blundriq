@@ -12,7 +12,7 @@ content review and a new pin — never a re-run that happens to pass.
 
 Findings are asserted by exact identity — count, path, rule, and a digest of each matched text —
 so nothing here has to spell an address out. Skips when gitleaks is not installed (CI installs
-8.24.3, whose `dir` command exists).
+8.30.1, whose `dir` command exists).
 """
 
 from __future__ import annotations
