@@ -9,6 +9,7 @@ import { defaultFilters, getDeviations, markSeen, toCard } from "../deviations";
 import type { DeviationFilters } from "../deviations";
 import { useApi } from "../hooks/useApi";
 import { lichessAnalyzeUrl } from "../utils/chess";
+import { errorLabel } from "../utils/errorLabel";
 
 /**
  * Where I keep leaving my own repertoire, new patterns first, then most often first. A pattern is a book, a chapter, the
@@ -41,7 +42,7 @@ function List({ filters, setFilters }: { filters: DeviationFilters; setFilters: 
   useEffect(() => {
     if (!data || isStale) return;
     stay.current ??= data.stay;
-    markSeen(data.to_acknowledge).catch((e: unknown) => console.warn("could not acknowledge the list:", e));
+    markSeen(data.to_acknowledge).catch((e: unknown) => console.warn("could not acknowledge the list:", errorLabel(e)));
   }, [data, isStale]);
 
   useEffect(() => {

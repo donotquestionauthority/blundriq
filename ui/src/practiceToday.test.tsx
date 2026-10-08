@@ -8,7 +8,6 @@ import { _resetPracticeTodayForTests, refreshPracticeToday } from "./practiceTod
 const today = (over: Partial<PracticeToday> = {}): PracticeToday => ({
   date: "2026-10-08",
   solved: 4,
-  tried: 7,
   target: 10,
   next_day_at: new Date(Date.now() + 3_600_000).toISOString(),
   now: new Date(Date.now()).toISOString(),
@@ -52,20 +51,20 @@ describe("today's puzzle count", () => {
     vi.unstubAllGlobals();
   });
 
-  it("shows solved toward the target and tried, with a tick and the met tone once the target is reached", async () => {
+  it("shows solved toward the target and nothing else, with a tick and the met tone once the target is reached", async () => {
     const pending = heldFetch();
     render(<TodayCount variant="toolbar" />);
     expect(status()).toBeNull(); // unknown until read
     reads(pending)[0].resolve(200, today());
     await flush();
-    expect(screen.getByRole("status", { name: "Puzzles today: 4 of 10 solved, 7 tried" })).toHaveTextContent("4 / 10 solved · 7 tried");
+    expect(screen.getByRole("status", { name: "Puzzles today: 4 of 10 solved" })).toHaveTextContent(/^4 \/ 10 solved$/);
     expect(screen.queryByText(/✓/)).toBeNull();
 
     window.dispatchEvent(new Event(ATTEMPT_SAVED_EVENT));
-    reads(pending)[1].resolve(200, today({ solved: 10, tried: 12 }));
+    reads(pending)[1].resolve(200, today({ solved: 10 }));
     await flush();
-    const met = screen.getByRole("status", { name: "Puzzles today: 10 of 10 solved, 12 tried" });
-    expect(met).toHaveTextContent("✓ 10 / 10 solved · 12 tried");
+    const met = screen.getByRole("status", { name: "Puzzles today: 10 of 10 solved" });
+    expect(met).toHaveTextContent(/^✓ 10 \/ 10 solved$/);
     expect(met.querySelector(".text-emerald-600")).not.toBeNull();
   });
 
@@ -84,7 +83,7 @@ describe("today's puzzle count", () => {
     expect(screen.getAllByRole("status")).toHaveLength(1); // the covered copy does not announce
     window.dispatchEvent(new Event(ATTEMPT_SAVED_EVENT));
     expect(reads(pending)).toHaveLength(2);
-    reads(pending)[1].resolve(200, today({ solved: 5, tried: 8 }));
+    reads(pending)[1].resolve(200, today({ solved: 5 }));
     await flush();
     expect(screen.getAllByText(/5 \/ 10/)).toHaveLength(2);
   });
@@ -94,11 +93,11 @@ describe("today's puzzle count", () => {
     render(<TodayCount variant="dialog" />);
     window.dispatchEvent(new Event(ATTEMPT_SAVED_EVENT));
     const [older, newer] = reads(pending);
-    newer.resolve(200, today({ solved: 6, tried: 9 }));
+    newer.resolve(200, today({ solved: 6 }));
     await flush();
-    older.resolve(200, today({ solved: 4, tried: 7 }));
+    older.resolve(200, today({ solved: 4 }));
     await flush();
-    expect(status()).toHaveTextContent("6 / 10 solved · 9 tried");
+    expect(status()).toHaveTextContent(/^6 \/ 10 solved$/);
   });
 
   it("an older read that fails after a newer one answered does not wipe the newer count", async () => {
@@ -157,9 +156,9 @@ describe("today's puzzle count", () => {
     expect(reads(pending)).toHaveLength(1);
     await act(async () => vi.advanceTimersByTime(600));
     expect(reads(pending)).toHaveLength(2);
-    reads(pending)[1].resolve(200, endsIn(86_400_000, Date.now(), { date: "2026-10-09", solved: 0, tried: 0 }));
+    reads(pending)[1].resolve(200, endsIn(86_400_000, Date.now(), { date: "2026-10-09", solved: 0 }));
     await flush();
-    expect(status()).toHaveTextContent("0 / 10 solved · 0 tried");
+    expect(status()).toHaveTextContent(/^0 \/ 10 solved$/);
     await act(async () => vi.advanceTimersByTime(60_000));
     expect(reads(pending)).toHaveLength(2);
   });

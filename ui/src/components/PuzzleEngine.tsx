@@ -23,6 +23,7 @@ import { LineReaderPanel } from "./PositionCard/LineReaderPanel";
 import { SolverSimilarModal } from "./PositionCard/SolverSimilarModal";
 import { useSimilarPositions } from "../hooks/useSimilarPositions";
 import { HIGHLIGHT, SQUARES } from "../utils/board";
+import { errorLabel } from "../utils/errorLabel";
 import { branchCompareTarget, legalMove, mapKey, moveUci, parsesAsFen, sanResolvesToMove, similarTarget, uciToMove } from "../utils/chess";
 import type { AcceptanceMap } from "../practice";
 
@@ -434,7 +435,7 @@ export function PuzzleEngine({
       setFinishLineMode(true);
       resetToFen(continueFromFen, 0);
     } catch (e) {
-      console.error("Failed to compute finish-line start FEN:", e);
+      console.error("Failed to compute finish-line start FEN:", errorLabel(e));
     }
   }, [fen, solutionLine, solutionLineProp, resetToFen]);
 

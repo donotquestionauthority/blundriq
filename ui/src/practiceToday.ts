@@ -13,6 +13,7 @@
 import { useSyncExternalStore } from "react";
 import { ATTEMPT_SAVED_EVENT, getPracticeToday } from "./practice";
 import type { PracticeToday } from "./practice";
+import { errorLabel } from "./utils/errorLabel";
 
 let snapshot: PracticeToday | null = null;
 let latest = 0;
@@ -61,7 +62,7 @@ export async function refreshPracticeToday(): Promise<void> {
     if (mine !== latest) return;
     snapshot = null;
     clearTimer();
-    console.warn(`Today's puzzle count could not be read (${e instanceof Error ? e.name : typeof e})`);
+    console.warn(`Today's puzzle count could not be read (${errorLabel(e)})`);
   }
   notify();
 }

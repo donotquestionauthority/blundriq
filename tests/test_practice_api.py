@@ -197,8 +197,8 @@ def test_today_counts_the_attempts_the_attempt_route_recorded(client: tuple[Test
     before = c.get("/practice/today")
     assert before.status_code == 200
     body = before.json()
-    assert set(body) == {"date", "solved", "tried", "target", "next_day_at", "now"}
-    assert (body["solved"], body["tried"]) == (0, 0)
+    assert set(body) == {"date", "solved", "target", "next_day_at", "now"}
+    assert body["solved"] == 0
     for solved, moves in ((False, "Qh5"), (True, "Nxe5,d4")):
         r = c.post(
             f"/practice/puzzles/{pid}/attempt",
@@ -206,4 +206,4 @@ def test_today_counts_the_attempts_the_attempt_route_recorded(client: tuple[Test
         )
         assert r.status_code == 200, r.text
     after = c.get("/practice/today").json()
-    assert (after["solved"], after["tried"]) == (1, 1)
+    assert after["solved"] == 1

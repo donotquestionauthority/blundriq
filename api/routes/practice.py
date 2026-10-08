@@ -5,7 +5,7 @@ POST /practice/puzzles/{id}/attempt grade and record one attempt
 POST /practice/skip                 defer a served item
 GET  /practice/puzzles/{id}         the immutable solver payload for `?puzzle=<id>`
 GET  /practice/repertoire-scopes    books, chapters and lines that have a repertoire puzzle, with counts
-GET  /practice/today                today's puzzles solved and tried, the target, and when the day rolls over
+GET  /practice/today                today's puzzles solved, the target, and when the day rolls over
 """
 
 from __future__ import annotations
