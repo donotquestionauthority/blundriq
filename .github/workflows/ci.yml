@@ -30,7 +30,14 @@ jobs:
         run: |
           curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz \
             | sudo tar -xz -C /usr/local/bin gitleaks
-      - run: pip install -e ".[dev]"
+      - name: Install from the locks (build dependencies included)
+        run: bash tools/install.sh python dev
+      # uv only regenerates the locks to compare them; nothing it installs ships. Pinned to the
+      # version tools/locks.sh requires (it is a check tool, so not hashed).
+      - name: The locks are what their command writes
+        run: |
+          python -m pip install --quiet uv==0.11.32
+          bash tools/locks.sh check
       - run: ruff check .
       - run: ruff format --check .
       - run: pyright
@@ -39,7 +46,7 @@ jobs:
         env:
           DATABASE_URL: postgresql://postgres:ci@localhost:5432/blundriq_install
         run: |
-          python -m venv /tmp/installed && /tmp/installed/bin/pip install -q .
+          python -m venv /tmp/installed && bash tools/install.sh /tmp/installed/bin/python runtime
           psql postgresql://postgres:ci@localhost:5432/postgres -c 'CREATE DATABASE blundriq_install'
           cd /tmp
           /tmp/installed/bin/pipeline db init

@@ -1,0 +1,3 @@
+# The installer and the build backend, locked in build.lock (bash tools/locks.sh).
+pip
+setuptools

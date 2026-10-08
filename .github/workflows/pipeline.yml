@@ -32,7 +32,7 @@ jobs:
           tar -xf /tmp/sf.tar -C /tmp
           sudo install -m 755 "$(find /tmp/stockfish -type f -name 'stockfish-ubuntu-x86-64-avx2')" /usr/local/bin/stockfish
           printf 'uci\nquit\n' | stockfish | head -1
-      - run: pip install -q .
+      - run: bash tools/install.sh python runtime
       - name: Run the chain
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
