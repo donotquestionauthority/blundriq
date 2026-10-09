@@ -4,7 +4,7 @@ Default (engine-free): for every analysed standard game, replay the oracle's
 stored per-ply evals and best lines through the new classifier and tagger and
 compare the derived rows. This checks the code, not Stockfish.
 
---stockfish: run Stockfish 18 at depth 18 on the fixed sample (tools/oracle/
+--stockfish: run Stockfish 19 at depth 18 on the fixed sample (the one the pipeline accepts) (tools/oracle/
 sample.json, or --limit N of it) in the scratch database and compare the
 stored rows, which checks engine determinism across machines as well.
 """

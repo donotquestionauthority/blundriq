@@ -12,7 +12,7 @@ disposable and is modified.
     python tools/oracle/diff_analysis.py         # engine-free: replay stored evals through the new
                                                  # classifier + tagger for every analysed game, diff
     python tools/oracle/diff_analysis.py --stockfish [--limit N]
-                                                 # real Stockfish 18 depth 18 on the sample, diff
+                                                 # real Stockfish 19 depth 18 on the sample, diff
     python tools/oracle/diff_puzzles.py          # regenerate puzzles and diff; rebuild every
                                                  # acceptance map and diff
     python tools/oracle/diff_practice.py         # replay every solved attempt through the grader;
