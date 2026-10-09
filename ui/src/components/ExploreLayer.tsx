@@ -164,7 +164,7 @@ export function ExploreLayer({ fen, orientation, onClose }: { fen: string; orien
             </div>
 
             <p className="mt-3 text-center text-xs text-zinc-500">
-              In-browser analysis by Stockfish 18 (GPL-3.0) ·{" "}
+              In-browser analysis by Stockfish 19 (GPL-3.0) ·{" "}
               <a href="/engine/Copying.txt" target="_blank" rel="noreferrer" className="underline hover:text-zinc-900 dark:hover:text-zinc-100">
                 licence
               </a>{" "}

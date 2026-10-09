@@ -65,7 +65,7 @@ afterEach(() => {
 describe("handshake and seed", () => {
   it("sends uci, then the three init commands on uciok, and is ready on readyok", () => {
     const { result } = renderHook(() => useStockfish({ enabled: true }));
-    expect(worker().url).toBe("/engine/stockfish-18-lite-single.js");
+    expect(worker().url).toBe("/engine/stockfish-19-lite-single.js");
     expect(worker().posted).toEqual(["uci"]);
     act(() => worker().emit("uciok"));
     expect(worker().posted).toEqual(["uci", "ucinewgame", "setoption name UCI_Chess960 value false", "isready"]);
@@ -301,7 +301,7 @@ describe("the engine stays out of the module graph", () => {
 
   it("creates the worker from the bare string literal", () => {
     const src = readFileSync(join(SRC, "engine", "useStockfish.ts"), "utf8");
-    expect(src).toContain('new Worker("/engine/stockfish-18-lite-single.js")');
+    expect(src).toContain('new Worker("/engine/stockfish-19-lite-single.js")');
     expect(src).not.toMatch(/new Worker\(\s*new URL/);
   });
 

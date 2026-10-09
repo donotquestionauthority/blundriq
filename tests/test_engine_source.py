@@ -1,14 +1,19 @@
 """The record of what the pinned corresponding-source archive contains.
 
 `ui/public/engine/stockfish-source.tar.gz` is the GPL Corresponding Source for the engine the
-browser runs. Its SHA-256 is pinned by `ui/src/engine/engineAssets.test.ts`; that pin is the gate
-(a byte changed anywhere inside is a different archive and fails CI). This file is what the pin
-stands for: expanded, the archive carries exactly two `email-address` findings under the project's
-scanner rules, both upstream attribution (the `author` field of `nmrugg-stockfish.js/package.json`
-and the MIT header of the bundled `examples/js/chess.min.js`). That is the invariant this file and
-the hash pin enforce together: the byte-pinned archive is the only tracked file that carries those
-two reviewed upstream addresses, and no other tracked file carries any. A new archive is a new
-content review and a new pin — never a re-run that happens to pass.
+browser runs: the nmrugg/stockfish.js wrapper tree at the tag the npm build was published from
+(its `src/` is the engine source the build compiles), the pristine upstream Stockfish tree of the
+same version, the one NNUE network the Lite binary embeds (under `networks/`, verified by the
+SHA-256 its file name is the prefix of) and `BUILD-NOTES.md`. Its SHA-256 is pinned by
+`ui/src/engine/engineAssets.test.ts`; that pin is the gate (a byte changed anywhere inside is a
+different archive and fails CI). This file is what the pin stands for: expanded, the archive
+carries exactly two `email-address` findings under the project's scanner rules, both upstream
+attribution (the `author` field of `nmrugg-stockfish.js/package.json` and the MIT header of the
+bundled `examples/js/chess.min.js`). That is the invariant this file and the hash pin enforce
+together: the byte-pinned archive is the only tracked file that carries those two reviewed
+upstream addresses, and no other tracked file carries any. A new archive is a new content review
+and a new pin — never a re-run that happens to pass. (The Stockfish 19 archive was reviewed the
+same way as the 18 one and carries the same two findings, so the record below did not change.)
 
 Findings are asserted by exact identity — count, path, rule, and a digest of each matched text —
 so nothing here has to spell an address out. Skips when gitleaks is not installed (CI installs
