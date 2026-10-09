@@ -17,6 +17,8 @@
     pipeline import-repertoire FILE --mode update|scratch [--preserve-manual] [--dry-run]
     pipeline housekeep
     pipeline run [--analyze-limit N]              the hourly chain, logged, alert on failure
+    pipeline reprocess [--workers N]              every game and board under the current engine, fail-fast
+    pipeline engine-status [--since TIMESTAMP]    read-only: did the reprocess run through? (exit 1 if not)
     pipeline blunder-funnel                       why the blunder generator qualifies what it does
     pipeline migrate --mapping FILE [--only T,T]  old database (ORACLE_DATABASE_URL) → this one
 
@@ -286,6 +288,46 @@ def _run_all(args: argparse.Namespace) -> int:
     return 0
 
 
+def _reprocess(args: argparse.Namespace) -> int:
+    """The engine change's batch (core/reprocess.py): the five steps in order, every game and every
+    board, each logged as its own run; the first failure stops it. Hand-run and watched, so no
+    alert; rerunning it after a failure picks up what is left."""
+    from core.reprocess import REQUIRED_STEPS
+
+    args.limit = None  # every pending game
+    args.evals_limit = 0  # every pending board
+    args.alert = False
+    steps = hourly_steps()
+    for name in REQUIRED_STEPS:
+        if _run_step(name, steps[name], args) != 0:
+            return 1
+    return 0
+
+
+def _engine_status(args: argparse.Namespace) -> int:
+    """Read-only. Exit 0 only when nothing is pending under the current engine and every required
+    step's latest run is ok, after the boundary, in order. Prints labels, counts, names and times."""
+    from datetime import datetime
+
+    from core import reprocess
+
+    since = datetime.fromisoformat(args.since) if args.since else None
+    if since is not None and since.tzinfo is None:
+        raise notify.OperatorError("--since needs a UTC offset (2026-10-08T20:00:00+00:00): the run times carry one")
+    with db.connect() as conn:
+        found = reprocess.status(conn, settings.load(conn), since)
+    print(f"engine {found.engine}; boundary {found.since.isoformat() if found.since else '-'}")
+    print(f"pending: {found.games_pending} games, {found.boards_pending} boards")
+    for step in found.steps:
+        when = step.started_at.isoformat() if step.started_at else "-"
+        print(f"{step.step:18s} {step.status or '-':8s} {when}  {step.problem or 'ok'}")
+    if found.ok:
+        print("engine-status: complete")
+        return 0
+    print(f"engine-status: NOT complete ({len(found.problems)} problems)", file=sys.stderr)
+    return 1
+
+
 def _blunder_funnel(_: argparse.Namespace) -> int:
     """Not a pipeline step: a report, printed as counts only."""
     from core.puzzles.generate import blunder
@@ -434,6 +476,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_run = sub.add_parser("run", help="the hourly chain with an alert on failure")
     p_run.add_argument("--analyze-limit", type=int, help="cap on games analysed per run (runners have a time limit)")
     p_run.set_defaults(func=_run_all)
+    p_re = sub.add_parser("reprocess", help="every game and board under the current engine; stops at a failure")
+    p_re.add_argument("--workers", type=_at_least(1), help="engine processes for analyze, review and position-evals")
+    p_re.set_defaults(func=_reprocess)
+    p_es = sub.add_parser("engine-status", help="read-only: is the reprocess complete? (exit 1 when not)")
+    p_es.add_argument("--since", help="batch boundary as an ISO timestamp (default: the latest schema change)")
+    p_es.set_defaults(func=_engine_status)
     sub.add_parser("blunder-funnel", help="boards surviving each gate of the blunder generator").set_defaults(
         func=_blunder_funnel
     )
