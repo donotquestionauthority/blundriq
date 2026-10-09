@@ -6,7 +6,7 @@ One deployment serves one player behind one password; there are no accounts. To 
 
 ## Try it locally
 
-You need Python 3.14, Node 24, Postgres 16 or later (CI runs 17) where you can create databases, and Stockfish 18 on `PATH` (the hourly job pins the same version; analyses are labelled with it).
+You need Python 3.14, Node 24, Postgres 16 or later (CI runs 17) where you can create databases, and Stockfish 19 on `PATH` (the hourly job pins the same version; analyses are labelled with it, and the pipeline refuses any other version rather than mislabel a result).
 
 ```
 git clone <your fork> blundriq && cd blundriq
@@ -40,7 +40,7 @@ Every command below runs from the repository root with the virtualenv's own path
 .venv/bin/uvicorn api.main:app --reload
 ```
 
-and in a second shell `cd ui && npm run dev`, then open `http://localhost:5173`. Give either handle or both. `.venv/bin/pipeline --help` lists every step; each is idempotent and safe to rerun. The first `analyze` covers your most recent 1,000 standard games (Stockfish 18 at depth 18) and takes a while: `--limit N` does a slice at a time.
+and in a second shell `cd ui && npm run dev`, then open `http://localhost:5173`. Give either handle or both. `.venv/bin/pipeline --help` lists every step; each is idempotent and safe to rerun. The first `analyze` covers your most recent 1,000 standard games (Stockfish 19 at depth 18) and takes a while: `--limit N` does a slice at a time. After an engine upgrade, `pipeline reprocess --workers N` redoes every game and board under the new engine and `pipeline engine-status` says whether it ran through.
 
 What needs more than your games:
 

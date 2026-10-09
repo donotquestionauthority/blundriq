@@ -51,6 +51,7 @@ from core.constants import (
     REVIEW_RANKED_MAX,
     REVIEW_RECENT_DAYS,
     REVIEW_STRIP_VISITS,
+    STOCKFISH_STAMP,
 )
 from core.review.detect import position_es
 from core.review.filters import opening_params, opening_sql, time_class_sql
@@ -75,7 +76,10 @@ MOVE_GAMES_PAGE = 50
 
 # How many games a board may be rebuilt from before it counts as failed: one game whose stored
 # prefix does not replay must not keep the board unevaluated (and the step failing) for ever.
-EVAL_SOURCES = 3
+# The games go out lowest id first and the evaluator tries each in turn, so this is a bound on
+# how many bad prefixes a board survives, not a guarantee: a board whose first fifty games all
+# fail to replay still fails, and is still a defect to look at.
+EVAL_SOURCES = 50
 
 
 # --- pricing ----------------------------------------------------------------------------------
@@ -501,11 +505,12 @@ def eval_candidates(
     """(how many boards are pending, the first `limit` of them, or all when `limit` is None).
     The boards: every board B the player moved from in at least REVIEW_EVAL_MIN_GAMES distinct games of
     the history (either colour, every time class) at a ply below `max_ply`, and every board A
-    one of those moves led to. Pending: no row, or a row with neither a best move nor a terminal
-    outcome (rows written before migration 010). Most-played first (games through the board),
-    then the lower key. Each row carries up to EVAL_SOURCES games through the board, lowest id
-    first, each with the board's ply in it and its prefix moves, from which `core.review.evals`
-    rebuilds the board."""
+    one of those moves led to. Pending: no row; a row with neither a best move nor a terminal
+    outcome (rows written before migration 010); or a scored row another engine wrote (its stamp
+    is not the current one, NULL before migration 012). A terminal row is the board's own verdict
+    and is never redone. Most-played first (games through the board), then the lower key. Each
+    row carries up to EVAL_SOURCES games through the board, lowest id first, each with the board's
+    ply in it and its prefix moves, from which `core.review.evals` rebuilds the board."""
     query = cast(
         LiteralString,
         f"""
@@ -533,7 +538,8 @@ def eval_candidates(
             SELECT b.key, b.n FROM boards b
             WHERE NOT EXISTS (
                 SELECT 1 FROM position_evals pe
-                WHERE pe.board_key = b.key AND (pe.best_move IS NOT NULL OR pe.terminal IS NOT NULL)
+                WHERE pe.board_key = b.key
+                  AND (pe.terminal IS NOT NULL OR (pe.best_move IS NOT NULL AND pe.engine = %(engine)s))
             )
         ),
         chosen AS (SELECT key, n FROM pending ORDER BY n DESC, key LIMIT %(limit)s),
@@ -557,6 +563,7 @@ def eval_candidates(
         "eval_min": REVIEW_EVAL_MIN_GAMES,
         "limit": limit,
         "sources": EVAL_SOURCES,
+        "engine": STOCKFISH_STAMP,
     }
     rows = conn.execute(query, params).fetchall()
     if not rows:  # LIMIT NULL is no limit, so an empty answer means nothing is pending

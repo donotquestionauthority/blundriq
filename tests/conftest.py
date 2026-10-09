@@ -66,6 +66,26 @@ def with_dbname(url: str, name: str) -> str:
     return make_conninfo(url, dbname=name)
 
 
+def stockfish_skip() -> str | None:
+    """Why a real-engine test cannot run here: no Stockfish on PATH, or one of another version
+    (the pipeline refuses it, so the test would only prove that). None when it can."""
+    import shutil
+    import subprocess
+
+    from core.analysis.engine import engine_version
+    from core.constants import STOCKFISH_VERSION
+
+    path = shutil.which("stockfish")
+    if path is None:
+        return "stockfish not installed"
+    out = subprocess.run([path], input="uci\nquit\n", capture_output=True, text=True, timeout=30).stdout
+    names = [line[len("id name ") :] for line in out.splitlines() if line.startswith("id name ")]
+    found = engine_version(names[0]) if names else None
+    if found != STOCKFISH_VERSION:
+        return f"stockfish on PATH is version {found or 'unknown'}, the pipeline needs {STOCKFISH_VERSION}"
+    return None
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _close_the_api_pool() -> Generator[None]:
     """API tests open `core.db`'s pool; close it before the interpreter exits, where its

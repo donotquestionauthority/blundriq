@@ -32,11 +32,13 @@ jobs:
         with:
           python-version: "3.14"
           cache: pip
-      - name: Stockfish 18 (pinned to core/constants.STOCKFISH_VERSION)
+      # The pipeline refuses any other version (core/analysis/engine.py), so a wrong download
+      # fails the analysis step, not the stamp. Stockfish 19 ships one universal Linux binary.
+      - name: Stockfish 19 (pinned to core/constants.STOCKFISH_VERSION)
         run: |
-          curl -sSL -o /tmp/sf.tar https://github.com/official-stockfish/Stockfish/releases/download/sf_18/stockfish-ubuntu-x86-64-avx2.tar
-          tar -xf /tmp/sf.tar -C /tmp
-          sudo install -m 755 "$(find /tmp/stockfish -type f -name 'stockfish-ubuntu-x86-64-avx2')" /usr/local/bin/stockfish
+          curl -sSL -o /tmp/sf.tgz https://github.com/official-stockfish/Stockfish/releases/download/sf_19/stockfish-linux-x86-64-universal.tar.gz
+          tar -xzf /tmp/sf.tgz -C /tmp
+          sudo install -m 755 "$(find /tmp/stockfish -type f -name 'stockfish-linux-x86-64-universal')" /usr/local/bin/stockfish
           printf 'uci\nquit\n' | stockfish | head -1
       - run: bash tools/install.sh python runtime
       - name: Run the chain
@@ -49,14 +51,19 @@ jobs:
       # GitHub disables a public repository's scheduled workflows after 60 days without
       # repository activity, silently. Enabling the workflow on every run is meant to keep it
       # on; GitHub does not document that this resets the clock, so the operator also checks
-      # the Actions tab now and then. Runs whether or not the chain succeeded.
+      # the Actions tab now and then. Runs whether or not the chain succeeded. A workflow the
+      # operator disabled by hand (a reprocess that must not overlap this chain) stays disabled:
+      # the step reads the state first and enables only one GitHub switched off.
       - name: Keep this schedule enabled
         id: keepalive
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-        # The console is public: the reply is discarded and a failure is one fixed line.
+        # The console is public: replies are discarded and every outcome is one fixed line.
         run: |
+          state="$(gh api "repos/${{ github.repository }}/actions/workflows/pipeline.yml" --jq .state 2>/dev/null)" \
+            || { echo "keepalive: FAILED"; exit 1; }
+          if [ "$state" = "disabled_manually" ]; then echo "keepalive: paused by operator"; exit 0; fi
           gh api -X PUT "repos/${{ github.repository }}/actions/workflows/pipeline.yml/enable" --silent >/dev/null 2>&1 \
             || { echo "keepalive: FAILED"; exit 1; }
       # A failed keepalive turns the job red, which reaches no one; this sends the

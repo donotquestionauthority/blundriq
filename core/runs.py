@@ -41,8 +41,11 @@ def start(conn: Connection[Any], step: str) -> int:
 
 
 def finish(conn: Connection[Any], run_id: int, summary: dict[str, Any]) -> None:
+    """`clock_timestamp()`, not `now()`: a step that holds one transaction from its first statement
+    to here would otherwise finish when it started, and the order of steps (core/reprocess.py)
+    reads these times."""
     conn.execute(
-        "UPDATE pipeline_runs SET status = 'ok', finished_at = now(), summary = %s::jsonb WHERE id = %s",
+        "UPDATE pipeline_runs SET status = 'ok', finished_at = clock_timestamp(), summary = %s::jsonb WHERE id = %s",
         (json.dumps(summary), run_id),
     )
     conn.commit()
@@ -51,7 +54,7 @@ def finish(conn: Connection[Any], run_id: int, summary: dict[str, Any]) -> None:
 def fail(conn: Connection[Any], run_id: int, error: str) -> None:
     conn.rollback()
     conn.execute(
-        "UPDATE pipeline_runs SET status = 'failed', finished_at = now(), error = %s WHERE id = %s",
+        "UPDATE pipeline_runs SET status = 'failed', finished_at = clock_timestamp(), error = %s WHERE id = %s",
         (error[:2000], run_id),
     )
     conn.commit()

@@ -18,11 +18,12 @@ rules depend on a game's history and are never a board's terminal fact.
 
 Otherwise Stockfish evaluates the board at STOCKFISH_DEPTH, the depth the game analyser uses,
 and the row stores the score from White's point of view like ply_analysis (centipawns, or a
-mate distance in moves) and the engine's best move in SAN. Every write replaces the whole row,
-so a row written before migration 010 (no best move) is re-evaluated once and comes out exactly
+mate distance in moves), the engine's best move in SAN and the engine's stamp. Every write replaces
+the whole row, so a row written before migration 010 (no best move), or scored by another engine
+(a stamp that is not the current one; NULL before migration 012), is re-evaluated once and comes out exactly
 as a new one would.
 
-Idempotent: a board with a best move or a terminal outcome is never a candidate again. Each
+Idempotent: a board this engine scored, or a terminal one, is never a candidate again. Each
 evaluation is committed on its own, so an interrupted run keeps what it did. With `workers`
 above one the boards go out in chunks to that many processes; each chunk opens one engine (one
 thread, as the analyser runs it), evaluates its boards and closes the engine before it returns,
@@ -44,7 +45,7 @@ import chess.engine
 from psycopg import Connection
 
 from core.chess.board import replay
-from core.constants import POSITION_EVALS_PER_RUN, STOCKFISH_DEPTH
+from core.constants import POSITION_EVALS_PER_RUN, STOCKFISH_DEPTH, STOCKFISH_STAMP
 from core.review import mistakes
 from core.settings import Settings
 
@@ -123,12 +124,12 @@ def _rebuild(conn: Connection[Any], row: dict[str, Any]) -> tuple[chess.Board | 
 
 
 _WRITE = """
-    INSERT INTO position_evals (board_key, fen, eval_cp, mate_in, best_move, terminal, depth, computed_at)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, now())
+    INSERT INTO position_evals (board_key, fen, eval_cp, mate_in, best_move, terminal, depth, engine, computed_at)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
     ON CONFLICT (board_key) DO UPDATE SET
         fen = EXCLUDED.fen, eval_cp = EXCLUDED.eval_cp, mate_in = EXCLUDED.mate_in,
         best_move = EXCLUDED.best_move, terminal = EXCLUDED.terminal, depth = EXCLUDED.depth,
-        computed_at = EXCLUDED.computed_at
+        engine = EXCLUDED.engine, computed_at = EXCLUDED.computed_at
 """
 
 # An answer whose label starts with this says the worker's engine never started: the run stops
@@ -230,7 +231,9 @@ def run(
             continue
         terminal = terminal_of(board)
         if terminal is not None:
-            conn.execute(_WRITE, (row["key"], board.fen(), None, None, None, terminal, STOCKFISH_DEPTH))
+            conn.execute(
+                _WRITE, (row["key"], board.fen(), None, None, None, terminal, STOCKFISH_DEPTH, STOCKFISH_STAMP)
+            )
             conn.commit()
             summary["terminal"] += 1
             continue
@@ -251,7 +254,7 @@ def run(
                     break
                 continue
             cp, mate, best = got
-            conn.execute(_WRITE, (key, fens[key], cp, mate, best, None, STOCKFISH_DEPTH))
+            conn.execute(_WRITE, (key, fens[key], cp, mate, best, None, STOCKFISH_DEPTH, STOCKFISH_STAMP))
             conn.commit()
             summary["evaluated"] += 1
     unanswered = len(work) - len(answered)

@@ -94,9 +94,9 @@ def create(
             )
         ],
     )
-    if not created:
+    if not created.created:
         raise BoardTaken
-    return created[0][0]
+    return created.created[0][0]
 
 
 def remove(conn: Connection[Any], puzzle_id: int) -> bool:

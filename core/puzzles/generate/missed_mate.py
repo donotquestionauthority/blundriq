@@ -91,6 +91,7 @@ FULL OUTER JOIN active_puzzles a ON a.canonical_fen = q.canonical_fen
 class Stats:
     boards: int = 0
     created: int = 0
+    reactivated: int = 0
     deactivated: int = 0
     unchanged: int = 0
     skipped_stronger: int = 0
@@ -102,6 +103,7 @@ def _stats_dict(stats: Stats) -> dict[str, Any]:
     return {
         "boards": stats.boards,
         "created": stats.created,
+        "reactivated": stats.reactivated,
         "deactivated": stats.deactivated,
         "unchanged": stats.unchanged,
         "skipped_stronger": stats.skipped_stronger,
@@ -161,5 +163,7 @@ def generate(conn: Connection[Any], config: Settings) -> dict[str, Any]:
         )
 
     stats.deactivated = deactivate(conn, to_deactivate)
-    stats.created = len(create(conn, to_create))
+    written = create(conn, to_create)
+    stats.created = len(written.created)
+    stats.reactivated = len(written.reactivated)
     return _stats_dict(stats)

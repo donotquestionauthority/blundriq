@@ -156,7 +156,7 @@ export function useStockfish({ enabled, depth: configuredDepth }: { enabled: boo
     if (!enabled) return;
     // Bare string literal, inlined at the call site: the only engine reference that survives
     // bundling is `new Worker("/engine/…")`. See the header.
-    const w = new Worker("/engine/stockfish-18-lite-single.js");
+    const w = new Worker("/engine/stockfish-19-lite-single.js");
     workerRef.current = w;
 
     w.onmessage = (e: MessageEvent) => {

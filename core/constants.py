@@ -10,7 +10,11 @@ PLAYER_ID = 1
 
 # Stockfish depth for the scheduled analyzer (18, as the previous system used).
 STOCKFISH_DEPTH = 18
-STOCKFISH_VERSION = "18"
+# The engine every result is produced and stamped with. `core.analysis.engine` refuses any
+# other version; a result stamped with another engine is pending again (core/analysis/run.py,
+# core/review/evals.py): the two stamps below are what those readers compare against.
+STOCKFISH_VERSION = "19"
+STOCKFISH_STAMP = f"stockfish_{STOCKFISH_VERSION}"
 
 # Variants. Chess960 games are imported and counted but never analysed,
 # matched, turned into puzzles, or reviewed. See core/chess/eligibility.py.
