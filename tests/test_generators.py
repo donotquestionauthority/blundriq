@@ -388,6 +388,144 @@ def test_one_missed_mate_is_enough(clean: psycopg.Connection[DictRow]) -> None:
     assert missed_mate.generate(clean, _config())["unchanged"] == 1
 
 
+def _history(conn: psycopg.Connection[DictRow], puzzle_id: int) -> None:
+    conn.execute(
+        "INSERT INTO puzzle_attempts (puzzle_id, player_id, solved) VALUES (%s, %s, TRUE), (%s, %s, FALSE)",
+        (puzzle_id, PLAYER_ID, puzzle_id, PLAYER_ID),
+    )
+    conn.execute(
+        "INSERT INTO player_puzzle_state (player_id, puzzle_id, level, correct_at_level) VALUES (%s, %s, 'knight', 2)",
+        (PLAYER_ID, puzzle_id),
+    )
+
+
+def _progress(conn: psycopg.Connection[DictRow], puzzle_id: int) -> tuple[int, str | None]:
+    attempts = conn.execute("SELECT count(*) AS n FROM puzzle_attempts WHERE puzzle_id = %s", (puzzle_id,)).fetchone()
+    state = conn.execute("SELECT level FROM player_puzzle_state WHERE puzzle_id = %s", (puzzle_id,)).fetchone()
+    assert attempts
+    return int(attempts["n"]), state["level"] if state else None
+
+
+def test_a_board_that_comes_back_keeps_its_puzzle_and_its_history(clean: psycopg.Connection[DictRow]) -> None:
+    """The evidence leaves (the engine stops flagging it, or the game ages out of the window) and
+    returns: the deactivated puzzle comes back under the same id with the new solution, its
+    attempts and its spaced-repetition row, and the acceptance map is refreshed."""
+    _player(clean)
+    _mate_event(clean, 1)
+    assert missed_mate.generate(clean, _config())["created"] == 1
+    puzzle_id = _puzzles(clean)[0]["id"]
+    _history(clean, puzzle_id)
+    clean.execute("DELETE FROM player_motif_events")
+    assert missed_mate.generate(clean, _config())["deactivated"] == 1
+    assert _puzzles(clean)[0]["active"] is False
+    _mate_event(clean, 2)
+    stats = missed_mate.generate(clean, _config())
+    assert (stats["created"], stats["reactivated"], stats["deactivated"]) == (0, 1, 0)
+    rows = _puzzles(clean)
+    assert len(rows) == 1 and rows[0]["id"] == puzzle_id and rows[0]["active"] is True
+    assert rows[0]["solution_line"] == ["Ra8#"] and rows[0]["solution_fen_sequence"] and rows[0]["acceptance_map"]
+    assert _progress(clean, puzzle_id) == (2, "knight")
+    assert missed_mate.generate(clean, _config())["unchanged"] == 1
+
+
+def test_the_most_recently_deactivated_puzzle_is_the_one_that_comes_back(clean: psycopg.Connection[DictRow]) -> None:
+    """Two inactive rows of the same class on one board (an older generation nobody cleaned
+    up, and the one retired last): the one retired last carries the history worth keeping."""
+    _player(clean)
+    _mate_event(clean, 1)
+    assert missed_mate.generate(clean, _config())["created"] == 1
+    pid = _puzzles(clean)[0]["id"]
+    _history(clean, pid)
+    clean.execute("UPDATE puzzles SET active = FALSE, updated_at = now() - interval '1 day' WHERE id = %s", (pid,))
+    clean.execute(
+        "INSERT INTO puzzles (fen, solution_line, source_types, color, player_id, active, updated_at)"
+        " VALUES (%s, %s::jsonb, ARRAY['own_mate'], 'w', %s, FALSE, now() - interval '10 days')",
+        (MATE_FEN, json.dumps(["Ra8#"]), PLAYER_ID),
+    )
+    stats = missed_mate.generate(clean, _config())
+    assert stats["reactivated"] == 1
+    assert [r["id"] for r in _puzzles(clean) if r["active"]] == [pid]
+    assert _progress(clean, pid) == (2, "knight")
+
+
+def test_a_removed_hand_made_puzzle_and_a_repertoire_row_are_never_brought_back(
+    clean: psycopg.Connection[DictRow],
+) -> None:
+    """Only a row the same generator wrote is a candidate: a hand-made puzzle the player removed
+    stays removed (and a new hand-made one on the board is new), an inactive corpus row on the
+    board stays as it is, and the generator inserts."""
+    from core.puzzles import custom
+
+    _player(clean)
+    clean.execute(
+        "INSERT INTO puzzles (fen, solution_line, source_types, color, player_id, active)"
+        " VALUES (%s, %s::jsonb, ARRAY['custom'], 'w', %s, FALSE), (%s, %s::jsonb, ARRAY['lichess_cc0'], 'w', %s, FALSE)",
+        (MATE_FEN, json.dumps(["Ra8#"]), PLAYER_ID, MATE_FEN, json.dumps(["Ra8#"]), PLAYER_ID),
+    )
+    _line(clean)
+    clean.execute(
+        "INSERT INTO puzzles (fen, solution_line, source_types, color, player_id, active, is_repertoire,"
+        " repertoire_line_id) VALUES (%s, %s::jsonb, ARRAY['own_mate'], 'w', %s, FALSE, TRUE, 1)",
+        (MATE_FEN, json.dumps(["Ra8#"]), PLAYER_ID),
+    )
+    _mate_event(clean, 1)
+    stats = missed_mate.generate(clean, _config())
+    assert (stats["created"], stats["reactivated"]) == (1, 0)
+    assert [(r["source_types"], r["is_repertoire"], r["active"]) for r in _puzzles(clean)] == [
+        (["custom"], False, False),
+        (["lichess_cc0"], False, False),
+        (["own_mate"], True, False),
+        (["own_mate"], False, True),
+    ]
+    # the player makes one by hand again after removing the generated one: a new row, not the old
+    clean.execute("UPDATE puzzles SET active = FALSE WHERE source_types = ARRAY['own_mate']")
+    new_id = custom.create(
+        clean, fen=MATE_FEN, solution_line=["Ra8#"], color="w", context_tags=[], title=None, description=None
+    )
+    assert new_id == max(r["id"] for r in _puzzles(clean)) and len(_puzzles(clean)) == 5
+
+
+def test_a_board_claimed_between_the_read_and_the_write_is_skipped_without_losing_the_batch(
+    clean: psycopg.Connection[DictRow],
+) -> None:
+    """Serve-time corpus materialisation can put an active row on the board after the generator
+    read it as free. The reactivation's unique violation is caught in its savepoint, the board is
+    left to its new owner, and the rest of the batch (another board) still commits."""
+    from core.puzzles.generate import _write
+
+    _player(clean)
+    _mate_event(clean, 1)
+    assert missed_mate.generate(clean, _config())["created"] == 1
+    old_id = _puzzles(clean)[0]["id"]
+    _history(clean, old_id)
+    clean.execute("UPDATE puzzles SET active = FALSE WHERE id = %s", (old_id,))
+    # the competitor: an active corpus row on the same board, inserted after the read
+    clean.execute(
+        "INSERT INTO puzzles (fen, solution_line, source_types, color, player_id)"
+        " VALUES (%s, %s::jsonb, ARRAY['lichess_cc0'], 'w', %s)",
+        (MATE_FEN, json.dumps(["Ra8#"]), PLAYER_ID),
+    )
+    with clean.transaction():
+        written = _write.create(
+            clean,
+            [
+                _write.NewPuzzle(fen=MATE_FEN, solution_line=["Ra8#"], source_types=["own_mate"], color="w"),
+                _write.NewPuzzle(
+                    fen=MATE_IN_TWO_FEN, solution_line=["Ra7", "Kg8", "Rb8#"], source_types=["own_mate"], color="w"
+                ),
+            ],
+        )
+    assert written.reactivated == [] and [fen for _, fen in written.created] == [MATE_IN_TWO_FEN]
+    rows = _puzzles(clean)
+    assert [(r["source_types"], r["active"]) for r in rows] == [
+        (["own_mate"], False),
+        (["lichess_cc0"], True),
+        (["own_mate"], True),
+    ]
+    assert _progress(clean, old_id) == (2, "knight")
+    assert clean.execute("SELECT 1 AS ok").fetchone()  # the connection is not in an aborted transaction
+
+
 def test_a_mate_longer_than_the_window_does_not_qualify(clean: psycopg.Connection[DictRow]) -> None:
     _player(clean)
     _mate_event(clean, 1, mate_in=2, fen=MATE_IN_TWO_FEN, best_line="Ra7 Kg8 Rb8#")
