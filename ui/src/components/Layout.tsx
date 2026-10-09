@@ -143,7 +143,11 @@ export default function Layout({ onLoggedOut }: { onLoggedOut: () => void }) {
           </div>
         )}
       </header>
-      <main className="mx-auto max-w-5xl px-4 py-6">
+      {/* On a phone the page ends 6 rem above the viewport's bottom: iOS Safari keeps a strip
+          there, while its toolbars are collapsed, for the tap that brings them back, and a
+          control sitting in it needs two taps. (The inset term is 0 until the viewport opts
+          into `viewport-fit=cover`.) */}
+      <main className="mx-auto max-w-5xl px-4 pt-6 pb-[calc(env(safe-area-inset-bottom,0px)+6rem)] sm:pb-6">
         <Outlet />
       </main>
     </div>

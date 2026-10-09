@@ -95,4 +95,11 @@ describe("Layout navigation", () => {
     expect(within(document.getElementById("nav-panel")!).getByText("Games").tagName).toBe("SPAN");
     for (const b of screen.getAllByRole("button", { name: "Log out" })) expect(b).toBeDisabled();
   });
+
+  it("the page ends 6 rem above a phone's viewport bottom (iOS Safari's toolbar-reveal strip) and 1.5 rem on a wider screen", () => {
+    renderAt("/practice");
+    const main = screen.getByRole("main");
+    expect(main).toHaveClass("pb-[calc(env(safe-area-inset-bottom,0px)+6rem)]", "sm:pb-6");
+    expect(main).not.toHaveClass("py-6");
+  });
 });
