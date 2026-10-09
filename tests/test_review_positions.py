@@ -27,12 +27,13 @@ from psycopg.rows import DictRow, dict_row
 
 from core import housekeeping, runs, schema
 from core.chess.board import moves_to_fen_sequence
-from core.constants import ANALYSABLE_VARIANTS, OPENING_PREFIX_PLIES, PLAYER_ID, STOCKFISH_DEPTH
+from core.constants import ANALYSABLE_VARIANTS, OPENING_PREFIX_PLIES, PLAYER_ID, STOCKFISH_DEPTH, STOCKFISH_STAMP
 from core.ingest import backfill, chesscom, lichess
 from core.ingest.records import GameRecord
 from core.ingest.store import store_game, upsert_game
 from core.review import evals, mistakes, positions
 from core.settings import Settings
+from tests.conftest import stockfish_skip
 
 ME = "player_test"
 NOW = datetime(2026, 10, 1, 12, tzinfo=UTC)
@@ -660,9 +661,51 @@ def test_a_board_is_rebuilt_from_the_next_game_and_fails_only_when_none_rebuilds
     for moves in (["d4", "e5"], ["--", "e5"]):
         assert broken(ids[:1], moves) == {"pending": 2, "evaluated": 2, "terminal": 0, "failed": 0, "fallbacks": 2}
         assert _evaluated(conn)[after_e4]["fen"] == _canonical(moves_to_fen_sequence(["e4"])[1])
+    # The first three fail and the fourth replays: the bound is well past three.
+    assert mistakes.EVAL_SOURCES > 3
+    assert broken(ids[:3], ["d4", "e5"]) == {"pending": 2, "evaluated": 2, "terminal": 0, "failed": 0, "fallbacks": 2}
     # No source within reach rebuilds it: counted, nothing written, the step fails.
     out = broken(ids[: mistakes.EVAL_SOURCES], ["d4", "e5"])
     assert out["failed"] == 2 and after_e4 not in _evaluated(conn)
+
+
+def test_a_board_another_engine_scored_is_pending_again_but_a_terminal_one_never(
+    clean: psycopg.Connection[DictRow],
+) -> None:
+    """Rows carry the stamp of the engine that wrote them. Pending: no row, a row with no result,
+    a scored row stamped by another engine, a scored row with no stamp (written before the stamp
+    was recorded). Not pending: a scored row by this engine, a terminal row whatever its stamp."""
+    conn = clean
+    _player(conn)
+    line = ["e4", "e5", "Nf3"]
+    _games(conn, "s", line, 3, color="white")
+    conn.commit()
+    fens = moves_to_fen_sequence(line)
+    k = [_key(conn, f) for f in fens]  # boards after 0..3 plies; the player moves from 0 and 2
+    pending, _ = _candidates(conn, _config())
+    assert pending == 4
+    write = (
+        "INSERT INTO position_evals (board_key, fen, eval_cp, best_move, terminal, depth, engine)"
+        " VALUES (%s, %s, %s, %s, %s, 18, %s)"
+    )
+    conn.execute(write, (k[0], fens[0], 20, "e4", None, STOCKFISH_STAMP))  # this engine: done
+    conn.execute(write, (k[1], fens[1], 20, "e5", None, "stockfish_0"))  # another engine: pending
+    conn.execute(write, (k[2], fens[2], 20, "Nf3", None, None))  # before the stamp: pending
+    conn.execute(write, (k[3], fens[3], None, None, "draw", "stockfish_0"))  # terminal: never
+    conn.commit()
+    pending, rows = _candidates(conn, _config())
+    assert (pending, {r["key"] for r in rows}) == (2, {k[1], k[2]})
+    out = evals.run(conn, _config(), limit=None, engine=_Stub())
+    assert out["evaluated"] == 2 and out["failed"] == 0
+    rows_after = _evaluated(conn)
+    assert {key: rows_after[key]["engine"] for key in k} == {
+        k[0]: STOCKFISH_STAMP,
+        k[1]: STOCKFISH_STAMP,
+        k[2]: STOCKFISH_STAMP,
+        k[3]: "stockfish_0",
+    }
+    assert rows_after[k[3]]["terminal"] == "draw"
+    assert _candidates(conn, _config()) == (0, [])
 
 
 def test_a_board_counts_per_colour(clean: psycopg.Connection[DictRow]) -> None:
@@ -844,6 +887,49 @@ def test_migration_010_converts_a_stored_mate_zero_and_admits_exactly_two_kinds_
             c.rollback()
 
 
+def test_migration_012_leaves_every_existing_row_pending_but_a_terminal_one(fresh_db_url: str, tmp_path: Path) -> None:
+    """A version-11 database with a scored row and a terminal row, both written before the
+    engine was recorded: after the upgrade both carry no stamp, the scored one is pending again
+    (NULL is "another engine", never "none") and the terminal one is not; the next write stamps.
+    The games are real so the candidate query has boards to ask about."""
+    from psycopg import sql
+
+    from tests.test_schema import FIXTURES, _scratch
+
+    url = _scratch(fresh_db_url, "evals_v11")
+    v11 = tmp_path / "v11"
+    v11.mkdir()
+    for n, path in schema.migration_files():
+        if n <= 11:
+            (v11 / path.name).write_text(path.read_text())
+    line = ["e4", "e5", "Nf3"]
+    fens = moves_to_fen_sequence(line)
+    with psycopg.Connection[DictRow].connect(url, row_factory=dict_row) as c:
+        c.execute(sql.SQL((FIXTURES / "schema_baseline.sql").read_text()))  # type: ignore[arg-type]  # repo fixture
+        c.execute("INSERT INTO schema_version (version) VALUES (0)")
+        assert schema.upgrade(c, v11)[-1] == 11
+        _player(c)
+        _games(c, "m", line, 3, color="white")
+        c.commit()
+        keys = [_key(c, f) for f in fens]
+        c.execute(
+            "INSERT INTO position_evals (board_key, fen, eval_cp, best_move, terminal, depth)"
+            " VALUES (%s, %s, 20, 'e4', NULL, 18), (%s, %s, NULL, NULL, 'draw', 18)",
+            (keys[0], fens[0], keys[3], fens[3]),
+        )
+        c.commit()
+        assert schema.upgrade(c, to=12) == [12]
+        stamps = c.execute("SELECT board_key, engine FROM position_evals ORDER BY board_key").fetchall()
+        assert [r["engine"] for r in stamps] == [None, None]
+        pending, rows = _candidates(c, _config())
+        assert pending == 3 and keys[0] in {r["key"] for r in rows} and keys[3] not in {r["key"] for r in rows}
+        out = evals.run(c, _config(), limit=None, engine=_Stub())
+        assert out["evaluated"] == 3 and out["failed"] == 0
+        after = {r["board_key"]: r["engine"] for r in c.execute("SELECT board_key, engine FROM position_evals")}
+        assert after[keys[0]] == STOCKFISH_STAMP and after[keys[3]] is None
+        assert _candidates(c, _config()) == (0, [])
+
+
 class _NoStart:
     """An engine that cannot start (Stockfish missing, or dying in its UCI handshake)."""
 
@@ -870,6 +956,7 @@ import psycopg
 from psycopg.rows import dict_row
 from core.review import evals
 from core.settings import Settings
+from tests.conftest import stockfish_skip
 from tests import test_review_positions as t
 
 engine = {"none": None, "no_start": t._NoStart(), "dies": t._Dies()}[sys.argv[2]]
@@ -952,7 +1039,7 @@ def test_a_worker_that_dies_ends_the_run_with_every_board_counted(
     assert all(f.endswith("BrokenProcessPool") for f in out["failures"]) and "Traceback" not in printed
 
 
-@pytest.mark.skipif(__import__("shutil").which("stockfish") is None, reason="stockfish not installed")
+@pytest.mark.skipif(stockfish_skip() is not None, reason=stockfish_skip() or "")
 def test_workers_close_their_engines_so_the_run_ends(clean: psycopg.Connection[DictRow], fresh_db_url: str) -> None:
     """python-chess drives Stockfish from a non-daemon thread, and a worker process waits for
     its non-daemon threads before it ends: with the engine left open, the pool's shutdown waited
