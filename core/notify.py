@@ -50,8 +50,9 @@ def alert_body(step: str, run_id: int | None, error: str) -> str:
     that could carry a URL or DSN fragment."""
     error_class = error.split(":", 1)[0].split(" ", 1)[0]
     error_class = _SANITISE.sub("", error_class)[:60] or "error"
-    run = run_id if run_id is not None else "-"
-    return f"blundriq step {step} failed (run {run}): {error_class}\nSee pipeline_runs for detail."
+    if run_id is None:  # nothing was recorded (no connection, or a failure outside the chain)
+        return f"blundriq step {step} failed: {error_class}"
+    return f"blundriq step {step} failed (run {run_id}): {error_class}\nSee pipeline_runs for detail."
 
 
 def send_failure(step: str, run_id: int | None, error: str) -> bool:

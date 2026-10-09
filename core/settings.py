@@ -219,26 +219,18 @@ class Settings(BaseModel):
     # batch targets the configured percentages independently, with no memory of earlier batches: the
     # old system once measured the realised mix over a trailing window of puzzles shown and "repaid"
     # a bucket's shortfall in later batches, and the repayment was a flood, so catch-up was removed
-    # and `puzzle_mix_window` survived there only as a housekeeping retention floor. Nothing reads
-    # it here; it is kept so the settings row round-trips. The seeded split was 25/30/15/10/20; the
+    # (its window setting went with it). The seeded split was 25/30/15/10/20; the
     # live values had first-class and corpus mates down and remaining up (25/20/35/10/10), the
     # direction the corpus-variety memo asked for after "the same types over and over" turned out to
     # be arithmetic: five first-class themes at 30 % of every 12-puzzle batch, against 22 themes in
     # the remaining bucket. 12 has no recorded reason. Weak motifs: the old system materialised a
     # pool of weak-motif puzzles weighted by raw miss count per theme (a deliberate choice over the
     # design's severity weighting: the app's theme is frequency), capped so one weakness could not
-    # crowd the queue; that is where `weak_motif_target_count` and `weak_motif_theme_cap_pct` come
-    # from. This serve does not weight: it orders the first-class themes most-missed first (misses
-    # at or above `weak_motif_min_occurrences`, else every theme alphabetically) and round-robins
-    # one candidate per theme, so a sole weak theme can take the whole first-class share. The two
-    # old knobs have no consumer here and are kept for the round-trip only. The six `coverage_*`
-    # fields drove the old Stats page's weakness / strength / mastered verdicts, which are not
-    # ported (no Stats page was rebuilt); nothing reads them. They were set at build with only
-    # their meaning written down.
+    # crowd the queue. This serve does not weight: it orders the first-class themes most-missed
+    # first (misses at or above `weak_motif_min_occurrences`, else every theme alphabetically) and
+    # round-robins one candidate per theme, so a sole weak theme can take the whole first-class
+    # share. docs/decisions/008 records the settings that went with the pool and the old Stats page.
     puzzle_mix_batch_size: int = Field(default=12, ge=1, le=50, description="Puzzles per practice batch.")
-    puzzle_mix_window: int = Field(
-        default=50, ge=5, le=500, description="Not used by this implementation (the old mix catch-up window)."
-    )
     puzzle_mix_your_puzzles_pct: int = Field(
         default=25, ge=0, le=100, description="% of a batch from the player's own blunders/deviations."
     )
@@ -260,48 +252,6 @@ class Settings(BaseModel):
     )
     weak_motif_min_occurrences: int = Field(
         default=2, ge=1, le=50, description="Occurrences before a motif counts as a weakness."
-    )
-    weak_motif_target_count: int = Field(
-        default=20, ge=1, le=200, description="Not used by this implementation (the old weak-motif pool size)."
-    )
-    weak_motif_theme_cap_pct: int = Field(
-        default=40, ge=1, le=100, description="Not used by this implementation (the old weak-motif theme cap)."
-    )
-    coverage_practice_min_attempts: int = Field(
-        default=3,
-        ge=1,
-        le=50,
-        description="Not used by this implementation (the old Stats coverage: attempts before a puzzle counted).",
-    )
-    coverage_mastered_success_pct: int = Field(
-        default=80,
-        ge=1,
-        le=100,
-        description="Not used by this implementation (the old Stats coverage: success % that counted as mastered).",
-    )
-    coverage_recent_games_window: int = Field(
-        default=1000,
-        ge=10,
-        le=5000,
-        description="Not used by this implementation (the old Stats coverage: games considered).",
-    )
-    coverage_weakness_min_occurrences: int = Field(
-        default=5,
-        ge=1,
-        le=100,
-        description="Not used by this implementation (the old Stats coverage: occurrences before a weakness).",
-    )
-    coverage_weakness_miss_rate_pct: int = Field(
-        default=50,
-        ge=1,
-        le=100,
-        description="Not used by this implementation (the old Stats coverage: miss rate % marking a weakness).",
-    )
-    coverage_strength_found_rate_pct: int = Field(
-        default=80,
-        ge=1,
-        le=100,
-        description="Not used by this implementation (the old Stats coverage: found rate % marking a strength).",
     )
 
     # --- Corpus (Lichess CC0) ---------------------------------------------
@@ -391,8 +341,7 @@ class Settings(BaseModel):
     # empty for the player it was tuned on (their losses were sharp) and stays for the profile where it is not.
     # Pricing is mate distance, else the win-probability sigmoid; the old system's first rung, a
     # lookup over the board, is gone (docs/decisions/001). The page reads the stored events by
-    # habit (core/review/habits.py); the two pool floors and the half-life in games belonged to
-    # the old event-pool worklist and nothing reads them.
+    # habit (core/review/habits.py).
     review_conf_es_drop: int = Field(
         default=15, ge=1, le=100, description="Expected-score drop that confirms a material event."
     )
@@ -416,15 +365,6 @@ class Settings(BaseModel):
     )
     review_early_ply_cap: int = Field(
         default=30, ge=1, le=80, description="'Early' cap when no repertoire match exists."
-    )
-    review_pool_floor_line: int = Field(
-        default=5, ge=1, le=50, description="Not used by this implementation (the old opening pools' line floor)."
-    )
-    review_pool_floor_eco: int = Field(
-        default=8, ge=1, le=50, description="Not used by this implementation (the old opening pools' ECO floor)."
-    )
-    review_recency_half_life_games: int = Field(
-        default=200, ge=10, description="Not used by this implementation (the old worklist's half-life in games)."
     )
     # Review reads the opening prefix every analysable game keeps (core.constants.
     # OPENING_PREFIX_PLIES), over this many months back from the newest game. The player's decisions

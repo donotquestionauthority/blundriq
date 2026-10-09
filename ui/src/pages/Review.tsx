@@ -208,12 +208,20 @@ export default function Review() {
     [],
   );
 
-  const ownWrite = useRef(false);
+  // Every entry this page writes carries a mark naming that write. Navigations are transitions, so
+  // a write can still be pending when the top bar is clicked and the two then become current
+  // together: whether the page wrote the entry is read from the entry, never from a flag that
+  // the other navigation could consume.
+  const writer = useRef(`${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`);
+  const writes = useRef(0);
+  const lastWrite = useRef<string | null>(null);
   const writeEntry = useCallback(
     (s: ReviewSettings, sections: Iterable<string>, habits: Iterable<string>) => {
       const open: ReviewOpenSnapshot = { sections: [...sections], habits: [...habits], key: reviewSettingsKey(s) };
-      ownWrite.current = true;
-      navigate({ pathname: location.pathname, search: reviewSettingsSearch(s) }, { replace: true, state: { open } });
+      writes.current += 1;
+      const writtenBy = `${writer.current}:${writes.current}`;
+      lastWrite.current = writtenBy;
+      navigate({ pathname: location.pathname, search: reviewSettingsSearch(s) }, { replace: true, state: { open, writtenBy } });
     },
     [navigate, location.pathname],
   );
@@ -231,14 +239,16 @@ export default function Review() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settingsKey]);
 
-  // A history entry this page did not write (the top bar, Back) is a fresh visit even when its
-  // settings equal the current ones: a notice from an earlier visit goes.
+  // A history entry this page did not just write (the top bar, Back, even back to an entry it
+  // wrote earlier) is a fresh visit even when its settings equal the current ones: a notice from
+  // an earlier visit goes.
   const seenEntry = useRef(location.key);
   useEffect(() => {
     if (seenEntry.current === location.key) return;
     seenEntry.current = location.key;
-    if (ownWrite.current) ownWrite.current = false;
-    else setNotice(null);
+    const writtenBy = (location.state as { writtenBy?: unknown } | null)?.writtenBy;
+    if (writtenBy === undefined || writtenBy !== lastWrite.current) setNotice(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.key]);
 
   const recoverToAllOpenings = useCallback(() => {

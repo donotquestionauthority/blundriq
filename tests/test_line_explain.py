@@ -230,7 +230,7 @@ def tx(clean: psycopg.Connection[DictRow], fresh_db_url: str) -> Tx:
     clean.commit()
 
     @contextmanager
-    def open_tx() -> Generator[psycopg.Connection[DictRow], None, None]:
+    def open_tx() -> Generator[psycopg.Connection[DictRow]]:
         with psycopg.Connection[DictRow].connect(fresh_db_url, row_factory=dict_row) as conn:
             yield conn
 

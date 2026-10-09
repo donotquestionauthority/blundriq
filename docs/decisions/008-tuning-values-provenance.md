@@ -37,14 +37,13 @@ inventory, so nobody re-derives a number that was never derived.
 All of the `review_*` knobs: "provisional, unfrozen pending per-band calibration" (a
 second rating band and a depth-12-vs-18 sensitivity) that was never run. Of them,
 `review_early_k_plies`, `review_early_ply_cap`, `review_missed_win_shed`,
-`review_faded_peak_es`, `review_quiesce_max_plies`, `review_recency_half_life_games`
-and the n/(n+3) severity shrink have no validation behind them at all.
+`review_faded_peak_es`, `review_quiesce_max_plies` and the n/(n+3) severity shrink have no
+validation behind them at all.
 
 ## Never explained anywhere
 
 The 50/100/200/300 centipawn ladder; `missed_mate_max_moves` = 3; every SRS number
-(intervals, retry, 2-of-3 demotion, 2 hits / 300 games); batch 12 and window 50; the
-weak-motif target 20 and theme cap 40 %; the coverage thresholds; the tier widths
+(intervals, retry, 2-of-3 demotion, 2 hits / 300 games); batch 12; the tier widths
 beyond `normal`; the per-time-class rating offsets; bucket width 100; K = 40 rather
 than another K; `scout_bayesian_prior_strength`.
 
@@ -61,15 +60,18 @@ calibrated against the corpus. `core/puzzles/serve.py` applies the time-class va
 when the latest game has one. At the original user's ratings the difference is inside the tier band
 (rapid −250 vs default −325); it is recorded here rather than changed.
 
-The old system kept a materialised pool of weak-motif puzzles, `weak_motif_target_count`
-deep, each theme's share capped at `weak_motif_theme_cap_pct` and weighted by its miss
-count. This serve has no pool: `_weak_theme_order` ranks the first-class themes by
-misses (at or above `weak_motif_min_occurrences`) and the first-class bucket
-round-robins one candidate per theme in that order, so one weak theme can supply the
-whole bucket. The two knobs, and `puzzle_mix_window`, are retained in the settings row
-with no consumer, as are the six `coverage_*` fields of the unported Stats page. All nine
-descriptions say "Not used by this implementation". Removing them is a migration of the settings row; restoring the
-weighting is a serving change. Neither is this note's decision.
+The old system kept a materialised pool of weak-motif puzzles, a fixed number deep, each
+theme's share capped and weighted by its miss count. This serve has no pool:
+`_weak_theme_order` ranks the first-class themes by misses (at or above
+`weak_motif_min_occurrences`) and the first-class bucket round-robins one candidate per
+theme in that order, so one weak theme can supply the whole bucket. Restoring the weighting
+would be a serving change.
+
+Twelve settings the port carried over with no consumer were later removed from the model
+and from the stored row (migration 011): the mix catch-up window, the weak-motif pool's
+size and theme cap, the six thresholds of the unported Stats page, and the old Review
+worklist's two pool floors and half-life in games. A future feature that wants one of
+them defines it afresh, with its reason.
 
 ## Not a home for future values
 

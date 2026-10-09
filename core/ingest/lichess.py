@@ -171,7 +171,7 @@ def parse_game(game: dict[str, Any], username: str) -> GameRecord | None:
     if isinstance(raw_clocks, list) and len(raw_clocks) == len(moves):  # type: ignore[reportUnknownArgumentType]
         try:
             clocks = [int(c) // 100 for c in raw_clocks]  # type: ignore[reportUnknownArgumentType]  # centiseconds → seconds
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             clocks = None
 
     opening = sub(game, "opening")

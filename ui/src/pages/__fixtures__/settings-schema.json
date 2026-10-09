@@ -334,54 +334,6 @@
       "title": "Cc0 Tier Very Hard",
       "type": "array"
     },
-    "coverage_mastered_success_pct": {
-      "default": 80,
-      "description": "Not used by this implementation (the old Stats coverage: success % that counted as mastered).",
-      "maximum": 100,
-      "minimum": 1,
-      "title": "Coverage Mastered Success Pct",
-      "type": "integer"
-    },
-    "coverage_practice_min_attempts": {
-      "default": 3,
-      "description": "Not used by this implementation (the old Stats coverage: attempts before a puzzle counted).",
-      "maximum": 50,
-      "minimum": 1,
-      "title": "Coverage Practice Min Attempts",
-      "type": "integer"
-    },
-    "coverage_recent_games_window": {
-      "default": 1000,
-      "description": "Not used by this implementation (the old Stats coverage: games considered).",
-      "maximum": 5000,
-      "minimum": 10,
-      "title": "Coverage Recent Games Window",
-      "type": "integer"
-    },
-    "coverage_strength_found_rate_pct": {
-      "default": 80,
-      "description": "Not used by this implementation (the old Stats coverage: found rate % marking a strength).",
-      "maximum": 100,
-      "minimum": 1,
-      "title": "Coverage Strength Found Rate Pct",
-      "type": "integer"
-    },
-    "coverage_weakness_min_occurrences": {
-      "default": 5,
-      "description": "Not used by this implementation (the old Stats coverage: occurrences before a weakness).",
-      "maximum": 100,
-      "minimum": 1,
-      "title": "Coverage Weakness Min Occurrences",
-      "type": "integer"
-    },
-    "coverage_weakness_miss_rate_pct": {
-      "default": 50,
-      "description": "Not used by this implementation (the old Stats coverage: miss rate % marking a weakness).",
-      "maximum": 100,
-      "minimum": 1,
-      "title": "Coverage Weakness Miss Rate Pct",
-      "type": "integer"
-    },
     "daily_game_target": {
       "default": 1,
       "description": "Games per day (standard or 960) that count as 'done'.",
@@ -602,14 +554,6 @@
       "title": "Puzzle Mix Own Missed Mate Pct",
       "type": "integer"
     },
-    "puzzle_mix_window": {
-      "default": 50,
-      "description": "Not used by this implementation (the old mix catch-up window).",
-      "maximum": 500,
-      "minimum": 5,
-      "title": "Puzzle Mix Window",
-      "type": "integer"
-    },
     "puzzle_mix_your_puzzles_pct": {
       "default": 25,
       "description": "% of a batch from the player's own blunders/deviations.",
@@ -732,22 +676,6 @@
       "title": "Review Mistake Floor Es",
       "type": "integer"
     },
-    "review_pool_floor_eco": {
-      "default": 8,
-      "description": "Not used by this implementation (the old opening pools' ECO floor).",
-      "maximum": 50,
-      "minimum": 1,
-      "title": "Review Pool Floor Eco",
-      "type": "integer"
-    },
-    "review_pool_floor_line": {
-      "default": 5,
-      "description": "Not used by this implementation (the old opening pools' line floor).",
-      "maximum": 50,
-      "minimum": 1,
-      "title": "Review Pool Floor Line",
-      "type": "integer"
-    },
     "review_position_max_ply": {
       "default": 24,
       "description": "Deepest ply (half-move) counted as a position.",
@@ -778,13 +706,6 @@
       "maximum": 180,
       "minimum": 7,
       "title": "Review Recency Half Life Days",
-      "type": "integer"
-    },
-    "review_recency_half_life_games": {
-      "default": 200,
-      "description": "Not used by this implementation (the old worklist's half-life in games).",
-      "minimum": 10,
-      "title": "Review Recency Half Life Games",
       "type": "integer"
     },
     "review_show_timer": {
@@ -935,22 +856,6 @@
       "maximum": 50,
       "minimum": 1,
       "title": "Weak Motif Min Occurrences",
-      "type": "integer"
-    },
-    "weak_motif_target_count": {
-      "default": 20,
-      "description": "Not used by this implementation (the old weak-motif pool size).",
-      "maximum": 200,
-      "minimum": 1,
-      "title": "Weak Motif Target Count",
-      "type": "integer"
-    },
-    "weak_motif_theme_cap_pct": {
-      "default": 40,
-      "description": "Not used by this implementation (the old weak-motif theme cap).",
-      "maximum": 100,
-      "minimum": 1,
-      "title": "Weak Motif Theme Cap Pct",
       "type": "integer"
     }
   },

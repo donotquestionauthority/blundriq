@@ -2,7 +2,7 @@
 # Installs the repo's git hooks into .git/hooks. Run once after cloning.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
-command -v gitleaks >/dev/null || { echo "install gitleaks first (brew install gitleaks); CI pins 8.24.3, any >= 8.24 works"; exit 1; }
+command -v gitleaks >/dev/null || { echo "install gitleaks first (brew install gitleaks); CI pins 8.30.1, any >= 8.24 works"; exit 1; }
 v="$(gitleaks version 2>/dev/null | tr -d 'v')"
 printf '%s\n8.24.0\n' "$v" | sort -V | head -1 | grep -qx '8.24.0' || { echo "gitleaks $v is older than 8.24; upgrade it"; exit 1; }
 for h in pre-commit pre-push; do

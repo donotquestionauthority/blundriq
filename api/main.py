@@ -26,7 +26,7 @@ from api.routes import repertoire as repertoire_routes
 from api.routes import review as review_routes
 from api.routes import scout as scout_routes
 from api.routes import settings as settings_routes
-from core import secrets
+from core import db, secrets
 
 _LOCAL_HOSTS = ("localhost", "127.0.0.1")
 # What a browser sends as Origin: scheme, a lower-case ASCII host (labels of letters, digits and
@@ -91,7 +91,10 @@ class _ConfiguredCors:
 @asynccontextmanager
 async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
     parse_origins(secrets.api().allowed_origins)  # fail closed at startup, not on first request
-    yield
+    try:
+        yield
+    finally:
+        db.close_pool()
 
 
 def create_app() -> FastAPI:

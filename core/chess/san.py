@@ -51,7 +51,7 @@ def parse(board: chess.Board, move: str) -> chess.Move | None:
     """The move a SAN token means on this board, or None if it is not legal here."""
     try:
         return board.parse_san(normalize_san(move))
-    except (ValueError, AssertionError):
+    except ValueError, AssertionError:
         return None
 
 

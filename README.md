@@ -6,11 +6,11 @@ One deployment serves one player behind one password; there are no accounts. To 
 
 ## Try it locally
 
-You need Python 3.11+, Node 22, Postgres 16 or later (CI runs 17) where you can create databases, and Stockfish 18 on `PATH` (the hourly job pins the same version; analyses are labelled with it).
+You need Python 3.14, Node 24, Postgres 16 or later (CI runs 17) where you can create databases, and Stockfish 18 on `PATH` (the hourly job pins the same version; analyses are labelled with it).
 
 ```
 git clone <your fork> blundriq && cd blundriq
-python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+python3.14 -m venv .venv && bash tools/install.sh .venv/bin/python dev
 (cd ui && npm ci)
 createdb blundriq
 ```
@@ -70,11 +70,11 @@ The original runs on free tiers: Postgres on Supabase, the API on Render, the UI
 
 **Database.** Create the project's Postgres and, with `DATABASE_URL` pointing at it, run `.venv/bin/pipeline db init` once (later versions: `.venv/bin/pipeline db upgrade`). The schema has no row-level security: nothing but the API is meant to reach it, with a password-protected session in front. On Supabase that means turning the Data API off (Project Settings → Data API) before any data goes in. Supabase grants its public API roles access to new tables by default, so with the Data API on, anyone holding the project's public key could read and write every table. Check afterwards that `https://<project-ref>.supabase.co/rest/v1/settings`, called with the project's anon key, no longer answers with data. Use the pooler connection string as `DATABASE_URL`.
 
-**API** (Render or any Python host): build `pip install .`, start `uvicorn api.main:app --host 0.0.0.0 --port $PORT`, with `DATABASE_URL`, `SESSION_SECRET`, `PASSWORD_HASH`, `ALLOWED_ORIGINS=https://app.example.org` and any AI keys set in the host's environment. `ALLOWED_ORIGINS` is the exact origin of your UI (several, comma-separated, if you have more than one); there is no wildcard, and nothing else may call the API with the cookie. Point `api.example.org` at it.
+**API** (Render or any Python host): build `bash tools/install.sh python runtime`, start `uvicorn api.main:app --host 0.0.0.0 --port $PORT`, with `DATABASE_URL`, `SESSION_SECRET`, `PASSWORD_HASH`, `ALLOWED_ORIGINS=https://app.example.org` and any AI keys set in the host's environment. `ALLOWED_ORIGINS` is the exact origin of your UI (several, comma-separated, if you have more than one); there is no wildcard, and nothing else may call the API with the cookie. Point `api.example.org` at it.
 
 **UI** (Vercel or any static host): build `ui/` with `npm run build`, with `VITE_API_URL=https://api.example.org` set at build time. Point `app.example.org` at it.
 
-**Hourly pipeline**: `.github/workflows/pipeline.yml` runs `pipeline run` every hour. Add `DATABASE_URL`, `RESEND_API_KEY`, `ALERT_EMAIL` and `ALERT_FROM` as repository secrets and enable Actions on your copy (scheduled workflows start disabled on a fork). Its console output is public on a public repository, so the code prints counts and error class names only, never messages or handles; keep it that way in anything you add.
+**Hourly pipeline**: `.github/workflows/pipeline.yml` runs `pipeline run` every hour. Add `DATABASE_URL`, `RESEND_API_KEY`, `ALERT_EMAIL` and `ALERT_FROM` as repository secrets and enable Actions on your copy (scheduled workflows start disabled on a fork). GitHub also disables a public repository's schedules after 60 days without commits, silently; the job re-enables its own workflow after every run and sends the failure email if it cannot, but GitHub does not promise that this resets the 60 days, so glance at the Actions tab every few weeks. Its console output is public on a public repository, so the code prints counts and error class names only, never messages or handles; keep it that way in anything you add.
 
 ## Developing
 
@@ -85,6 +85,8 @@ export TEST_DATABASE_URL=postgresql:///blundriq_test
 .venv/bin/ruff check . && .venv/bin/pyright && .venv/bin/pytest
 cd ui && npm run check && npm test -- --run
 ```
+
+**Dependencies are locked.** `requirements.lock` (the app), `requirements-dev.lock` (plus the `[dev]` tools) and `build.lock` (pip and setuptools) pin every package by version and hash, and `tools/install.sh` installs only from them, with build isolation off so nothing a build needs comes from outside them. Nothing changes underneath a running deployment until someone regenerates a lock. After editing `pyproject.toml` or `build.in`, run `bash tools/locks.sh` (needs [uv](https://docs.astral.sh/uv/) at the version the script names); it re-resolves while keeping every other pin. `bash tools/locks.sh upgrade` moves everything to the newest releases, a deliberate step to take with the full suite. CI runs `bash tools/locks.sh check`, which fails when a lock is not what its command writes (also when a pinned release is later yanked or gains a file; the same command fixes it).
 
 **The test session drops and recreates the database `TEST_DATABASE_URL` names**, and creates and drops siblings named after it. Point it at a throwaway database. The suite refuses to start unless the name carries a `test` or `scratch` word and differs from the database `DATABASE_URL` names, but the name check is a seatbelt, not a reason to aim it at anything you care about.
 

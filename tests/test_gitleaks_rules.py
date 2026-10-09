@@ -1,6 +1,6 @@
 """Prove the scanner rules in .gitleaks.toml fire on synthetic examples and that the
 allowlists admit only what they are meant to. Skips when gitleaks is not installed
-(CI installs 8.24.3; the hooks require any version >= 8.24). Probe values are
+(CI installs 8.30.1; the hooks require any version >= 8.24). Probe values are
 high-entropy like real secrets because newer gitleaks applies an entropy floor."""
 
 from __future__ import annotations

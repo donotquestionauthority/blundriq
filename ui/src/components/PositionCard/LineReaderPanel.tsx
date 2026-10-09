@@ -18,6 +18,11 @@ import { editTargetAt, fullMoveCount, moveListEntries, moveNotation, nextNotePly
 
 const btn = "rounded border border-zinc-300 px-2.5 py-1 text-xs font-medium hover:border-zinc-500 disabled:opacity-40 dark:border-zinc-700";
 const btnOn = "rounded border border-zinc-900 bg-zinc-900 px-2.5 py-1 text-xs font-medium text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900";
+// "Read the whole line" opens a long panel and sits among full-width launchers (the solver's
+// three, "Explore from here" on a card), so it has their size: easy to hit on a phone.
+const wholeLine = "w-full rounded border px-3 py-2 text-xs font-medium";
+const wholeLineClosed = `${wholeLine} border-sky-300 bg-sky-50 text-sky-800 dark:border-sky-800 dark:bg-sky-900/30 dark:text-sky-300`;
+const wholeLineOpen = `${wholeLine} border-sky-700 bg-sky-700 text-white dark:border-sky-300 dark:bg-sky-300 dark:text-sky-950`;
 const link = "text-xs text-zinc-500 hover:text-zinc-900 disabled:opacity-50 dark:hover:text-zinc-100";
 
 function detailOf(e: unknown, fallback: string): string {
@@ -365,7 +370,7 @@ export function LineReaderPanel({ fen, repertoireLineId = null, initialPly = 0 }
   if (repertoireLineId == null) return <SinglePosition key={fen} fen={fen} />;
   return (
     <div className="space-y-2">
-      <button type="button" aria-expanded={open} className={open ? btnOn : btn} onClick={() => setOpen((o) => !o)}>
+      <button type="button" aria-expanded={open} className={open ? wholeLineOpen : wholeLineClosed} onClick={() => setOpen((o) => !o)}>
         📖 Read the whole line
       </button>
       {open && (

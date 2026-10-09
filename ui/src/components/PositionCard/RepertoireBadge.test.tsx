@@ -137,4 +137,15 @@ describe("RepertoireBadge", () => {
     expect(await screen.findByTestId("walkthrough-position")).toHaveTextContent("2.Nf3 · move 2 of 2");
     expect(screen.getByTestId(/^board-lw/)).toHaveAttribute("data-position", AFTER_NF3);
   });
+
+  it("draws Read the whole line as a full-width launcher that shows when it is open", async () => {
+    stubFetch({ "/repertoire/coverage": () => ({ status: 200, body: coverage() }), "/repertoire/lines/1/annotated": () => ({ status: 200, body: line() }) });
+    render(<RepertoireBadge fen={AFTER_E5} move="Nc3" />);
+    const button = await screen.findByRole("button", { name: "📖 Read the whole line" });
+    expect(button).toHaveClass("w-full", "py-2", "px-3");
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(button);
+    expect(button).toHaveAttribute("aria-expanded", "true");
+    expect(button).toHaveClass("w-full", "bg-sky-700");
+  });
 });

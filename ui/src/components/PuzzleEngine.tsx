@@ -193,8 +193,15 @@ export function PuzzleEngine({
     checkpointLastMove.current = null;
   }, []);
 
-  // Reset when the puzzle changes.
+  // Reset when the puzzle changes, and only then. The state above already starts as a reset
+  // would leave it, so the mount run is skipped: a move played before effects had run (a fast
+  // first drop) would otherwise be wiped. Keyed on what the puzzle is, so StrictMode's second
+  // effect run, which changes nothing, does not reset either.
+  const appliedPuzzle = useRef(`${fen}\n${solutionLine.join(",")}\n${color}`);
   useEffect(() => {
+    const puzzle = `${fen}\n${solutionLine.join(",")}\n${color}`;
+    if (appliedPuzzle.current === puzzle) return;
+    appliedPuzzle.current = puzzle;
     setFinishLineMode(false);
     setFinishLineFen(fen);
     setFinishLineRemainingMoves([]);
