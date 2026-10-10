@@ -9,7 +9,7 @@ import type { Filters, FilterValues, Game, SortKey, Summary } from "../games";
  * with ratings, issue breakdown, repertoire detail and the PGN. Which columns
  * show and the default day window come from the settings row (games_columns,
  * games_default_window_days), so they are changed on Preferences, not here. Every standard row
- * has a Review action opening the game's review; it carries the filters, page, sort and scroll
+ * has a Review action (its first column) opening the game's review; it carries the filters, page, sort and scroll
  * position in router state, and the page restores them when the review closes back to it. A
  * Chess960 row has no Review action (history only): its external link is unchanged.
  */
@@ -268,7 +268,9 @@ export default function Games() {
     Issues: "issue_count",
     Deviation: "deviated_at_ply",
   };
-  const shown = [...columns.filter((c) => c in cells && c !== "Review"), "Review"];
+  // Review first, at every width: on a phone the table scrolls sideways, and the one action a row
+  // has belongs in the part of it that is on screen.
+  const shown = ["Review", ...columns.filter((c) => c in cells && c !== "Review")];
 
   if (!filters) return <p className="text-sm text-zinc-500">{error ?? "…"}</p>;
 
