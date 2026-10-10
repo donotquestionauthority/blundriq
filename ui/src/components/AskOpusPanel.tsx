@@ -131,7 +131,9 @@ export function AskOpusPanel({ fen, bestMoveSan, disabledReason = null, waiting 
   async function copy() {
     const { mine, owns, done } = begin();
     try {
-      await navigator.clipboard.writeText(formatDryRun(await dryRun(question, alternative())));
+      const prompt = formatDryRun(await dryRun(question, alternative()));
+      if (!owns()) return; // a newer copy or ask owns the clipboard now
+      await navigator.clipboard.writeText(prompt);
       if (owns()) {
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);

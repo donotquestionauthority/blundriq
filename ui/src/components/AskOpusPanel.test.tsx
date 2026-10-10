@@ -169,6 +169,24 @@ describe("asking", () => {
     expect(screen.queryByText("Obsolete answer.")).toBeNull();
   });
 
+  it("a slow dry run from an earlier visit never reaches the clipboard after a newer copy", async () => {
+    let resolveSlow: (a: unknown) => void = () => {};
+    const dry = (text: string) => ({ model: "m", provider: "anthropic", temperature: null, thinking: null, max_tokens: 1, prefill: "", system_prompt: "", rendered_prompt: text });
+    dryRun.mockImplementationOnce(() => new Promise((r) => (resolveSlow = r)));
+    const { rerender } = render(<Host />);
+    fireEvent.click(screen.getByText("Copy prompt"));
+    rerender(<Host fen={AFTER_NF3} best="d5" />);
+    rerender(<Host fen={START} />);
+    dryRun.mockResolvedValueOnce(dry("newer prompt"));
+    fireEvent.click(screen.getByText("Copy prompt"));
+    await flush();
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(writeText.mock.calls[0][0]).toContain("newer prompt");
+    await act(async () => resolveSlow(dry("obsolete prompt")));
+    expect(writeText).toHaveBeenCalledTimes(1); // the obsolete dry run was never written
+    expect(screen.getByText("✓ copied")).toBeInTheDocument();
+  });
+
   it("Copy prompt waits for its dry run and drops a failure for an earlier board", async () => {
     let resolveDry: (a: unknown) => void = () => {};
     dryRun.mockImplementationOnce(() => new Promise((r) => (resolveDry = r)));
