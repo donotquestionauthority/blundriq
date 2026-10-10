@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from core.constants import STOCKFISH_VERSION
+from core.constants import PIPELINE_JOB_TIMEOUT_MINUTES, STOCKFISH_VERSION
 
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "pipeline.yml"
 CI = WORKFLOW.with_name("ci.yml")
@@ -146,6 +146,11 @@ def test_only_the_keepalive_holds_the_token() -> None:
     assert checkout["with"]["persist-credentials"] is False
     holders = [s.get("name") for s in steps if _mentions(s, "github.token") or _mentions(s, "GITHUB_TOKEN")]
     assert holders == ["Keep this schedule enabled"]
+
+
+def test_the_jobs_timeout_is_the_constant_home_reads() -> None:
+    """core/runs.py declares a run without a result over once its import is this old."""
+    assert _job()["timeout-minutes"] == PIPELINE_JOB_TIMEOUT_MINUTES
 
 
 def test_the_job_may_enable_its_workflow_and_nothing_more() -> None:

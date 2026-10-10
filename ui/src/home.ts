@@ -17,6 +17,10 @@ export interface HomePage {
   /** Games played in the last 24 h / 7 d / 30 d / ever, every variant. */
   activity: { last_1: number; last_7: number; last_30: number; total: number };
   pipeline: {
+    /** The most recent run of the chain: when its import started and what became of it. `running`
+     *  is "no result yet and young enough to still be going"; `incomplete` is the same past the
+     *  job's timeout — the job died. Null before the first run. */
+    last_run: { started_at: string; status: RunStatus; failed_step: string | null } | null;
     /** When the hourly chain last ran through to its last step. */
     last_ok_at: string | null;
     /** Hourly steps whose most recent run failed, in chain order. */
@@ -24,7 +28,31 @@ export interface HomePage {
   };
 }
 
+export type RunStatus = "ok" | "failed" | "running" | "incomplete";
+
 export const getHome = () => api.get<HomePage>("/home");
+
+/** Ask GitHub to run the hourly workflow now; the time of the accepted request. */
+export const runPipeline = () => api.post<{ requested_at: string }>("/home/pipeline/run");
+
+/** How often Home re-reads while a run is in progress, and how long after a request it waits
+ *  for the run's first row before saying nothing started (the job's setup takes 1–2 minutes). */
+export const POLL_MS = 15_000;
+export const START_WAIT_MS = 5 * 60_000;
+
+/** The status line's wording for a run. */
+export function runLabel(run: NonNullable<HomePage["pipeline"]["last_run"]>): string {
+  switch (run.status) {
+    case "ok":
+      return "ok";
+    case "failed":
+      return run.failed_step ? `failed (${run.failed_step})` : "failed";
+    case "running":
+      return "running";
+    case "incomplete":
+      return "did not finish";
+  }
+}
 
 /** "3 minutes ago", "2 hours ago", "4 days ago" — for the pipeline line. */
 export function ago(iso: string | null, now: number = Date.now()): string {

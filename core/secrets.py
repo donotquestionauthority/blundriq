@@ -17,6 +17,9 @@ Which variables are required depends on the role of the process:
                                          secret, but every environment value is read here
     ANTHROPIC_API_KEY  api               AI explanations with a claude-* model; read when one is used
     OPENAI_API_KEY     api               AI explanations with an OpenAI model; read when one is used
+    DISPATCH_TOKEN     api               GitHub token that may start the hourly workflow; read when
+                                         Home's "Run now" is used
+    DISPATCH_REPO      api               the repository the workflow lives in (owner/name); read with it
     RESEND_API_KEY     pipeline          ops alerts
     ALERT_EMAIL        pipeline          where ops alerts go
     ALERT_FROM         pipeline          the sender address (on the Resend-verified domain)
@@ -68,6 +71,12 @@ class AlertSecrets:
 
 
 @dataclass(frozen=True)
+class DispatchSecrets:
+    token: str  # a fine-grained token with Actions read and write on the one repository
+    repo: str  # owner/name
+
+
+@dataclass(frozen=True)
 class OracleSecrets:
     oracle_database_url: str  # the restored old database, for `pipeline migrate` and tools/oracle
 
@@ -99,6 +108,10 @@ def alerts() -> AlertSecrets:
         alert_email=_require("ALERT_EMAIL"),
         alert_from=_require("ALERT_FROM"),
     )
+
+
+def dispatch() -> DispatchSecrets:
+    return DispatchSecrets(token=_require("DISPATCH_TOKEN"), repo=_require("DISPATCH_REPO"))
 
 
 def oracle() -> OracleSecrets:

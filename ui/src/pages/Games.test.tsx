@@ -145,6 +145,11 @@ describe("Games page", () => {
     const links = screen.getAllByRole("link", { name: "Review →" });
     expect(links).toHaveLength(1);
     expect(links[0]).toHaveAttribute("href", "/review/1");
+    // Review is the first column, ahead of the configured ones, so a phone shows it without scrolling.
+    expect(screen.getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["Review", "Opponent", "Variant"]);
+    const rows = screen.getAllByRole("row").slice(1);
+    expect(rows[0].querySelector("td:first-child")).toContainElement(links[0]);
+    expect(rows[1].querySelector("td:first-child")?.textContent).toBe(""); // the Chess960 row: an empty cell, not a shifted one
     fireEvent.change(screen.getByLabelText("Opponent"), { target: { value: "s" } });
     await vi.waitFor(() => expect((fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.some((c) => String(c[0]).includes("opponent=s"))).toBe(true));
     Object.defineProperty(window, "scrollY", { configurable: true, value: 1500 });

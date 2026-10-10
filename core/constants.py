@@ -31,6 +31,11 @@ OPENING_PREFIX_PLIES = 30
 # Position evaluations (`pipeline position-evals`): how many boards an hourly run evaluates.
 POSITION_EVALS_PER_RUN = 40
 
+# The hourly job's `timeout-minutes` in pipeline.yml (tests/test_workflows.py pins the two
+# together). A run whose rows reached no result and whose import started this long ago is over:
+# the job that would have written the rest has been killed (core/runs.py).
+PIPELINE_JOB_TIMEOUT_MINUTES = 55
+
 # Review's position ranking (core/review/positions.py). A deficit is points below the Elo
 # expectation per game (0..1); both deficits shrink toward zero by n / (n + SHRINK).
 REVIEW_SHRINK_GAMES = 15

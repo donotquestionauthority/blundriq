@@ -1,5 +1,6 @@
+import { useEffect, useState } from "react";
 import { Link } from "react-router";
-import { ago, getHome, plural } from "../home";
+import { POLL_MS, START_WAIT_MS, ago, getHome, plural, runLabel, runPipeline } from "../home";
 import type { HomePage } from "../home";
 import { useApi } from "../hooks/useApi";
 
@@ -145,22 +146,90 @@ function SinceLastVisit({ d }: { d: HomePage }) {
   );
 }
 
-function Pipeline({ p }: { p: HomePage["pipeline"] }) {
+/**
+ * The pipeline's status and a button to start it. The status is the server's `last_run`, never
+ * state of the button's own; the button adds one thing: after a request, "Requested…" until the
+ * run's first row appears, and a notice if none does within START_WAIT_MS. Polling follows the
+ * status: it continues while the newest run is `running` (or awaited) and stops on any result.
+ */
+function Pipeline({ p, refetch }: { p: HomePage["pipeline"]; refetch: () => void }) {
+  const [requestedAt, setRequestedAt] = useState<number | null>(null);
+  const [waitedOut, setWaitedOut] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [requestError, setRequestError] = useState<string | null>(null);
+
+  const run = p.last_run;
+  const runStartedAt = run ? Date.parse(run.started_at) : null;
+  const newerRun = requestedAt !== null && runStartedAt !== null && runStartedAt >= requestedAt ? run : null;
+  // A run that started before the request is still going: the request is queued behind it, and
+  // the wait for its own first row starts when this one ends.
+  const queuedBehind = requestedAt !== null && newerRun === null && run?.status === "running";
+  const awaitingStart = requestedAt !== null && newerRun === null && !waitedOut;
+  const noStart = requestedAt !== null && newerRun === null && waitedOut && !queuedBehind;
+  // Whatever is running is followed, the request's own run or one the schedule started.
+  const watching = awaitingStart || run?.status === "running";
+
+  // The wait for the run's first row ends by the clock, not by a poll; it does not run while
+  // an earlier run is still going.
+  useEffect(() => {
+    if (requestedAt === null || queuedBehind) return;
+    const timer = setTimeout(() => setWaitedOut(true), START_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, [requestedAt, queuedBehind]);
+
+  useEffect(() => {
+    if (!watching) return;
+    const timer = setInterval(refetch, POLL_MS);
+    return () => clearInterval(timer);
+  }, [watching, refetch]);
+
+  async function request() {
+    setPending(true);
+    setRequestError(null);
+    try {
+      const { requested_at } = await runPipeline();
+      setWaitedOut(false);
+      setRequestedAt(Date.parse(requested_at));
+    } catch (err) {
+      setRequestError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  const disabled = pending || awaitingStart || run?.status === "running";
   return (
-    <div className="mt-6 space-y-1 text-xs text-zinc-500">
-      <p>Pipeline: last successful run {ago(p.last_ok_at)}.</p>
-      {p.failed.map((f) => (
-        <p key={f.step} role="alert" className="text-red-600 dark:text-red-400">
-          {f.step} failed {ago(f.started_at)}
-          {f.error ? `: ${f.error}` : ""}
-        </p>
-      ))}
-    </div>
+    <section className={`${tile} mt-4`} aria-labelledby="home-pipeline">
+      <div className="flex items-start justify-between gap-3">
+        <div className="space-y-1 text-xs text-zinc-500">
+          <h2 id="home-pipeline" className="text-sm font-medium">
+            Pipeline
+          </h2>
+          <p>{run ? `Last run: started ${ago(run.started_at)} · ${runLabel(run)}` : "Last run: never"}</p>
+          <p>Last successful run {ago(p.last_ok_at)}</p>
+          {p.failed.map((f) => (
+            <p key={f.step} role="alert" className="text-red-600 dark:text-red-400">
+              {f.step} failed {ago(f.started_at)}
+              {f.error ? `: ${f.error}` : ""}
+            </p>
+          ))}
+          {noStart && <p role="status">No run started — check the Actions tab.</p>}
+          {requestError && (
+            <p role="alert" className="text-red-600 dark:text-red-400">
+              {requestError}
+            </p>
+          )}
+        </div>
+        <button type="button" onClick={request} disabled={disabled} className={`${linkBtn} shrink-0 disabled:opacity-50`}>
+          {pending || awaitingStart ? "Requested…" : "Run now"}
+        </button>
+      </div>
+    </section>
   );
 }
 
 export default function Home() {
-  const { data, error, isLoading } = useApi(getHome);
+  const { data, error, isLoading, refetch } = useApi(getHome, [], { keepDataOnError: true });
   return (
     <div>
       <h1 className="text-xl font-semibold tracking-tight">Home</h1>
@@ -178,7 +247,7 @@ export default function Home() {
             <SinceLastVisit d={data} />
           </div>
           <ActivityStrip a={data.activity} />
-          <Pipeline p={data.pipeline} />
+          <Pipeline p={data.pipeline} refetch={refetch} />
         </>
       )}
     </div>

@@ -71,7 +71,11 @@ Chess.com / Lichess APIs
            boards the Blunders list has never shown (seen_blunder_boards, which that page fills with what it
            rendered; the first look ever records the whole list as known) — one predicate in core/blunders.py,
            shared with the page's NEW chips; new deviation patterns the same way (seen_deviations,
-           core/deviations.py); pipeline_runs (the hourly chain only). Both lists put NEW rows first,
+           core/deviations.py); pipeline_runs (the hourly chain only: the latest run reconstructed
+           from its rows — a failed row or an ok last step is its result, otherwise running until the
+           job's timeout and incomplete after it — plus the last success and the steps whose latest
+           run failed). Home's one write goes to GitHub, not the database: POST /home/pipeline/run
+           dispatches the workflow (core/dispatch.py). Both lists put NEW rows first,
            with the order frozen per visit by a `stay` marker the page echoes; a visit's first read
            and every acknowledgement share an advisory lock, and whether a visit marks NEW at all
            is decided from players.*_first_seen_at (core/blunders.py).
@@ -107,7 +111,7 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `core/puzzles/corpus.py` | The Lichess CC0 sample: streaming the CSV, loading it, and the index the serve path needs. |
 | `core/analysis/` | `game.py` (Stockfish per-game walk and classification), `motifs.py` (tactical-motif and missed-mate tagger), `run.py` (worklist, parallel workers, writes: a result from the current engine replaces any other engine's at any depth; within the same engine the player row's depth is monotonic and NULL — housekeeping's reset — means rebuild; the shared row follows the player's analysis), `engine.py` (finds the binary and refuses any version but the one the results are stamped with). |
 | `core/housekeeping.py` | Retention outside the analysis window. |
-| `core/runs.py`, `core/notify.py`, `core/reprocess.py` | `pipeline_runs` rows; the one failure email (redacted); the engine reprocess and its read-only completion check. |
+| `core/runs.py`, `core/notify.py`, `core/reprocess.py`, `core/dispatch.py` | `pipeline_runs` rows and the latest run read back from them; the one failure email (redacted); the engine reprocess and its read-only completion check; starting the workflow through GitHub's API. |
 | `core/games.py` | The Games page's reads. |
 | `core/migrate.py` | One-time copy of the old database (`pipeline migrate`). |
 | `tools/oracle/` | Diffs of the new pipeline against the old database's rows; see its README. |
@@ -121,7 +125,7 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `core/blunders.py` | The Blunders page: boards ranked by distinct games and severity, their games, dismissal. |
 | `core/ai.py`, `core/prompts.py` | Explaining a blunder: context read from the database, sandboxed prompt templates, provider call over HTTP, cache, hourly and daily caps. |
 | `core/puzzles/custom.py` | Creating and retiring a hand-made puzzle. |
-| `core/home.py` | The Home page: due count, today's puzzles and games against their targets, streaks, blunders and deviation patterns their lists have never shown, pipeline status. Reads only. |
+| `core/home.py` | The Home page: due count, today's puzzles and games against their targets, streaks, blunders and deviation patterns their lists have never shown, the pipeline's latest run. Reads only. |
 | `api/auth.py` | One password, one signed cookie. |
 | `api/routes/*` | Thin routes. |
 | `pipeline/cli.py` | The `pipeline` command. |
