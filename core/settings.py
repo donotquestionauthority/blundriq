@@ -28,7 +28,7 @@ from psycopg.rows import tuple_row
 from pydantic import BaseModel, Field, field_validator
 
 from core.constants import AI_THINKING_ALWAYS_ON_MODELS
-from core.prompts import DEFAULT_PROMPTS, LINE_PROMPT, compile_template
+from core.prompts import ASK_PROMPT, DEFAULT_PROMPTS, LINE_PROMPT, compile_template
 
 TimeClass = Literal["bullet", "blitz", "rapid", "classical"]
 DifficultyTier = Literal["easier", "normal", "hard", "very_hard"]
@@ -419,6 +419,10 @@ class Settings(BaseModel):
         default_factory=lambda: AiPrompt.model_validate(LINE_PROMPT),
         description="The walk-through's 'Ask why this move matters' prompt, over one repertoire line (edit as JSON).",
     )
+    ai_ask_prompt: AiPrompt = Field(
+        default_factory=lambda: AiPrompt.model_validate(ASK_PROMPT),
+        description="Ask Opus about the position on show (Review and Explore); edit as JSON.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -436,6 +440,7 @@ def save_errors(values: Settings) -> list[str]:
     button, not the whole API. core/ai.py refuses the same combination before any call."""
     prompts = [(f"ai_prompts.{key}", p) for key, p in sorted(values.ai_prompts.items())]
     prompts.append(("ai_line_prompt", values.ai_line_prompt))
+    prompts.append(("ai_ask_prompt", values.ai_ask_prompt))
     return [
         f"{field}: {thinking_off_refusal(p.model)}"
         for field, p in prompts

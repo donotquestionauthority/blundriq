@@ -4,6 +4,7 @@
  */
 import { Chess } from "chess.js";
 import { legalMove } from "../utils/chess";
+import type { EngineEval } from "./useStockfish";
 
 export const MATE_SCORE = 10000;
 /** |eval| at or above this is a forced mate. */
@@ -47,4 +48,24 @@ export function uciPvToSan(fen: string, pv: string[], cap = MAX_PV_PLIES): strin
   } catch {
     return "";
   }
+}
+
+/** What the server is sent about one board: the engine's readout, bounded and nothing more. */
+export interface EngineSnapshot {
+  depth: number;
+  eval_cp: number;
+  best_move: string;
+  pv: string[];
+}
+
+/**
+ * The readout of a finished search as a request payload, or null while it cannot be one
+ * (still thinking, no score, no best move, no line). The line is trimmed to `MAX_PV_PLIES`
+ * (the hook keeps the whole PV the engine printed); the final `bestmove` and the head of the
+ * last scored line go as they are, even when they differ — the server says so in the prompt
+ * rather than either being rewritten to match the other.
+ */
+export function engineSnapshot(ev: EngineEval | null): EngineSnapshot | null {
+  if (!ev || ev.thinking || ev.evalCp == null || !ev.bestMoveUci || ev.pvUci.length === 0) return null;
+  return { depth: ev.depth, eval_cp: ev.evalCp, best_move: ev.bestMoveUci, pv: ev.pvUci.slice(0, MAX_PV_PLIES) };
 }

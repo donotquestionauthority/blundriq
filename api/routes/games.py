@@ -1,5 +1,6 @@
 """GET /games, /games/filters, /games/export.csv, /games/opponents — the Games page; and the
-per-game Review: GET /games/{id}/review, POST /games/{id}/reviewed, POST /games/{id}/learn-commit.
+per-game Review: GET /games/{id}/review, POST /games/{id}/reviewed, POST /games/{id}/learn-commit,
+POST /games/{id}/ask (a question about the board at a ply; core/ai.py `ask_review`).
 
 The three per-game routes share one gate, run first: 404 when there is no such game of the
 player's, 422 `not_analysable` when it is Chess960 — before anything else about it is read.
@@ -17,7 +18,8 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from api import auth
-from core import db, games
+from api.routes.explore import AlternativeBody
+from core import ai, db, games
 from core.notify import error_label
 from core.repertoire import read as repertoire
 from core.review import learn
@@ -243,3 +245,20 @@ def learn_commit(game_id: int, body: LearnCommitBody) -> Any:
             row = result["row"]
             return _verdict(learn.adjudicate(row, game_id, body.ply, submitted, canonical_move, board=True), row)
         return {"id": result["row"]["id"], "created": True}
+
+
+class AskBody(BaseModel):
+    ply: int = Field(ge=0, le=2000)
+    # Trimmed and limited to ai.QUESTION_MAX_CHARS in core; this bound only caps the body.
+    question: str = Field(default="", max_length=4 * ai.QUESTION_MAX_CHARS)
+    alternative: AlternativeBody | None = None
+    dry_run: bool = False
+
+
+@router.post("/{game_id}/ask")
+def game_ask(game_id: int, body: AskBody) -> dict[str, Any]:
+    alternative = body.alternative.model_dump() if body.alternative else None
+    try:
+        return ai.ask_review(db.transaction, game_id, body.ply, body.question, alternative, dry_run=body.dry_run)
+    except ai.ExplainError as exc:
+        raise HTTPException(exc.status, exc.detail) from exc

@@ -18,6 +18,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from api.routes import auth as auth_routes
 from api.routes import blunders as blunders_routes
 from api.routes import deviations as deviations_routes
+from api.routes import explore as explore_routes
 from api.routes import games as games_routes
 from api.routes import home as home_routes
 from api.routes import practice as practice_routes
@@ -116,6 +117,7 @@ def create_app() -> FastAPI:
     app.include_router(repertoire_routes.router)
     app.include_router(puzzles_routes.router)
     app.include_router(review_routes.router)
+    app.include_router(explore_routes.router)
     return app
 
 
