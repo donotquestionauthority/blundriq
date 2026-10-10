@@ -549,7 +549,7 @@ TIMEOUT = PIPELINE_JOB_TIMEOUT_MINUTES
 )
 def test_the_latest_run_is_decided_by_its_result_or_its_age(
     db: psycopg.Connection[DictRow],
-    start_minutes_ago: float,
+    start_minutes_ago: int,
     rows: tuple[tuple[str, str], ...],
     expected: tuple[str, str | None],
 ) -> None:
