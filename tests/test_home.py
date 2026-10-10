@@ -13,7 +13,7 @@ from psycopg.rows import DictRow, dict_row
 
 from core import blunders, home, runs
 from core.blunders import BlunderFilters
-from core.constants import PLAYER_ID
+from core.constants import PIPELINE_JOB_TIMEOUT_MINUTES, PLAYER_ID
 from core.settings import Settings
 from tests.test_blunders import A, B, _blunder, _game
 from tests.test_practice import _puzzle
@@ -465,7 +465,7 @@ def test_the_page_reports_new_blunders_until_the_list_has_shown_them(db: psycopg
 
 
 def test_the_page_shows_the_last_full_run_and_the_hourly_steps_that_failed(db: psycopg.Connection[DictRow]) -> None:
-    assert home.page(db, Settings())["pipeline"] == {"last_ok_at": None, "failed": []}
+    assert home.page(db, Settings())["pipeline"] == {"last_run": None, "last_ok_at": None, "failed": []}
     rid = runs.start(db, "import")
     runs.finish(db, rid, {"games": 1})
     assert home.page(db, Settings())["pipeline"]["last_ok_at"] is None  # the chain did not run through
@@ -491,6 +491,91 @@ def test_the_page_shows_the_last_full_run_and_the_hourly_steps_that_failed(db: p
     assert p["last_ok_at"] == through
     assert [(f["step"], f["error"]) for f in p["failed"]] == [("analyze", "worker exploded")]
     assert all(f["started_at"] for f in p["failed"])
+
+
+def _run_rows(conn: psycopg.Connection[DictRow], start_minutes_ago: int, *rows: tuple[str, str]) -> None:
+    """A chain's rows, `(step, status)` in order, a minute apart from a start that long ago; an
+    `ok`/`failed` row finished a minute after it started."""
+    for i, (step, status) in enumerate(rows):
+        conn.execute(
+            """
+            INSERT INTO pipeline_runs (step, status, started_at, finished_at)
+            SELECT %s, %s, s, CASE WHEN %s = 'running' THEN NULL ELSE s + interval '1 minute' END
+            FROM (SELECT clock_timestamp() - make_interval(mins => %s) AS s) t
+            """,
+            (step, status, status, start_minutes_ago - i),
+        )
+    conn.commit()
+
+
+def _last_run(conn: psycopg.Connection[DictRow]) -> tuple[str, str | None] | None:
+    run = home.page(conn, Settings())["pipeline"]["last_run"]
+    return None if run is None else (run["status"], run["failed_step"])
+
+
+OK_THROUGH_SNAPSHOT = tuple((step, "ok") for step in runs.HOURLY_STEPS)
+OK_THROUGH_HOUSEKEEP = OK_THROUGH_SNAPSHOT[: runs.HOURLY_STEPS.index("housekeep") + 1]
+TIMEOUT = PIPELINE_JOB_TIMEOUT_MINUTES
+
+
+@pytest.mark.parametrize(
+    ("start_minutes_ago", "rows", "expected"),
+    [
+        # A result is a result at any age: a failed row, or the last step ok.
+        (60, OK_THROUGH_SNAPSHOT, ("ok", None)),
+        (1, OK_THROUGH_SNAPSHOT, ("ok", None)),
+        (1, (("import", "ok"), ("match", "ok"), ("analyze", "failed")), ("failed", "analyze")),
+        (
+            1,
+            (*OK_THROUGH_HOUSEKEEP, ("position-evals", "ok"), ("review-snapshot", "failed")),
+            ("failed", "review-snapshot"),
+        ),
+        (60, (*OK_THROUGH_HOUSEKEEP, ("position-evals", "failed")), ("failed", "position-evals")),
+        # No result and young: running, whether a row says so or the next step is not inserted yet.
+        (1, (("import", "ok"),), ("running", None)),
+        (1, OK_THROUGH_HOUSEKEEP, ("running", None)),
+        (10, (("import", "ok"), ("match", "running")), ("running", None)),
+        (TIMEOUT - 1, (*OK_THROUGH_HOUSEKEEP, ("position-evals", "running")), ("running", None)),
+        # No result and old: the job is gone, whatever the rows look like.
+        (TIMEOUT, (*OK_THROUGH_HOUSEKEEP, ("position-evals", "running")), ("incomplete", None)),
+        (
+            TIMEOUT,
+            (*OK_THROUGH_HOUSEKEEP, ("position-evals", "ok"), ("review-snapshot", "running")),
+            ("incomplete", None),
+        ),
+        (60, (("import", "ok"), ("match", "ok")), ("incomplete", None)),
+        (60, (("import", "running"),), ("incomplete", None)),
+    ],
+)
+def test_the_latest_run_is_decided_by_its_result_or_its_age(
+    db: psycopg.Connection[DictRow],
+    start_minutes_ago: float,
+    rows: tuple[tuple[str, str], ...],
+    expected: tuple[str, str | None],
+) -> None:
+    db.execute("SET TIME ZONE 'Asia/Tokyo'")
+    _run_rows(db, start_minutes_ago, *rows)
+    assert _last_run(db) == expected
+
+
+def test_an_incomplete_tail_keeps_the_success_housekeeping_reached(db: psycopg.Connection[DictRow]) -> None:
+    _run_rows(db, TIMEOUT, *OK_THROUGH_HOUSEKEEP, ("position-evals", "running"))
+    p = home.page(db, Settings())["pipeline"]
+    assert p["last_run"]["status"] == "incomplete"
+    assert p["last_ok_at"] is not None and p["failed"] == []  # no red line: nothing failed, the job died
+    assert datetime.fromisoformat(p["last_run"]["started_at"]) < datetime.fromisoformat(p["last_ok_at"])
+
+
+def test_the_latest_run_owns_only_the_rows_since_its_import(db: psycopg.Connection[DictRow]) -> None:
+    assert _last_run(db) is None
+    _run_rows(db, 120, ("import", "ok"), ("match", "failed"))  # an earlier run that failed
+    assert _last_run(db) == ("failed", "match")
+    _run_rows(db, 100, ("analyze", "failed"))  # a hand-run step between the two runs
+    _run_rows(db, 60, *OK_THROUGH_SNAPSHOT)
+    assert _last_run(db) == ("ok", None)  # neither earlier failure counts against the latest run
+    _run_rows(db, 30, ("import-corpus", "failed"))  # not an hourly step: not a row of the run
+    assert _last_run(db) == ("ok", None)
+    assert home.page(db, Settings())["pipeline"]["failed"] == []  # the per-step list: a later analyze succeeded
 
 
 def test_the_cli_runs_exactly_the_hourly_steps() -> None:
