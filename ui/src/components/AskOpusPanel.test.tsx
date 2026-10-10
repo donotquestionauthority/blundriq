@@ -132,6 +132,43 @@ describe("asking", () => {
     expect(screen.queryByText("A answer.")).toBeNull();
   });
 
+  it("coming back to a board is a new visit: the earlier visit's reply never replaces the newer answer, nor holds the button", async () => {
+    let resolveOld: (a: unknown) => void = () => {};
+    ask.mockImplementationOnce(() => new Promise((r) => (resolveOld = r)));
+    const { rerender } = render(<Host />);
+    type("first");
+    fireEvent.click(askButton());
+    rerender(<Host fen={AFTER_NF3} best="d5" />);
+    rerender(<Host fen={START} />);
+    expect(askButton()).not.toBeDisabled(); // the old request belongs to a visit that ended
+    ask.mockResolvedValueOnce({ explanation: "Newest.", cached: false, model: "m" });
+    type("second");
+    fireEvent.click(askButton());
+    await flush();
+    expect(screen.getByText("Newest.")).toBeInTheDocument();
+    await act(async () => resolveOld({ explanation: "Obsolete answer.", cached: false, model: "m" }));
+    expect(screen.getByText("Newest.")).toBeInTheDocument();
+    expect(screen.queryByText("Obsolete answer.")).toBeNull();
+    expect(askButton()).not.toBeDisabled();
+  });
+
+  it("within one visit the newer request wins, whatever order the replies arrive in", async () => {
+    let resolveFirst: (a: unknown) => void = () => {};
+    ask.mockImplementationOnce(() => new Promise((r) => (resolveFirst = r)));
+    const { rerender } = render(<Host />);
+    fireEvent.click(askButton());
+    // The button is held by the first request; a second ask is only possible after a board change
+    // and return, which is the previous case — so the second request here comes from Copy prompt.
+    rerender(<Host fen={AFTER_NF3} best="d5" />);
+    rerender(<Host fen={START} />);
+    dryRun.mockResolvedValueOnce({ model: "m", provider: "anthropic", temperature: null, thinking: null, max_tokens: 1, prefill: "", system_prompt: "", rendered_prompt: "p" });
+    fireEvent.click(screen.getByText("Copy prompt"));
+    await flush();
+    expect(screen.getByText("✓ copied")).toBeInTheDocument();
+    await act(async () => resolveFirst({ explanation: "Obsolete answer.", cached: false, model: "m" }));
+    expect(screen.queryByText("Obsolete answer.")).toBeNull();
+  });
+
   it("Copy prompt waits for its dry run and drops a failure for an earlier board", async () => {
     let resolveDry: (a: unknown) => void = () => {};
     dryRun.mockImplementationOnce(() => new Promise((r) => (resolveDry = r)));
@@ -220,6 +257,13 @@ describe("a move named in the question", () => {
     expect(screen.queryByTestId("ask-chip")).toBeNull();
     type("Nf3 or Nc3?");
     expect(screen.getByTestId("ask-chip")).toHaveTextContent("Analysing Nc3…");
+    fireEvent.click(screen.getByLabelText("Not asking about Nc3"));
+    expect(screen.queryByTestId("ask-chip")).toBeNull(); // both stay dismissed; Nf3 does not come back
+    expect(enabledSeen.at(-1)).toBe(false);
+    expect(askButton()).not.toBeDisabled();
+    ask.mockResolvedValueOnce({ explanation: "x", cached: false, model: "m" });
+    fireEvent.click(askButton());
+    expect(ask).toHaveBeenLastCalledWith("Nf3 or Nc3?", null);
     type("Nf3?");
     rerender(<Host fen={AFTER_NF3} best="d5" />);
     type("Nc6?");

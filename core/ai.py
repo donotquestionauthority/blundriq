@@ -532,11 +532,22 @@ def _alternative(board: chess.Board, best_move_san: str, raw: Any) -> dict[str, 
     }
 
 
-def _game_block(conn: Connection[Any], g: dict[str, Any], spine: list[str], ply: int) -> dict[str, Any]:
+def _game_block(
+    conn: Connection[Any], g: dict[str, Any], spine: list[str], ply: int, *, on_board: bool = True
+) -> dict[str, Any]:
     """What the game says about the board at `ply`: the opening, the moves before it, the move
-    made from it and by whom, the blunder row at it, and the repertoire's move. The projection
-    is decoration: a failure is an empty `book_move` and a class chain in the log."""
+    made from it and by whom, the blunder row at it, and the repertoire's move. With `on_board`
+    false the board on show is no longer the game's (a move has been explored from it), so only
+    the opening and the moves up to the seed are kept: they describe how the player got there,
+    while the move played, its verdict and the book move describe a board no longer on show.
+    The projection is decoration: a failure is an empty `book_move` and a class chain in the log."""
     moves = [str(m) for m in (_list(g.get("moves")) or [])]
+    if not on_board:
+        return {
+            **_NO_GAME,
+            "opening_name": str(g.get("opening_name") or ""),
+            "moves_before": _pgn_before(moves, ply, window=8),
+        }
     played = moves[ply] if ply < len(moves) else ""
     mover = spine[ply].split()[1] if len(spine[ply].split()) > 1 else "w"
     mine = (mover == "w") == (g["player_color"] == "white")
@@ -686,8 +697,9 @@ def ask_explore(
 ) -> dict[str, Any]:
     """Ask about a board explored in the browser: `seed_fen` played through `moves`, with the
     in-browser engine's snapshot for the board reached. With `game: {id, ply}` the seed must be
-    that game's board at that ply, and the game's facts about it join the prompt — only while
-    nothing has been explored yet, since one move on makes the board no longer the game's."""
+    that game's board at that ply, and the game's facts join the prompt: the opening and the
+    moves up to the seed always, the move played from it and its verdict only while nothing has
+    been explored yet, since one move on makes the board no longer the game's."""
 
     def prepare(conn: Connection[Any], settings: Settings) -> _Prepared:
         prompt = settings.ai_ask_prompt
@@ -727,8 +739,7 @@ def ask_explore(
             spine = _spine(g, ply)
             if spine[ply].split()[:4] != seed.split()[:4]:
                 raise ExplainError(400, "seed is not the game's board at that ply")
-            if not explored:
-                game = _game_block(conn, g, spine, ply)
+            game = _game_block(conn, g, spine, ply, on_board=not explored)
         context = ask_context(
             origin="explore",
             board=board,

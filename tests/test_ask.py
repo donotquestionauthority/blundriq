@@ -288,7 +288,7 @@ def test_a_review_question_is_grounded_in_the_games_stored_analysis(tx: Tx, monk
     text = out["rendered_prompt"]
     assert f"Position (FEN): {FENS[7]}" in text
     assert "I play black; Black to move." in text and "Opening: Italian" in text
-    assert "The moves before this position: 1. e4 e5 2. Nf3 Nc6 3. Bc4 h6 4. d3" in text
+    assert "The game's moves before this position: 1. e4 e5 2. Nf3 Nc6 3. Bc4 h6 4. d3" in text
     assert "In the game, you played Nf6 here (blunder, 250 centipawns lost)." in text
     assert (
         "Engine (Stockfish 19 at depth 18, from the game's stored analysis): evaluation +0.4; best move d6; line 4... d6 5. O-O Nf6"
@@ -305,7 +305,7 @@ def test_the_last_ply_and_an_opponent_move_are_described_as_such(tx: Tx) -> None
     assert "White to move" in last and "In the game," not in last
     assert "best move Ng5; line 5. Ng5 d5 6. exd5" in last and last.endswith("My question: what now?")
     opponent = ai.ask_review(tx, 1, 0, dry_run=True)["rendered_prompt"]
-    assert "In the game, your opponent played e4 here." in opponent and "The moves before" not in opponent
+    assert "In the game, your opponent played e4 here." in opponent and "moves before" not in opponent
 
 
 def test_a_repeat_review_question_is_free_and_shares_the_caps(tx: Tx, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -421,14 +421,19 @@ def test_an_explore_question_carries_the_line_and_the_snapshot_in_the_servers_wo
     assert text.endswith("My question: Is this already lost?")
 
 
-def test_an_explore_question_from_a_review_board_carries_the_game_until_a_move_is_played(tx: Tx) -> None:
+def test_an_explore_question_from_a_review_board_keeps_the_games_history_and_drops_its_verdict_once_a_move_is_played(
+    tx: Tx,
+) -> None:
     _configure(tx)
     seed = _body(seed_fen=FENS[7], orientation="black", engine=_snap(best_move="d7d6", pv=["d7d6", "e1g1"]))
     text = ai.ask_explore(tx, {**seed, "game": {"id": 1, "ply": 7}}, dry_run=True)["rendered_prompt"]
     assert "Opening: Italian" in text and "In the game, you played Nf6 here (blunder, 250 centipawns lost)." in text
+    assert "The game's moves before this position: 1. e4 e5 2. Nf3 Nc6 3. Bc4 h6 4. d3" in text
     moved = {**seed, "moves": ["Nf6"], "engine": _snap(best_move="f3g5", pv=["f3g5"]), "game": {"id": 1, "ply": 7}}
     text = ai.ask_explore(tx, moved, dry_run=True)["rendered_prompt"]
-    assert "In the game" not in text and "Opening" not in text and "played out: 4... Nf6" in text
+    assert "Opening: Italian" in text and "played out: 4... Nf6" in text
+    assert "The game's moves before the position I started from: 1. e4 e5 2. Nf3 Nc6 3. Bc4 h6 4. d3" in text
+    assert "In the game" not in text and "centipawns" not in text and "repertoire" not in text
 
 
 def test_explore_refusals_cost_nothing(tx: Tx, monkeypatch: pytest.MonkeyPatch) -> None:

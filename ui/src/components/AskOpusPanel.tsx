@@ -26,6 +26,7 @@ import { messageOf } from "./PositionCard/aiMessage";
 
 export const QUESTION_MAX_CHARS = 500;
 const COUNTER_FROM = 400;
+const NO_SKIP: readonly string[] = [];
 const OUTCOME_COPY: Record<AltOutcome, string> = { checkmate: "checkmate", stalemate: "stalemate", draw: "a draw by insufficient material" };
 
 const button = "rounded border px-3 py-1 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50";
@@ -47,26 +48,39 @@ export interface AskOpusPanelProps {
 
 export function AskOpusPanel({ fen, bestMoveSan, disabledReason = null, waiting = null, ask, dryRun }: AskOpusPanelProps) {
   const [question, setQuestion] = useState("");
-  // Everything about an answer is stored with the board it was asked about and shown only while
-  // that board is on show: a step or a move clears it, and a late reply for an earlier board
-  // lands on a record nobody reads.
-  const [result, setResult] = useState<{ fen: string; answer: AskAnswer | null; error: string | null } | null>(null);
-  const [pending, setPending] = useState<string | null>(null);
+  // A visit is one stay on one board: it ends when `fen` changes, and coming back to the same
+  // board is a new visit. Every request belongs to the visit it was made in and carries a
+  // sequence number; a reply is applied only when its visit is the current one and nothing
+  // newer was asked since, so a late reply never lands on an answer the player asked for later,
+  // not even after leaving a board and returning to it.
+  const [visit, setVisit] = useState({ fen, n: 0 });
+  if (visit.fen !== fen) setVisit({ fen, n: visit.n + 1 });
+  const seqRef = useRef(0);
+  const latest = useRef<{ visit: number; seq: number } | null>(null);
+  const [result, setResult] = useState<{ visit: number; answer: AskAnswer | null; error: string | null } | null>(null);
+  const [pending, setPending] = useState<{ visit: number; seq: number } | null>(null);
   const [copied, setCopied] = useState(false);
-  const [dismissed, setDismissed] = useState<{ fen: string; san: string } | null>(null);
+  const [dismissed, setDismissed] = useState<{ visit: number; sans: string[] }>({ visit: 0, sans: [] });
   const [depth, setDepth] = useState<number | undefined>(undefined);
-  const answer = result?.fen === fen ? result.answer : null;
-  const error = result?.fen === fen ? result.error : null;
-  const loading = pending === fen;
-  // The board on show, for a reply that lands later: one that is for another board is dropped
-  // rather than stored over the answer on show.
-  const fenRef = useRef(fen);
+  const answer = result?.visit === visit.n ? result.answer : null;
+  const error = result?.visit === visit.n ? result.error : null;
+  const loading = pending?.visit === visit.n;
+  const visitRef = useRef(visit.n);
   useEffect(() => {
-    fenRef.current = fen;
-  }, [fen]);
+    visitRef.current = visit.n;
+  }, [visit.n]);
+  /** Start a request in this visit; `owns()` says whether its reply may still be applied. */
+  const begin = () => {
+    const mine = { visit: visit.n, seq: ++seqRef.current };
+    latest.current = mine;
+    setPending(mine);
+    const owns = () => visitRef.current === mine.visit && latest.current?.seq === mine.seq;
+    const done = () => setPending((p) => (p?.seq === mine.seq ? null : p));
+    return { mine, owns, done };
+  };
 
-  const skip = dismissed?.fen === fen ? dismissed.san : null;
-  const named = useMemo(() => (disabledReason ? null : namedMove(question, fen, bestMoveSan, skip ? [skip] : [])), [disabledReason, question, fen, bestMoveSan, skip]);
+  const skip = dismissed.visit === visit.n ? dismissed.sans : NO_SKIP;
+  const named = useMemo(() => (disabledReason ? null : namedMove(question, fen, bestMoveSan, skip)), [disabledReason, question, fen, bestMoveSan, skip]);
   const altFen = named?.fenAfter ?? null;
 
   // The alternative's own engine: enabled only while a playable alternative is named, on the
@@ -102,32 +116,30 @@ export function AskOpusPanel({ fen, bestMoveSan, disabledReason = null, waiting 
   }, [named, altSnapshot]);
 
   async function send() {
-    const askedFor = fen;
-    setPending(askedFor);
+    const { mine, owns, done } = begin();
     setResult(null);
     try {
       const r = await ask(question, alternative());
-      if (fenRef.current === askedFor) setResult({ fen: askedFor, answer: r, error: null });
+      if (owns()) setResult({ visit: mine.visit, answer: r, error: null });
     } catch (e) {
-      if (fenRef.current === askedFor) setResult({ fen: askedFor, answer: null, error: messageOf(e) });
+      if (owns()) setResult({ visit: mine.visit, answer: null, error: messageOf(e) });
     } finally {
-      setPending((p) => (p === askedFor ? null : p));
+      done();
     }
   }
 
   async function copy() {
-    const askedFor = fen;
-    setPending(askedFor);
+    const { mine, owns, done } = begin();
     try {
       await navigator.clipboard.writeText(formatDryRun(await dryRun(question, alternative())));
-      if (fenRef.current === askedFor) {
+      if (owns()) {
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
       }
     } catch (e) {
-      if (fenRef.current === askedFor) setResult({ fen: askedFor, answer: null, error: messageOf(e) });
+      if (owns()) setResult({ visit: mine.visit, answer: null, error: messageOf(e) });
     } finally {
-      setPending((p) => (p === askedFor ? null : p));
+      done();
     }
   }
 
@@ -152,7 +164,7 @@ export function AskOpusPanel({ fen, bestMoveSan, disabledReason = null, waiting 
           {named && (
             <p className="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400" data-testid="ask-chip">
               <span>{named.outcome ? `${named.san} ends the game — ${OUTCOME_COPY[named.outcome]}` : altPending ? `Analysing ${named.san}…` : `Analysing ${named.san} as your alternative`}</span>
-              <button type="button" aria-label={`Not asking about ${named.san}`} onClick={() => setDismissed({ fen, san: named.san })} className="text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100">
+              <button type="button" aria-label={`Not asking about ${named.san}`} onClick={() => setDismissed((d) => ({ visit: visit.n, sans: [...(d.visit === visit.n ? d.sans : []), named.san] }))} className="text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100">
                 ✕
               </button>
             </p>
