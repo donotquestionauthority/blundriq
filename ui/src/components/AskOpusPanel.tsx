@@ -12,7 +12,7 @@
  * reply goes with the question. A move that ends the game is sent with its outcome and no
  * search. The ✕ on the chip dismisses that move for as long as the board stays.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { AskAlternative, AskAnswer } from "../ask";
 import { formatDryRun } from "../blunders";
@@ -58,9 +58,15 @@ export function AskOpusPanel({ fen, bestMoveSan, disabledReason = null, waiting 
   const answer = result?.fen === fen ? result.answer : null;
   const error = result?.fen === fen ? result.error : null;
   const loading = pending === fen;
+  // The board on show, for a reply that lands later: one that is for another board is dropped
+  // rather than stored over the answer on show.
+  const fenRef = useRef(fen);
+  useEffect(() => {
+    fenRef.current = fen;
+  }, [fen]);
 
-  const detected = useMemo(() => (disabledReason ? null : namedMove(question, fen, bestMoveSan)), [disabledReason, question, fen, bestMoveSan]);
-  const named = detected && !(dismissed?.fen === fen && dismissed.san === detected.san) ? detected : null;
+  const skip = dismissed?.fen === fen ? dismissed.san : null;
+  const named = useMemo(() => (disabledReason ? null : namedMove(question, fen, bestMoveSan, skip ? [skip] : [])), [disabledReason, question, fen, bestMoveSan, skip]);
   const altFen = named?.fenAfter ?? null;
 
   // The alternative's own engine: enabled only while a playable alternative is named, on the
@@ -101,9 +107,9 @@ export function AskOpusPanel({ fen, bestMoveSan, disabledReason = null, waiting 
     setResult(null);
     try {
       const r = await ask(question, alternative());
-      setResult({ fen: askedFor, answer: r, error: null });
+      if (fenRef.current === askedFor) setResult({ fen: askedFor, answer: r, error: null });
     } catch (e) {
-      setResult({ fen: askedFor, answer: null, error: messageOf(e) });
+      if (fenRef.current === askedFor) setResult({ fen: askedFor, answer: null, error: messageOf(e) });
     } finally {
       setPending((p) => (p === askedFor ? null : p));
     }
@@ -111,12 +117,17 @@ export function AskOpusPanel({ fen, bestMoveSan, disabledReason = null, waiting 
 
   async function copy() {
     const askedFor = fen;
+    setPending(askedFor);
     try {
       await navigator.clipboard.writeText(formatDryRun(await dryRun(question, alternative())));
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      if (fenRef.current === askedFor) {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }
     } catch (e) {
-      setResult({ fen: askedFor, answer: null, error: messageOf(e) });
+      if (fenRef.current === askedFor) setResult({ fen: askedFor, answer: null, error: messageOf(e) });
+    } finally {
+      setPending((p) => (p === askedFor ? null : p));
     }
   }
 

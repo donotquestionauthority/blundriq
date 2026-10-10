@@ -20,8 +20,9 @@ export interface NamedMove {
   outcome: AltOutcome | null;
 }
 
-/** The first token of `question` that is a legal move on `fen` and not `bestMoveSan`. */
-export function namedMove(question: string, fen: string, bestMoveSan: string | null): NamedMove | null {
+/** The first token of `question` that is a legal move on `fen`, not `bestMoveSan` and not in `skip`
+ *  (moves the player has said they are not asking about). */
+export function namedMove(question: string, fen: string, bestMoveSan: string | null, skip: readonly string[] = []): NamedMove | null {
   let seed: Chess;
   try {
     seed = new Chess(fen);
@@ -40,6 +41,7 @@ export function namedMove(question: string, fen: string, bestMoveSan: string | n
     }
     if (!played) continue;
     if (bestMoveSan && sansEquivalent(played.san, bestMoveSan)) continue;
+    if (skip.some((s) => sansEquivalent(played.san, s))) continue;
     const outcome: AltOutcome | null = g.isCheckmate() ? "checkmate" : g.isStalemate() ? "stalemate" : g.isInsufficientMaterial() ? "draw" : null;
     return { san: played.san, fenAfter: outcome ? null : g.fen(), outcome };
   }

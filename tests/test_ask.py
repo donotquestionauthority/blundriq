@@ -166,7 +166,10 @@ def test_an_alternative_carries_the_engines_final_reply_separately_from_its_line
         ({"move": "--", "engine": _snap()}, "alternative is not a legal move"),
         ({"move": "0000", "engine": _snap()}, "alternative is not a legal move"),
         ({"move": "e4"}, "the alternative needs an engine line"),
-        ({"move": "e4", "engine": _snap(best_move="e7e5", pv=["d2d4"])}, "a move in the engine line is not a legal move"),
+        (
+            {"move": "e4", "engine": _snap(best_move="e7e5", pv=["d2d4"])},
+            "a move in the engine line is not a legal move",
+        ),
         ({"move": "e4", "engine": _snap(pv=["e7e5"])}, "the engine's best move is not a legal move"),
         ("e4", "alternative is not a move"),
     ],
@@ -370,6 +373,16 @@ def test_review_refusals_cost_nothing(tx: Tx, monkeypatch: pytest.MonkeyPatch) -
     assert seen == [] and _calls(tx) == [] and _cache_rows(tx) == 0
 
 
+def test_a_game_with_moves_but_no_analysis_has_nothing_to_ask_about(tx: Tx) -> None:
+    with tx() as conn:
+        conn.execute("UPDATE chess_games SET ply_analysis = NULL WHERE id = 1")
+    _configure(tx)
+    with pytest.raises(ai.ExplainError) as err:
+        ai.ask_review(tx, 1, 7, "", dry_run=True)
+    assert (err.value.status, err.value.detail) == (422, "no engine analysis for this position")
+    assert _calls(tx) == []
+
+
 def test_a_housekept_game_is_refused_before_anything_is_indexed(tx: Tx, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     _configure(tx)
@@ -398,7 +411,7 @@ def test_an_explore_question_carries_the_line_and_the_snapshot_in_the_servers_wo
         question="Is this already lost?",
     )
     text = ai.ask_explore(tx, body, dry_run=True)["rendered_prompt"]
-    assert f"From the position I was reviewing ({FENS[7]}) I have played out: 4... Nf6 5. Ng5" in text
+    assert f"From the position I started from ({FENS[7]}) I have played out: 4... Nf6 5. Ng5" in text
     assert "I play black; Black to move." in text
     assert (
         "Engine (in-browser Stockfish 19 at depth 20): evaluation mate in 2 for Black; best move d5; line 5... d5 6. exd5 Na5"

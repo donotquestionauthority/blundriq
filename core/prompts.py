@@ -154,7 +154,7 @@ ASK_PROMPT: dict[str, object] = {
         "I play {{ color }}; {{ side_to_move }} to move.\n"
         "{% if opening_name %}Opening: {{ opening_name }}\n{% endif %}"
         "{% if moves_before %}The moves before this position: {{ moves_before }}\n{% endif %}"
-        "{% if explored_moves %}From the position I was reviewing ({{ seed_fen }}) I have played out:"
+        "{% if explored_moves %}From the position I started from ({{ seed_fen }}) I have played out:"
         " {{ explored_moves }}\n{% endif %}"
         "{% if move_played %}In the game, {{ played_by }} played {{ move_played }} here"
         "{% if classification %} ({{ classification }}, {{ cp_loss }} centipawns lost){% endif %}.\n{% endif %}"

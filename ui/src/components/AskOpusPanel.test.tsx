@@ -117,6 +117,34 @@ describe("asking", () => {
     expect(screen.queryByText("Now.")).toBeNull();
   });
 
+  it("a late reply for an earlier board never replaces the answer on show", async () => {
+    let resolveSlow: (a: unknown) => void = () => {};
+    ask.mockImplementationOnce(() => new Promise((r) => (resolveSlow = r)));
+    const { rerender } = render(<Host />);
+    fireEvent.click(askButton());
+    rerender(<Host fen={AFTER_NF3} best="d5" />);
+    ask.mockResolvedValueOnce({ explanation: "B answer.", cached: true, model: "m" });
+    fireEvent.click(askButton());
+    await flush();
+    expect(screen.getByText("B answer.")).toBeInTheDocument();
+    await act(async () => resolveSlow({ explanation: "A answer.", cached: false, model: "m" }));
+    expect(screen.getByText("B answer.")).toBeInTheDocument();
+    expect(screen.queryByText("A answer.")).toBeNull();
+  });
+
+  it("Copy prompt waits for its dry run and drops a failure for an earlier board", async () => {
+    let resolveDry: (a: unknown) => void = () => {};
+    dryRun.mockImplementationOnce(() => new Promise((r) => (resolveDry = r)));
+    const { rerender } = render(<Host />);
+    fireEvent.click(screen.getByText("Copy prompt"));
+    expect(screen.getByText("Copy prompt")).toBeDisabled();
+    expect(askButton()).toBeDisabled();
+    rerender(<Host fen={AFTER_NF3} best="d5" />);
+    expect(screen.getByText("Copy prompt")).not.toBeDisabled();
+    await act(async () => resolveDry(Promise.reject(new ApiError(500, "boom"))));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("counts from 400 characters and stops at 500", () => {
     render(<Host />);
     type("x".repeat(399));
@@ -179,7 +207,7 @@ describe("a move named in the question", () => {
     expect(askButton()).not.toBeDisabled();
   });
 
-  it("✕ dismisses the move and turns the engine off; retyping the same text does not bring it back; a new board does", () => {
+  it("✕ dismisses the move and turns the engine off; retyping the same text does not bring it back; the next move named does; a new board does", () => {
     const { rerender } = render(<Host />);
     type("Nf3?");
     expect(enabledSeen.at(-1)).toBe(true);
@@ -190,6 +218,9 @@ describe("a move named in the question", () => {
     type("");
     type("Nf3?");
     expect(screen.queryByTestId("ask-chip")).toBeNull();
+    type("Nf3 or Nc3?");
+    expect(screen.getByTestId("ask-chip")).toHaveTextContent("Analysing Nc3…");
+    type("Nf3?");
     rerender(<Host fen={AFTER_NF3} best="d5" />);
     type("Nc6?");
     expect(screen.getByTestId("ask-chip")).toHaveTextContent("Analysing Nc6…");

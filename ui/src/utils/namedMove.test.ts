@@ -36,6 +36,10 @@ describe("namedMove", () => {
     expect(namedMove("Kxe2?", "8/8/8/8/8/8/4n3/k3K3 w - - 0 1", null)?.outcome).toBe("draw");
     expect(namedMove("d1=Q", "8/8/8/8/8/8/3p4/k3K3 b - - 0 1", null)).toEqual({ san: "d1=Q+", fenAfter: "8/8/8/8/8/8/8/k2qK3 w - - 0 2", outcome: null });
   });
+  it("a skipped move gives way to the next one named", () => {
+    expect(namedMove("Nf3 or Nc3?", START, "e4", ["Nf3"])?.san).toBe("Nc3");
+    expect(namedMove("Nf3?", START, "e4", ["Nf3"])).toBeNull();
+  });
   it("the engine's own move is not an alternative, however it is spelt", () => {
     expect(namedMove("Qh6+", STALEMATE_TRAP, "Qh6")).toBeNull();
     expect(namedMove("Qh6", STALEMATE_TRAP, "Qh6+")).toBeNull();
