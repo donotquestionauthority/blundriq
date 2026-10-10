@@ -5,8 +5,11 @@
  * explanation, the repertoire panel, and Learn mode — at each prompt ply the eval bar, arrows,
  * card and repertoire panel are blanked by the one `leakBlocked` flag until the player commits a
  * move (or asks to be shown), and the reveal draws the committed / engine / book / game /
- * opponent arrows with a legend. "Explore from here" mounts the Explore layer over the current
- * board. Landing on a game stamps it reviewed once. Escape or Close returns to where the review
+ * opponent arrows with a legend. "Ask Opus" takes a question about the board at the ply, answered
+ * over the stored analysis of that ply (hidden with the card while a rep is open: the answer names
+ * the engine move). "Explore from here" mounts the Explore layer over the current board, carrying
+ * the game and ply so a question asked there knows the game too. Landing on a game stamps it
+ * reviewed once. Escape or Close returns to where the review
  * was opened from (`location.state.from`), else to the Review page.
  *
  * A game whose moves are no longer stored shows a card naming the window setting. A standard
@@ -18,6 +21,8 @@ import type { CSSProperties, RefObject } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import type { Square } from "chess.js";
 import { Chessboard } from "react-chessboard";
+import { askReview, askReviewDryRun } from "../ask";
+import { AskOpusPanel } from "../components/AskOpusPanel";
 import { EvalBar } from "../components/EvalBar";
 import { ExploreLayer } from "../components/ExploreLayer";
 import { AiExplanationPanel } from "../components/PositionCard/AiExplanationPanel";
@@ -761,6 +766,17 @@ function ReviewBody(p: {
 
         {repEntry && !leakBlocked && <RepertoirePanel entry={repEntry} bookArrowDrawn={bookArrowDrawn} />}
 
+        {/* Never while a rep is open: the answer names the engine move. */}
+        {!leakBlocked && (
+          <AskOpusPanel
+            fen={position}
+            bestMoveSan={here?.best_move ?? null}
+            disabledReason={here?.best_move ? null : "No engine analysis for this position."}
+            ask={(question, alternative) => askReview(gameId, curPly, question, alternative)}
+            dryRun={(question, alternative) => askReviewDryRun(gameId, curPly, question, alternative)}
+          />
+        )}
+
         {!!moves && (
           <div className={`${panel} bg-zinc-100/60 dark:bg-zinc-900/40`}>
             <span className="text-xs font-medium uppercase tracking-widest text-zinc-500">Moves so far</span>
@@ -797,7 +813,7 @@ function ReviewBody(p: {
         </div>
       )}
 
-      {exploring && <ExploreLayer fen={position} orientation={orientation} onClose={() => setExploring(false)} />}
+      {exploring && <ExploreLayer fen={position} orientation={orientation} origin={{ gameId, ply: curPly }} onClose={() => setExploring(false)} />}
     </div>
   );
 }

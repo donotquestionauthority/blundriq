@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Chess } from "chess.js";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -18,17 +18,33 @@ vi.mock("react-chessboard", () => ({
   ),
 }));
 
-// The engine is a fake the test drives: `push` publishes ready / evalState into the mounted hook.
+// The engine is a fake the test drives: `push` publishes ready / evalState into the layer's hook,
+// the first `useStockfish` to mount; the Ask panel's own instance (for a named alternative) is the
+// second, driven by `pushAlt`. Instances are recorded in mount order.
 const analyze = vi.fn();
 const reset = vi.fn();
 const stop = vi.fn();
-let push: ((s: { ready: boolean; evalState: EngineEval | null }) => void) | null = null;
-vi.mock("../engine/useStockfish", () => ({
-  useStockfish: () => {
-    const [s, setS] = useState<{ ready: boolean; evalState: EngineEval | null }>({ ready: false, evalState: null });
-    push = setS;
-    return { ...s, analyze, reset, stop };
-  },
+type Setter = (s: { ready: boolean; evalState: EngineEval | null }) => void;
+const instances: Setter[] = [];
+const push: Setter = (s) => instances[0]?.(s);
+const pushAlt: Setter = (s) => instances[1]?.(s);
+vi.mock("../engine/useStockfish", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../engine/useStockfish")>();
+  return {
+    ...actual,
+    useStockfish: () => {
+      const [s, setS] = useState<{ ready: boolean; evalState: EngineEval | null }>({ ready: false, evalState: null });
+      if (!instances.includes(setS)) instances.push(setS);
+      return { ...s, analyze, reset, stop };
+    },
+  };
+});
+
+const askExplore = vi.fn();
+const askExploreDryRun = vi.fn();
+vi.mock("../ask", () => ({
+  askExplore: (...a: unknown[]) => askExplore(...a),
+  askExploreDryRun: (...a: unknown[]) => askExploreDryRun(...a),
 }));
 
 const START = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
@@ -44,6 +60,9 @@ let settings: Record<string, unknown> | null = { explore_engine_depth: 16 };
 let hold = false;
 let release: () => void = () => {};
 beforeEach(() => {
+  instances.length = 0;
+  askExplore.mockReset().mockResolvedValue({ explanation: "Because.", cached: false, model: "m" });
+  askExploreDryRun.mockReset();
   analyze.mockClear();
   reset.mockClear();
   stop.mockClear();
@@ -61,6 +80,10 @@ beforeEach(() => {
   );
 });
 afterEach(() => vi.unstubAllGlobals());
+const cleanupLayer = () => {
+  cleanup();
+  instances.length = 0;
+};
 
 const ev = (fen: string, over: Partial<EngineEval> = {}): EngineEval => ({ fen, evalCp: 35, bestMoveUci: "e2e4", pvUci: ["e2e4", "e7e5"], depth: 12, thinking: false, ...over });
 const arrows = () => JSON.parse(screen.getByTestId("board").getAttribute("data-arrows") ?? "[]") as { startSquare: string; endSquare: string }[];
@@ -70,7 +93,7 @@ describe("ExploreLayer", () => {
   it("shows Loading engine… until ready, then the evaluation and the best line", async () => {
     render(<ExploreLayer fen={START} orientation="white" onClose={() => {}} />);
     expect(screen.getByText("Loading engine…")).toBeInTheDocument();
-    act(() => push?.({ ready: true, evalState: ev(START) }));
+    act(() => push({ ready: true, evalState: ev(START) }));
     expect(screen.queryByText("Loading engine…")).not.toBeInTheDocument();
     expect(screen.getAllByText("+0.3")).toHaveLength(2); // the bar and the panel
     expect(screen.getByText("e4")).toBeInTheDocument(); // Best
@@ -80,13 +103,13 @@ describe("ExploreLayer", () => {
 
   it("draws the best-move arrow only when the evaluation is for the board on show", async () => {
     render(<ExploreLayer fen={START} orientation="white" onClose={() => {}} />);
-    act(() => push?.({ ready: true, evalState: ev(START) }));
+    act(() => push({ ready: true, evalState: ev(START) }));
     expect(arrows()).toEqual([{ startSquare: "e2", endSquare: "e4", color: ARROWS.engine }]);
     fireEvent.click(screen.getByText("play")); // the board moves on; the evaluation is stale
     expect(screen.getByTestId("board").getAttribute("data-position")).toBe(AFTER_E4);
     expect(arrows()).toEqual([]);
     expect(screen.getAllByText("–")).toHaveLength(2);
-    act(() => push?.({ ready: true, evalState: ev(AFTER_E4, { bestMoveUci: "e7e5", pvUci: ["e7e5"], evalCp: -20 }) }));
+    act(() => push({ ready: true, evalState: ev(AFTER_E4, { bestMoveUci: "e7e5", pvUci: ["e7e5"], evalCp: -20 }) }));
     expect(arrows()).toEqual([{ startSquare: "e7", endSquare: "e5", color: ARROWS.engine }]);
     expect(screen.getAllByText("-0.2")).toHaveLength(2);
     await settled();
@@ -143,11 +166,11 @@ describe("ExploreLayer", () => {
 
   it("names the best move from the bestmove token, which the arrow also draws, not from the line's head", () => {
     render(<ExploreLayer fen={START} orientation="white" onClose={() => {}} />);
-    act(() => push?.({ ready: true, evalState: ev(START, { bestMoveUci: "d2d4", pvUci: ["e2e4", "e7e5"] }) }));
+    act(() => push({ ready: true, evalState: ev(START, { bestMoveUci: "d2d4", pvUci: ["e2e4", "e7e5"] }) }));
     expect(screen.getByText("d4")).toBeInTheDocument();
     expect(screen.getByText("e4 e5")).toBeInTheDocument();
     expect(arrows()).toEqual([{ startSquare: "d2", endSquare: "d4", color: ARROWS.engine }]);
-    act(() => push?.({ ready: true, evalState: ev(START, { bestMoveUci: "e2e4", pvUci: [], thinking: true }) }));
+    act(() => push({ ready: true, evalState: ev(START, { bestMoveUci: "e2e4", pvUci: [], thinking: true }) }));
     expect(screen.getByText("e4")).toBeInTheDocument(); // SAN, never the raw token
     expect(screen.queryByText("e2e4")).not.toBeInTheDocument();
     expect(screen.getByText(/thinking…/)).toBeInTheDocument();
@@ -156,11 +179,11 @@ describe("ExploreLayer", () => {
   it("a finished board shows Checkmate and asks for nothing — not at mount, not on the settings response, not on a depth change", async () => {
     settings = { explore_engine_depth: 20 };
     render(<ExploreLayer fen={MATED} orientation="white" onClose={() => {}} />);
-    act(() => push?.({ ready: true, evalState: null }));
+    act(() => push({ ready: true, evalState: null }));
     expect(screen.getAllByText("Checkmate")).toHaveLength(1);
     expect(screen.getAllByText("–")).toHaveLength(2); // the bar and the eval slot
     // Belt and braces: an evaluation for the mated board, should the engine ever answer, draws nothing.
-    act(() => push?.({ ready: true, evalState: ev(MATED, { bestMoveUci: "e1e2" }) }));
+    act(() => push({ ready: true, evalState: ev(MATED, { bestMoveUci: "e1e2" }) }));
     expect(arrows()).toEqual([]);
     expect(screen.getAllByText("–")).toHaveLength(2);
     await waitFor(() => expect((screen.getByLabelText("Engine depth") as HTMLSelectElement).value).toBe("20"));
@@ -225,5 +248,86 @@ describe("ExploreLayer", () => {
     expect(screen.getByText("source")).toHaveAttribute("href", "/engine/stockfish-source.tar.gz");
     expect(screen.getByRole("dialog", { name: "Explore" })).toHaveClass("z-[60]");
     await settled();
+  });
+
+  describe("Ask Opus", () => {
+    const box = () => screen.getByLabelText("Your question");
+    const askButton = () => screen.getByRole("button", { name: /Ask Opus|Analysing|Waiting/ });
+    const fifteen = Array.from({ length: 15 }, (_, i) => (i % 2 ? "e7e5" : "e2e4"));
+
+    it("waits for the engine's finished readout for the board on show, then sends exactly its snapshot", async () => {
+      render(<ExploreLayer fen={START} orientation="white" onClose={() => {}} />);
+      await settled();
+      expect(askButton()).toBeDisabled();
+      expect(askButton()).toHaveTextContent("Waiting for the engine…");
+      fireEvent.change(box(), { target: { value: "why?" } }); // the box is there to type in meanwhile
+      act(() => push({ ready: true, evalState: ev(START, { thinking: true }) }));
+      expect(askButton()).toBeDisabled();
+      act(() => push({ ready: true, evalState: ev(START, { bestMoveUci: "d2d4", pvUci: fifteen }) }));
+      expect(askButton()).not.toBeDisabled();
+      fireEvent.click(askButton());
+      expect(askExplore).toHaveBeenCalledWith({ seed_fen: START, orientation: "white", moves: [], engine: { depth: 12, eval_cp: 35, best_move: "d2d4", pv: fifteen.slice(0, 12) } }, "why?", null);
+      await act(async () => {});
+      expect(screen.getByText("Because.")).toBeInTheDocument();
+      // A move on: the readout is stale, the answer is gone, the button waits again, the question stays.
+      fireEvent.click(screen.getByText("play"));
+      expect(screen.queryByText("Because.")).toBeNull();
+      expect(askButton()).toBeDisabled();
+      expect((box() as HTMLTextAreaElement).value).toBe("why?");
+      act(() => push({ ready: true, evalState: ev(AFTER_E4, { bestMoveUci: "e7e5", pvUci: ["e7e5"], evalCp: -20 }) }));
+      fireEvent.click(askButton());
+      expect(askExplore).toHaveBeenLastCalledWith({ seed_fen: START, orientation: "white", moves: ["e4"], engine: { depth: 12, eval_cp: -20, best_move: "e7e5", pv: ["e7e5"] } }, "why?", null);
+    });
+
+    it("forwards the host's origin as the game, and a finished board offers nothing", async () => {
+      render(<ExploreLayer fen={START} orientation="black" origin={{ gameId: 7, ply: 3 }} onClose={() => {}} />);
+      await settled();
+      act(() => push({ ready: true, evalState: ev(START) }));
+      fireEvent.click(askButton());
+      expect(askExplore.mock.calls[0][0]).toMatchObject({ orientation: "black", game: { id: 7, ply: 3 } });
+      cleanupLayer();
+      render(<ExploreLayer fen={MATED} orientation="white" onClose={() => {}} />);
+      act(() => push({ ready: true, evalState: null }));
+      expect(screen.getByText("Finished board.")).toBeInTheDocument();
+      expect(screen.queryByLabelText("Your question")).toBeNull();
+    });
+
+    it("a named move is searched by the panel's own engine, beside the layer's", async () => {
+      render(<ExploreLayer fen={START} orientation="white" onClose={() => {}} />);
+      await settled();
+      act(() => push({ ready: true, evalState: ev(START) }));
+      fireEvent.change(box(), { target: { value: "Why not Nf3?" } });
+      expect(askButton()).toBeDisabled();
+      const afterNf3 = (() => {
+        const g = new Chess(START);
+        g.move("Nf3");
+        return g.fen();
+      })();
+      act(() => pushAlt({ ready: true, evalState: null }));
+      await waitFor(() => expect(analyze).toHaveBeenLastCalledWith(afterNf3, 16));
+      act(() => pushAlt({ ready: true, evalState: ev(afterNf3, { bestMoveUci: "d7d5", pvUci: ["d7d5"], evalCp: 5 }) }));
+      fireEvent.click(askButton());
+      expect(askExplore.mock.calls[0][2]).toEqual({ move: "Nf3", engine: { depth: 12, eval_cp: 5, best_move: "d7d5", pv: ["d7d5"] } });
+      expect(arrows()).toEqual([{ startSquare: "e2", endSquare: "e4", color: ARROWS.engine }]); // the layer's arrow is the layer's search
+    });
+
+    it("Escape in the question box blurs it; the next Escape closes", async () => {
+      const onClose = vi.fn();
+      render(<ExploreLayer fen={START} orientation="white" onClose={onClose} />);
+      await settled();
+      act(() => push({ ready: true, evalState: ev(START) }));
+      box().focus();
+      expect(document.activeElement).toBe(box());
+      fireEvent.keyDown(box(), { key: "Escape" });
+      expect(onClose).not.toHaveBeenCalled();
+      expect(document.activeElement).not.toBe(box());
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(onClose).toHaveBeenCalledTimes(1);
+      // The arrows inside the box are the box's, as in the selector.
+      box().focus();
+      fireEvent.click(screen.getByText("play"));
+      fireEvent.keyDown(box(), { key: "ArrowLeft" });
+      expect(screen.getByText("1 move in")).toBeInTheDocument();
+    });
   });
 });

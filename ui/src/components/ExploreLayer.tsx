@@ -2,8 +2,13 @@
  * Explore: a full-screen layer over a position card or the solver, with an in-browser Stockfish
  * (one worker per open layer, created on mount and terminated on close) evaluating whatever line
  * the player plays from the seed. Not a page — no route, no history entry; the host mounts it with
- * a FEN and an orientation and unmounts it to close. Escape closes; ← / → undo and redo the line
+ * a FEN and an orientation and unmounts it to close. Escape closes (from the question box it
+ * first blurs the box, so a half-typed question is not thrown away); ← / → undo and redo the line
  * (a key with a modifier held is left to the browser — Cmd+← is Back on a Mac).
+ *
+ * "Ask Opus" sends the server the seed, the explored line and the engine's finished snapshot for
+ * the board on show — never a search still running or one for another board — plus `origin`
+ * (the game and ply the seed came from) when the host has one.
  *
  * The layer never asks the engine for a search itself: every search goes through the explored
  * line's `reanalyse()`, so a depth change or the settings response on a finished board stays
@@ -14,7 +19,10 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { Square } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import { api } from "../api";
-import { fmtCp, uciPvToSan } from "../engine/eval";
+import { askExplore, askExploreDryRun } from "../ask";
+import type { ExploreAskRequest } from "../ask";
+import { AskOpusPanel } from "./AskOpusPanel";
+import { engineSnapshot, fmtCp, uciPvToSan } from "../engine/eval";
 import { useExploreLine } from "../engine/exploreLine";
 import { useStockfish } from "../engine/useStockfish";
 import { ARROWS, HIGHLIGHT, SQUARES } from "../utils/board";
@@ -27,7 +35,12 @@ const DEPTH_STEPS = [12, 16, 18, 20, 24];
 const btn = "rounded border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900 disabled:opacity-40 disabled:pointer-events-none";
 const select = "rounded border border-zinc-300 bg-white px-2 py-1 text-sm tabular-nums dark:border-zinc-700 dark:bg-zinc-900";
 
-export function ExploreLayer({ fen, orientation, onClose }: { fen: string; orientation: "white" | "black"; onClose: () => void }) {
+export interface ExploreOrigin {
+  gameId: number;
+  ply: number;
+}
+
+export function ExploreLayer({ fen, orientation, origin, onClose }: { fen: string; orientation: "white" | "black"; origin?: ExploreOrigin; onClose: () => void }) {
   const boardId = "explore" + useId().replace(/[^a-zA-Z0-9-]/g, "");
   const [depth, setDepth] = useState(DEFAULT_DEPTH);
   const engine = useStockfish({ enabled: true, depth });
@@ -67,16 +80,19 @@ export function ExploreLayer({ fen, orientation, onClose }: { fen: string; orien
     reanalyse(depth);
   }, [depth, reanalyse]);
 
-  // Escape closes from anywhere; the arrows undo and redo unless the key is meant for a control
-  // that uses them (the depth selector, or an input still focused in the host underneath).
+  // Escape closes from anywhere but a text box, where it blurs the box first (the next Escape
+  // closes); the arrows undo and redo unless the key is meant for a control that uses them (the
+  // depth selector, or an input still focused in the host underneath).
   const { back, forward, move } = line;
   useEffect(() => {
-    const editable = (t: EventTarget | null) => t instanceof HTMLSelectElement || t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || (t instanceof HTMLElement && t.isContentEditable);
+    const typing = (t: EventTarget | null) => t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || (t instanceof HTMLElement && t.isContentEditable);
+    const editable = (t: EventTarget | null) => t instanceof HTMLSelectElement || typing(t);
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.altKey || e.ctrlKey) return;
       if (e.key === "Escape") {
         e.stopPropagation();
-        onClose();
+        if (typing(e.target) && e.target instanceof HTMLElement) e.target.blur();
+        else onClose();
       } else if (editable(e.target)) {
         return;
       } else if (e.key === "ArrowLeft") {
@@ -113,6 +129,13 @@ export function ExploreLayer({ fen, orientation, onClose }: { fen: string; orien
   const pvSan = ev && ev.pvUci.length ? uciPvToSan(line.fen, ev.pvUci) : "";
   const bestSan = bm ? uciPvToSan(line.fen, [bm]) || null : null;
   const steps = DEPTH_STEPS.includes(depth) ? DEPTH_STEPS : [...DEPTH_STEPS, depth].sort((a, b) => a - b);
+  // What a question is asked over: the finished snapshot for the board on show, taken when the
+  // button is pressed (`ev` is already that board's and nothing else's).
+  const snapshot = ev ? engineSnapshot(ev) : null;
+  const request = (): ExploreAskRequest | null =>
+    snapshot ? { seed_fen: fen, orientation, moves: line.san, engine: snapshot, ...(origin ? { game: { id: origin.gameId, ply: origin.ply } } : {}) } : null;
+  const askReason = line.terminal !== null ? "Finished board." : null;
+  const askWaiting = askReason === null && (!engine.ready || !snapshot) ? "Waiting for the engine…" : null;
   const n = line.san.length;
   const finished = line.terminal === "checkmate" ? "Checkmate" : line.terminal === "stalemate" ? "Stalemate" : line.terminal === "draw" ? "Draw" : null;
 
@@ -223,6 +246,20 @@ export function ExploreLayer({ fen, orientation, onClose }: { fen: string; orien
                 </div>
               )}
             </div>
+            <AskOpusPanel
+              fen={line.fen}
+              bestMoveSan={bestSan}
+              disabledReason={askReason}
+              waiting={askWaiting}
+              ask={(question, alternative) => {
+                const req = request();
+                return req ? askExplore(req, question, alternative) : Promise.reject(new Error("Waiting for the engine…"));
+              }}
+              dryRun={(question, alternative) => {
+                const req = request();
+                return req ? askExploreDryRun(req, question, alternative) : Promise.reject(new Error("Waiting for the engine…"));
+              }}
+            />
             <p className="text-xs leading-relaxed text-zinc-500">Drag or click pieces to play any line; the engine re-evaluates each position. Undo and Redo walk the line (← / →), Reset returns to the starting position.</p>
           </div>
         </div>

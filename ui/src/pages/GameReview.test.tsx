@@ -43,6 +43,23 @@ vi.mock("../components/ExploreLayer", () => ({
   },
 }));
 vi.mock("../components/PositionCard/AiExplanationPanel", () => ({ AiExplanationPanel: () => <div data-testid="ai-panel" /> }));
+// The Ask panel captures its props: the board it is asked about, the gate, and the request the
+// page builds. Its own behaviour is AskOpusPanel.test.tsx's.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let askProps: any = null;
+vi.mock("../components/AskOpusPanel", () => ({
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  AskOpusPanel: (props: any) => {
+    askProps = props;
+    return <div data-testid="ask-panel" data-fen={props.fen} data-best={props.bestMoveSan ?? ""} data-reason={props.disabledReason ?? ""} />;
+  },
+}));
+const askReview = vi.fn();
+const askReviewDryRun = vi.fn();
+vi.mock("../ask", () => ({
+  askReview: (...a: unknown[]) => askReview(...a),
+  askReviewDryRun: (...a: unknown[]) => askReviewDryRun(...a),
+}));
 
 const getGameReview = vi.fn();
 const learnCommit = vi.fn();
@@ -183,6 +200,9 @@ beforeEach(() => {
   boardOptions = null;
   evalBarProps = null;
   exploreProps = null;
+  askProps = null;
+  askReview.mockReset().mockResolvedValue({ explanation: "x", cached: false, model: "m" });
+  askReviewDryRun.mockReset().mockResolvedValue({});
   setViewport(DESKTOP);
   getGameReview.mockResolvedValue(reviewPayload());
   getReviewPrefs.mockResolvedValue({ review_default_mode: "learn", review_show_timer: true });
@@ -213,6 +233,7 @@ describe("before a commit nothing that answers the question is on screen", () =>
     expect(text).toContain("1. e4 e5");
     expect(screen.queryByTestId("blunder-card")).toBeNull();
     expect(screen.queryByTestId("repertoire-panel")).toBeNull();
+    expect(screen.queryByTestId("ask-panel")).toBeNull(); // its answer would name the engine move
   });
   it("the reveal restores them, so the gate is not passing by rendering nothing", async () => {
     await renderReview();
@@ -226,9 +247,10 @@ describe("before a commit nothing that answers the question is on screen", () =>
     expect(arrowColors().length).toBeGreaterThan(1);
     // The committed move is the book move: one arrow, one legend row naming both.
     expect(text).toContain("You played · Your prep plays");
-    // The blunder card and its explanation are back beneath the legend.
+    // The blunder card and its explanation are back beneath the legend, and so is Ask Opus.
     expect(screen.getByTestId("blunder-card")).toBeInTheDocument();
     expect(screen.getByTestId("ai-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("ask-panel")).toBeInTheDocument();
     expect(text).toContain(`−${CP_LOSS}cp`);
     expect(learnCommit).toHaveBeenCalledTimes(1);
     expect(learnCommit.mock.calls[0][0]).toBe(1);
@@ -431,6 +453,35 @@ describe("fail closed", () => {
     expect(arrowColors()).toEqual([ARROWS.book]);
     expect(bodyText()).toContain("has not been analysed yet");
     expect(bodyText()).toContain("1. e4 e5");
+    expect(screen.getByTestId("ask-panel").getAttribute("data-reason")).toBe("No engine analysis for this position.");
+  });
+});
+
+describe("Ask Opus on the Review page", () => {
+  it("asks about the board at the ply over its stored analysis, and a step moves it on", async () => {
+    getReviewPrefs.mockResolvedValue({ review_default_mode: "review", review_show_timer: true });
+    await renderReview(2);
+    const panel = screen.getByTestId("ask-panel");
+    expect(panel.getAttribute("data-fen")).toBe(fen_sequence[2]);
+    expect(panel.getAttribute("data-best")).toBe(STORED_BEST);
+    expect(panel.getAttribute("data-reason")).toBe("");
+    await act(async () => askProps.ask("why?", { move: "Nf3" }));
+    expect(askReview).toHaveBeenCalledWith(1, 2, "why?", { move: "Nf3" });
+    await act(async () => askProps.dryRun("", null));
+    expect(askReviewDryRun).toHaveBeenCalledWith(1, 2, "", null);
+    fireEvent.click(screen.getByRole("button", { name: "Next →" }));
+    expect(screen.getByTestId("ask-panel").getAttribute("data-fen")).toBe(fen_sequence[3]);
+    expect(screen.getByTestId("ask-panel").getAttribute("data-best")).toBe("d4");
+    await act(async () => askProps.ask("and now?", null));
+    expect(askReview).toHaveBeenLastCalledWith(1, 3, "and now?", null);
+  });
+  it("a ply the pipeline did not score has nothing to ask about", async () => {
+    const p = reviewPayload();
+    p.game.ply_analysis = p.game.ply_analysis!.map((e) => (e.ply === 3 ? { ...e, best_move: null } : e));
+    getGameReview.mockResolvedValue(p);
+    getReviewPrefs.mockResolvedValue({ review_default_mode: "review", review_show_timer: true });
+    await renderReview(3);
+    expect(screen.getByTestId("ask-panel").getAttribute("data-reason")).toBe("No engine analysis for this position.");
   });
 });
 
@@ -839,6 +890,7 @@ describe("stepping, Explore and the exits", () => {
     expect(screen.getByTestId("explore-layer")).toBeInTheDocument();
     expect(exploreProps.fen).toBe(fen_sequence[2]);
     expect(exploreProps.orientation).toBe("black");
+    expect(exploreProps.origin).toEqual({ gameId: 1, ply: 2 });
     await act(async () => fireEvent.keyDown(window, { key: "ArrowRight" })); // ignored while exploring
     expect(bodyText()).toContain("move 2 / 4");
     await act(async () => exploreProps.onClose());
