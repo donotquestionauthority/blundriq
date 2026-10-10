@@ -2,7 +2,7 @@
 
 GitHub answers 204 with no body and no run id; the run shows up as `pipeline_runs` rows
 once the job's setup is done (core/runs.py reads those). Nothing here logs: the repository
-name is an identifier (rule 2) and GitHub's reply is never read into a message.
+name is an identifier of the deployment and GitHub's reply is never read into a message.
 """
 
 from __future__ import annotations
