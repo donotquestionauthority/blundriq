@@ -241,6 +241,104 @@ describe("the pipeline block", () => {
     expect(gets(calls)).toBe(n);
   });
 
+  it("follows a run that started just before the click, and waits for its own run after that one ends", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // The page was read before the schedule started a run; the click lands while that run is going.
+    const requestedAt = Date.now();
+    const earlier = run("running", 1);
+    let current = withRun(run("ok", 50));
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push(`${init?.method ?? "GET"} ${url.replace(/^.*\/api/, "")}`);
+        if (init?.method === "POST") return { ok: true, status: 202, statusText: "x", json: async () => ({ requested_at: new Date(requestedAt).toISOString() }) };
+        return { ok: true, status: 200, json: async () => current };
+      }),
+    );
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Run now" }));
+    expect(await screen.findByRole("button", { name: "Requested…" })).toBeDisabled();
+    current = withRun(earlier);
+    await tick(POLL_MS); // the earlier run shows up as running: it is followed, the request queued behind it
+    expect(await screen.findByText(/^Last run: started .* · running$/)).toBeInTheDocument();
+    await tick(START_WAIT_MS); // long past the start wait, that run is still going: no notice, still polling
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Requested…" })).toBeDisabled();
+    const polled = gets(calls);
+    expect(polled).toBeGreaterThan(3);
+    current = withRun({ ...earlier, status: "ok" });
+    await tick(POLL_MS); // the earlier run ends; the request's own run has not started: wait for it
+    expect(await screen.findByText(/^Last run: started .* · ok$/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Requested…" })).toBeDisabled();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    current = withRun({ started_at: new Date(requestedAt + 90_000).toISOString(), status: "running", failed_step: null });
+    await tick(POLL_MS); // the request's run starts
+    expect(await screen.findByText(/^Last run: started .* · running$/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled();
+    current = withRun({ started_at: new Date(requestedAt + 90_000).toISOString(), status: "ok", failed_step: null });
+    await tick(POLL_MS);
+    expect(await screen.findByText(/^Last run: started .* · ok$/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled();
+    const n = gets(calls);
+    await tick(POLL_MS * 3);
+    expect(gets(calls)).toBe(n); // its result ends the watch
+  });
+
+  it("gives up only once the earlier run has ended and the start wait has passed since", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const earlier = run("running", 1);
+    let current = withRun(run("ok", 50)); // stale: the schedule has started a run since this read
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        if (init?.method === "POST") return { ok: true, status: 202, statusText: "x", json: async () => ({ requested_at: new Date().toISOString() }) };
+        return { ok: true, status: 200, json: async () => current };
+      }),
+    );
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Run now" }));
+    expect(await screen.findByRole("button", { name: "Requested…" })).toBeDisabled();
+    current = withRun(earlier);
+    await tick(POLL_MS);
+    await screen.findByText(/^Last run: started .* · running$/);
+    await tick(START_WAIT_MS * 2); // the earlier run runs long: the wait has not begun
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    current = withRun({ ...earlier, status: "ok" });
+    await tick(POLL_MS); // it ends: the wait begins now
+    await screen.findByText(/^Last run: started .* · ok$/);
+    await tick(START_WAIT_MS - POLL_MS);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Requested…" })).toBeDisabled();
+    await tick(POLL_MS * 2);
+    expect(await screen.findByRole("status")).toHaveTextContent("No run started");
+    expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled();
+  });
+
+  it("keeps the card and the watch through one failed poll", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const pages = [withRun(run("running", 3)), null, withRun(run("ok", 3))];
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        calls.push(url);
+        const body = pages.length > 1 ? pages.shift() : pages[0];
+        if (body === null) return { ok: false, status: 502, statusText: "bad gateway", json: async () => ({ detail: "api away" }) };
+        return { ok: true, status: 200, json: async () => body };
+      }),
+    );
+    renderPage();
+    expect(await screen.findByText("Last run: started 3 minutes ago · running")).toBeInTheDocument();
+    await tick(POLL_MS); // the failed poll: the error shows, the card stays, the watch goes on
+    expect(await screen.findByRole("alert")).toHaveTextContent("api away");
+    expect(screen.getByText("Last run: started 3 minutes ago · running")).toBeInTheDocument();
+    await tick(POLL_MS);
+    expect(await screen.findByText("Last run: started 3 minutes ago · ok")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(calls).toHaveLength(3);
+  });
+
   it("shows the server's reason when the request is refused", async () => {
     sequence([withRun(run("ok", 50))], { status: 502, body: { detail: "GitHub refused the dispatch (HTTP 401)" } });
     renderPage();

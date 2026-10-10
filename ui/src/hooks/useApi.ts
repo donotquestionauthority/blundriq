@@ -22,9 +22,15 @@ function shallowEqualDeps(a: unknown[] | null, b: unknown[]): boolean {
  * very first render that sees new deps until the matching response lands. An effect-set flag
  * would land one render late and let the old data mount once under the new deps. Pass
  * primitives in `deps`; a freshly-constructed object compares unequal every render.
+ * `keepDataOnError` keeps the last data through a failed re-run (for a page that polls).
  */
-export function useApi<T>(fetcher: () => Promise<T>, deps: unknown[] = []): ApiState<T> & { refetch: () => void; isStale: boolean } {
+export function useApi<T>(
+  fetcher: () => Promise<T>,
+  deps: unknown[] = [],
+  options: { keepDataOnError?: boolean } = {},
+): ApiState<T> & { refetch: () => void; isStale: boolean } {
   const [state, setState] = useState<ApiState<T>>({ data: null, isLoading: true, error: null, dataDeps: null });
+  const { keepDataOnError = false } = options;
 
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
@@ -42,7 +48,10 @@ export function useApi<T>(fetcher: () => Promise<T>, deps: unknown[] = []): ApiS
       })
       .catch((err: unknown) => {
         if (myRun !== runIdRef.current) return;
-        setState({ data: null, isLoading: false, error: err instanceof Error ? err.message : String(err), dataDeps: null });
+        const error = err instanceof Error ? err.message : String(err);
+        // A page that polls keeps what it last saw through one failed read: the error shows
+        // beside the data, and the next poll replaces both.
+        setState((s) => (keepDataOnError ? { ...s, isLoading: false, error } : { data: null, isLoading: false, error, dataDeps: null }));
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);

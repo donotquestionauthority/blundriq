@@ -158,19 +158,24 @@ function Pipeline({ p, refetch }: { p: HomePage["pipeline"]; refetch: () => void
   const [pending, setPending] = useState(false);
   const [requestError, setRequestError] = useState<string | null>(null);
 
-  // The wait for the run's first row ends by the clock, not by a poll.
-  useEffect(() => {
-    if (requestedAt === null) return;
-    const timer = setTimeout(() => setWaitedOut(true), START_WAIT_MS);
-    return () => clearTimeout(timer);
-  }, [requestedAt]);
-
   const run = p.last_run;
   const runStartedAt = run ? Date.parse(run.started_at) : null;
   const newerRun = requestedAt !== null && runStartedAt !== null && runStartedAt >= requestedAt ? run : null;
+  // A run that started before the request is still going: the request is queued behind it, and
+  // the wait for its own first row starts when this one ends.
+  const queuedBehind = requestedAt !== null && newerRun === null && run?.status === "running";
   const awaitingStart = requestedAt !== null && newerRun === null && !waitedOut;
-  const noStart = requestedAt !== null && newerRun === null && waitedOut;
-  const watching = awaitingStart || (requestedAt !== null ? newerRun?.status === "running" : run?.status === "running");
+  const noStart = requestedAt !== null && newerRun === null && waitedOut && !queuedBehind;
+  // Whatever is running is followed, the request's own run or one the schedule started.
+  const watching = awaitingStart || run?.status === "running";
+
+  // The wait for the run's first row ends by the clock, not by a poll; it does not run while
+  // an earlier run is still going.
+  useEffect(() => {
+    if (requestedAt === null || queuedBehind) return;
+    const timer = setTimeout(() => setWaitedOut(true), START_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, [requestedAt, queuedBehind]);
 
   useEffect(() => {
     if (!watching) return;
@@ -224,7 +229,7 @@ function Pipeline({ p, refetch }: { p: HomePage["pipeline"]; refetch: () => void
 }
 
 export default function Home() {
-  const { data, error, isLoading, refetch } = useApi(getHome);
+  const { data, error, isLoading, refetch } = useApi(getHome, [], { keepDataOnError: true });
   return (
     <div>
       <h1 className="text-xl font-semibold tracking-tight">Home</h1>
