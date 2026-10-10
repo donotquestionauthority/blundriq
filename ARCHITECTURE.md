@@ -62,10 +62,14 @@ Chess.com / Lichess APIs
            table, and GET /scout/dismissed lists every dismissed board for restoring. Compare's third
            column comes from the same views.
 
-  Explore (browser only, no server): a full-screen layer over any position card and the Practice solver, seeded
+  Explore: a full-screen layer over any position card, the Practice solver and the game review, seeded
            with that board; Stockfish 19 runs in a Web Worker from `ui/public/engine/` (GPL-3.0, notices and
            corresponding source served from the same directory) and evaluates whatever line the player plays.
-           The only server read is `explore_engine_depth` from the settings row.
+           The server is read once, for `explore_engine_depth`, and written to only by "Ask Opus"
+           (POST /explore/ask): the explored line and the engine's snapshot for the board on show go to
+           core/ai.py, which parses them as chess and renders them in its own words before they reach a
+           prompt. The game review has the same panel (POST /games/{id}/ask) over the stored analysis of
+           the ply; a question that names a move gets that move analysed in the browser too.
 
   Home page reads: due count (Practice eligibility), games today/week, streaks, new blunders — recurring
            boards the Blunders list has never shown (seen_blunder_boards, which that page fills with what it
@@ -123,7 +127,7 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `core/activity.py` | Games played in the last 24 h / 7 d / 30 d / ever, for the player (Home, every variant) or an opponent (Scout). |
 | `core/review/` | Review: `mistakes.py` (the player's opening decisions, one per game, board before and board after; each charged its engine loss above the floor at the board they moved from; the boards they keep giving value away on, "Opening mistakes to work on" and "Fixed?", with fine / costly / unknown visits, the coverage, and the boards the evaluator covers), `positions.py` (the results section: the boards of every game's opening prefix, each at its first occurrence in the game, scored against the Elo expectation with a recency weight in days; the one ordered status decision, carry-down, "Results below rating expectation"), `position.py` (one position's page: the player's moves from it and their costly games, what happens next, the games through it with their turning point), `habits.py` (the stored review events of the analysis window grouped by kind of mistake: rates, points a month, trend, the games of one), `filters.py` (time class and the `{colour}:{family}` opening key every read applies), `evals.py` (`pipeline position-evals [--workers N]`: rebuild each board from one game's prefix, check its key, analyse the canonical board with no history, store score, best move and the engine's stamp, or the terminal outcome; a scored row another engine wrote is pending again), `detect.py` (the pure detector over one game's stored analysis: material candidates proved by PV replay, missed wins, faded advantage, merged at the anchor ply and routed; priced by forced mate then the win-probability curve, nothing else — decisions/001; its expected-score curve is what a position's page prices a turning point by), `window.py` (the analysed, intact part of the analysis window and the repertoire / missed-motif context), `write.py` (the per-game replace that keeps `first_detected_at` and stamps `meaning_changed_at` on a reclassification only), `run.py` (`pipeline review`: one transaction, review lock then repertoire lock before any read, held to the commit; a game the detector cannot tag keeps its rows and fails the run), `snapshot.py` (`pipeline review-snapshot`: both position sections stored hourly per filter pair with a fingerprint of what they were computed from), `read.py` (the page: the opening mistakes and the results section from a current snapshot or computed, habits and lost wins always read now, under both filters). |
 | `core/blunders.py` | The Blunders page: boards ranked by distinct games and severity, their games, dismissal. |
-| `core/ai.py`, `core/prompts.py` | Explaining a blunder: context read from the database, sandboxed prompt templates, provider call over HTTP, cache, hourly and daily caps. |
+| `core/ai.py`, `core/prompts.py` | AI explanations — a blunder, a move in a repertoire line, a question about the position on show (Review, Explore): context read from the database or parsed from browser-sent chess, sandboxed prompt templates, provider call over HTTP, cache, hourly and daily caps. |
 | `core/puzzles/custom.py` | Creating and retiring a hand-made puzzle. |
 | `core/home.py` | The Home page: due count, today's puzzles and games against their targets, streaks, blunders and deviation patterns their lists have never shown, the pipeline's latest run. Reads only. |
 | `api/auth.py` | One password, one signed cookie. |

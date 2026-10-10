@@ -76,6 +76,11 @@
     }
   },
   "properties": {
+    "ai_ask_prompt": {
+      "$ref": "#/$defs/AiPrompt",
+      "description": "Ask Opus about the position on show (Review and Explore); edit as JSON.",
+      "type": "object"
+    },
     "ai_default_prompt": {
       "default": "a",
       "description": "Prompt key used by the primary Explain button.",

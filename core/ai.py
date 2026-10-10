@@ -1,10 +1,14 @@
 """AI explanations, with a cache and a spending cap.
 
-Two subjects share one path. A blunder is named by `(chess_game_id, ply)` and a prompt by key;
+Three subjects share one path. A blunder is named by `(chess_game_id, ply)` and a prompt by key;
 a move in a repertoire line is named by `(line_id, ply)` and explained with the one line prompt,
-plus the player's optional question. Everything else that reaches the model is read from the
-database here, so the only thing the browser can put into a prompt or a cache row is that
-question, and it is part of the cache key.
+plus the player's optional question; a position on show (a ply of a reviewed game, or a board
+explored in the browser) is asked about with the ask prompt. Everything the model reads is
+either read from the database here or, for the third subject, chess the browser sent that the
+server has parsed and re-rendered in its own words: a FEN through `full_fen`, every move against
+the board it is claimed from (the null move refused), an engine line as the server's own SAN
+and numbering. The player's question is the only prose the browser contributes, and every one
+of these values is part of the cache key.
 
 Three rules hold the module together:
 
@@ -24,18 +28,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any, LiteralString, cast
 
+import chess
 import httpx
 import psycopg
 from jinja2 import TemplateError
 from psycopg import Connection
 
-from core import prompts, secrets
+from core import games, prompts, secrets
+from core.chess import san as san_moves
 from core.chess.eligibility import analysable_sql
 from core.constants import (
     AI_ADAPTIVE_THINKING_MODELS,
@@ -44,8 +51,12 @@ from core.constants import (
     AI_THINKING_MIN_BUDGET_TOKENS,
     LOCK_AI_BUDGET,
     PLAYER_ID,
+    STOCKFISH_VERSION,
 )
+from core.notify import error_label
+from core.puzzles.custom import InvalidPuzzle, full_fen
 from core.repertoire import annotations
+from core.repertoire.read import project_game
 from core.settings import AiPrompt, Settings, thinking_off_refusal
 from core.settings import load as load_settings
 
@@ -347,6 +358,393 @@ def line_context(line: dict[str, Any], ply: int, question: str) -> dict[str, Any
         "sticky_about": label(anchor) if anchor is not None else "",
         "question": question,
     }
+
+
+# --- a position with a question ----------------------------------------------------------------
+
+ASK_PROMPT_KEY = "ask"  # what `ai_calls.prompt_key` records for a question about a position
+ASK_MAX_EXPLORED_MOVES = 60
+ASK_MAX_PV_PLIES = 12  # the browser trims to this before sending (ui/src/engine/eval.ts)
+ASK_MAX_DEPTH = 30
+ASK_MAX_ABS_CP = 9999  # ±10000 is `mate 0`, a board already mated, which is terminal and never asked about
+MATE_ABS_CP = 9000  # |cp| at or above this is a mate score: ±(10000 − distance in moves)
+_log = logging.getLogger(__name__)
+
+
+class _Side:
+    WHITE = "White"
+    BLACK = "Black"
+
+
+def _dict(raw: Any) -> dict[str, Any] | None:
+    """`raw` as a string-keyed dict, or None when it is not one."""
+    return cast(dict[str, Any], raw) if isinstance(raw, dict) else None
+
+
+def _list(raw: Any) -> list[Any] | None:
+    return cast(list[Any], raw) if isinstance(raw, list) else None
+
+
+def _side_to_move(board: chess.Board) -> str:
+    return _Side.WHITE if board.turn == chess.WHITE else _Side.BLACK
+
+
+def _clock_zeroed(fen: str) -> str:
+    """The FEN with its halfmove clock at 0, so boards that differ only by it share a cache row."""
+    fields = fen.split()
+    if len(fields) >= 6:
+        fields[4] = "0"
+    return " ".join(fields[:6])
+
+
+def fmt_eval(cp: int | None, mate_in_moves: int | None) -> str:
+    """A White-POV score as prose: `+0.8`, `-1.3`, `0.0`, `mate in 3 for White`, `mate in 2
+    for Black`. A mate is given as `mate_in_moves` (the stored analysis) or encoded in `cp`
+    (the browser engine: ±(10000 − moves)), the one convention both engines share."""
+    if mate_in_moves is not None and mate_in_moves != 0:
+        side = _Side.WHITE if mate_in_moves > 0 else _Side.BLACK
+        return f"mate in {abs(mate_in_moves)} for {side}"
+    if cp is None:
+        return ""
+    if abs(cp) >= MATE_ABS_CP:
+        side = _Side.WHITE if cp > 0 else _Side.BLACK
+        return f"mate in {10000 - abs(cp)} for {side}"
+    sign = "+" if cp > 0 else "-" if cp < 0 else ""
+    return f"{sign}{abs(cp) / 100:.1f}"
+
+
+def _numbered_from(board: chess.Board, sans: list[str]) -> str:
+    return _numbered(" ".join(sans), white_to_move=board.turn == chess.WHITE, fullmove=board.fullmove_number)
+
+
+def _terminal(board: chess.Board) -> str:
+    """Why the board is finished, or "" when it can be played on. The three outcomes one move
+    can produce from a position with history unknown; the fifty-move rule and repetition are
+    not among them on purpose, and such a board is searched like any other."""
+    if board.is_checkmate():
+        return "checkmate"
+    if board.is_stalemate():
+        return "stalemate"
+    if board.is_insufficient_material():
+        return "draw by insufficient material"
+    return ""
+
+
+def _uci(board: chess.Board, token: Any, what: str) -> chess.Move:
+    """A UCI token as a legal move on `board`, or a 400. `Move.from_uci` accepts the null move
+    `0000`, which is never legal, so the legality check is what refuses it."""
+    try:
+        move = chess.Move.from_uci(str(token))
+    except ValueError, TypeError:
+        raise ExplainError(400, f"{what} is not a move") from None
+    if not move or move not in board.legal_moves:
+        raise ExplainError(400, f"{what} is not a legal move")
+    return move
+
+
+def _snapshot(board: chess.Board, raw: Any) -> dict[str, Any]:
+    """The browser engine's readout for `board`, validated as chess and re-rendered by the
+    server: `best_move` (SAN of the engine's final choice, taken from its own token and never
+    from the line), `line` (the scored principal variation as numbered SAN), `eval`, `depth`,
+    and `agrees` — whether the line begins with the final choice. The engine's final `bestmove`
+    can differ from the head of the last line it scored; neither is rewritten to match the
+    other, so the prompt can say what the engine actually reported."""
+    data = _dict(raw)
+    if data is None:
+        raise ExplainError(400, "the engine readout is missing")
+    depth, cp, pv = data.get("depth"), data.get("eval_cp"), _list(data.get("pv"))
+    if not isinstance(depth, int) or isinstance(depth, bool) or not 1 <= depth <= ASK_MAX_DEPTH:
+        raise ExplainError(400, "the engine depth is out of range")
+    if not isinstance(cp, int) or isinstance(cp, bool) or abs(cp) > ASK_MAX_ABS_CP:
+        raise ExplainError(400, "the engine evaluation is out of range")
+    if pv is None or not 1 <= len(pv) <= ASK_MAX_PV_PLIES:
+        raise ExplainError(400, f"the engine line must have 1 to {ASK_MAX_PV_PLIES} moves")
+    best = _uci(board, data.get("best_move"), "the engine's best move")
+    replay = board.copy()
+    line: list[str] = []
+    for token in pv:
+        move = _uci(replay, token, "a move in the engine line")
+        line.append(replay.san(move))
+        replay.push(move)
+    return {
+        "best_move": board.san(best),
+        "line": _numbered_from(board, line),
+        "eval": fmt_eval(cp, None),
+        "depth": str(depth),
+        "agrees": chess.Move.from_uci(str(pv[0])) == best,
+    }
+
+
+def _spine(g: dict[str, Any], ply: int) -> list[str]:
+    """The game's FEN sequence, refused before anything indexes it: a housekept game has no
+    moves (`out_of_window`), and a ply past the last board is nothing to ask about."""
+    spine = _list(g.get("fen_sequence"))
+    if g.get("out_of_window") or not spine:
+        raise ExplainError(422, "the game's moves are no longer stored")
+    if not 0 <= ply < len(spine):
+        raise ExplainError(422, "ply is past the end of the game")
+    return [str(f) for f in spine]
+
+
+def _alternative(board: chess.Board, best_move_san: str, raw: Any) -> dict[str, Any]:
+    """The `alt_*` fields for the move the question names. The server plays the move: a board
+    it finishes needs no engine (and refuses one); any other board needs the engine's reply
+    line, validated against it, so the line's first move is the opponent's reply and `alt_best`
+    the reply the engine finalised on."""
+    empty = {
+        "alt_move": "",
+        "alt_outcome": "",
+        "alt_eval": "",
+        "alt_line": "",
+        "alt_depth": "",
+        "alt_best": "",
+        "alt_line_agrees": False,
+    }
+    if raw is None:
+        return empty
+    data = _dict(raw)
+    if data is None:
+        raise ExplainError(400, "alternative is not a move")
+    move = san_moves.parse(board, str(data.get("move") or ""))
+    if not move:
+        raise ExplainError(400, "alternative is not a legal move")
+    if san_moves.parse(board, best_move_san) == move:
+        raise ExplainError(400, "alternative is the engine's move")
+    after = board.copy()
+    after.push(move)
+    outcome = _terminal(after)
+    engine = data.get("engine")
+    if outcome:
+        if engine is not None:
+            raise ExplainError(400, "a finished board has no engine line")
+        return {**empty, "alt_move": board.san(move), "alt_outcome": outcome}
+    if engine is None:
+        raise ExplainError(400, "the alternative needs an engine line")
+    snap = _snapshot(after, engine)
+    return {
+        "alt_move": board.san(move),
+        "alt_outcome": "",
+        "alt_eval": snap["eval"],
+        "alt_line": snap["line"],
+        "alt_depth": snap["depth"],
+        "alt_best": snap["best_move"],
+        "alt_line_agrees": snap["agrees"],
+    }
+
+
+def _game_block(conn: Connection[Any], g: dict[str, Any], spine: list[str], ply: int) -> dict[str, Any]:
+    """What the game says about the board at `ply`: the opening, the moves before it, the move
+    made from it and by whom, the blunder row at it, and the repertoire's move. The projection
+    is decoration: a failure is an empty `book_move` and a class chain in the log."""
+    moves = [str(m) for m in (_list(g.get("moves")) or [])]
+    played = moves[ply] if ply < len(moves) else ""
+    mover = spine[ply].split()[1] if len(spine[ply].split()) > 1 else "w"
+    mine = (mover == "w") == (g["player_color"] == "white")
+    blunder = next((b for b in games.blunders_for_game(conn, int(g["id"])) if b["ply"] == ply), None)
+    book_move = ""
+    try:
+        projection = project_game(conn, str(g["player_color"]), spine) or {}
+        by_ply = cast(dict[int, Any], projection.get("by_ply") or {})
+        entry = _dict(by_ply.get(ply)) or {}
+        book_move = str(entry.get("book_move") or "")
+    except Exception as exc:  # noqa: BLE001 — the projection is decoration on the question
+        _log.warning("repertoire projection failed: %s", error_label(exc))
+        conn.rollback()
+    return {
+        "opening_name": str(g.get("opening_name") or ""),
+        "moves_before": _pgn_before(moves, ply, window=8),
+        "move_played": played,
+        "played_by": ("you" if mine else "your opponent") if played else "",
+        "classification": str(blunder["classification"] or "") if blunder else "",
+        "cp_loss": str(blunder["cp_loss"]) if blunder and blunder["cp_loss"] is not None else "",
+        "book_move": book_move,
+    }
+
+
+_NO_GAME = {
+    "opening_name": "",
+    "moves_before": "",
+    "move_played": "",
+    "played_by": "",
+    "classification": "",
+    "cp_loss": "",
+    "book_move": "",
+}
+
+
+def _question(question: str, best_move: str) -> str:
+    question = question.strip()
+    if len(question) > QUESTION_MAX_CHARS:
+        raise ExplainError(422, f"the question is longer than {QUESTION_MAX_CHARS} characters")
+    return question or f"Why is {best_move} the engine's choice here?"
+
+
+def ask_context(
+    *,
+    origin: str,
+    board: chess.Board,
+    color: str,
+    question: str,
+    engine_source: str,
+    snapshot: dict[str, Any],
+    game: dict[str, Any],
+    alternative: dict[str, Any],
+    explored: list[str],
+    seed_fen: str,
+) -> dict[str, Any]:
+    """The render-ready context for one question about one board. Every value is a string,
+    empty meaning "none", except the two agreement flags, which are booleans so the template
+    branches on a value and not on the word "false"."""
+    return {
+        "origin": origin,
+        "fen": _clock_zeroed(board.fen()),
+        "color": color,
+        "side_to_move": _side_to_move(board),
+        "question": question,
+        "engine_source": engine_source,
+        "eval": snapshot["eval"],
+        "best_move": snapshot["best_move"],
+        "best_line": snapshot["line"],
+        "line_agrees": bool(snapshot["agrees"]),
+        **game,
+        "explored_moves": _numbered_from(chess.Board(seed_fen), explored) if explored else "",
+        "seed_fen": _clock_zeroed(seed_fen) if seed_fen else "",
+        **alternative,
+    }
+
+
+def _stored_snapshot(board: chess.Board, entry: Any) -> dict[str, Any]:
+    """The pipeline's analysis of a ply in `_snapshot`'s shape: the same engine the arrow on
+    the Review board came from, and the line is the one it scored, so the two agree."""
+    data = _dict(entry)
+    if data is None or not data.get("best_move"):
+        raise ExplainError(422, "no engine analysis for this position")
+    line = str(data.get("best_line") or "")
+    return {
+        "best_move": str(data["best_move"]),
+        "line": _numbered_from(board, line.split()) if line else "",
+        "eval": fmt_eval(_int(data.get("eval")), _int(data.get("mate_in_moves"))),
+        "depth": "",
+        "agrees": True,
+    }
+
+
+def ask_review(
+    tx: Transaction,
+    game_id: int,
+    ply: int,
+    question: str = "",
+    alternative: dict[str, Any] | None = None,
+    *,
+    dry_run: bool = False,
+    client: httpx.Client | None = None,
+) -> dict[str, Any]:
+    """Ask about the board at `ply` of a reviewed game. The engine facts are the stored
+    analysis of that ply — the engine that drew the arrow — so the context is deterministic
+    and a repeat question is a cache hit."""
+
+    def prepare(conn: Connection[Any], settings: Settings) -> _Prepared:
+        prompt = settings.ai_ask_prompt
+        if not prompt.text.strip() or not prompt.model:
+            raise ExplainError(404, "the ask prompt is not configured")
+        try:
+            g = games.game_for_review(conn, game_id)
+        except games.GameNotFound:
+            raise ExplainError(404, "game not found") from None
+        except games.NotAnalysable:
+            raise ExplainError(422, "not_analysable") from None
+        spine = _spine(g, ply)
+        entries = [_dict(e) for e in (_list(g.get("ply_analysis")) or [])]
+        entry = next((e for e in entries if e is not None and e.get("ply") == ply), None)
+        board = chess.Board(spine[ply])
+        snapshot = _stored_snapshot(board, entry)
+        depth = g.get("ply_analysis_depth") or g.get("analysis_depth")
+        context = ask_context(
+            origin="review",
+            board=board,
+            color=str(g["player_color"]),
+            question=_question(question, snapshot["best_move"]),
+            engine_source=f"Stockfish {STOCKFISH_VERSION} at depth {depth}, from the game's stored analysis",
+            snapshot=snapshot,
+            game=_game_block(conn, g, spine, ply),
+            alternative=_alternative(board, snapshot["best_move"], alternative),
+            explored=[],
+            seed_fen="",
+        )
+        label = prompt.label or "Ask about this position"
+        return _prepare(prompt, ASK_PROMPT_KEY, label, context["fen"], context)
+
+    return _run(tx, prepare, dry_run=dry_run, client=client)
+
+
+def ask_explore(
+    tx: Transaction,
+    body: dict[str, Any],
+    *,
+    dry_run: bool = False,
+    client: httpx.Client | None = None,
+) -> dict[str, Any]:
+    """Ask about a board explored in the browser: `seed_fen` played through `moves`, with the
+    in-browser engine's snapshot for the board reached. With `game: {id, ply}` the seed must be
+    that game's board at that ply, and the game's facts about it join the prompt — only while
+    nothing has been explored yet, since one move on makes the board no longer the game's."""
+
+    def prepare(conn: Connection[Any], settings: Settings) -> _Prepared:
+        prompt = settings.ai_ask_prompt
+        if not prompt.text.strip() or not prompt.model:
+            raise ExplainError(404, "the ask prompt is not configured")
+        try:
+            seed = full_fen(str(body.get("seed_fen") or ""))
+        except InvalidPuzzle as exc:
+            raise ExplainError(400, str(exc)) from None
+        explored_raw = _list(body.get("moves")) or []
+        if len(explored_raw) > ASK_MAX_EXPLORED_MOVES:
+            raise ExplainError(400, f"at most {ASK_MAX_EXPLORED_MOVES} explored moves")
+        board = chess.Board(seed)
+        explored: list[str] = []
+        for token in explored_raw:
+            move = san_moves.parse(board, str(token))
+            if not move:
+                raise ExplainError(400, "an explored move is not legal")
+            explored.append(board.san(move))
+            board.push(move)
+        if _terminal(board):
+            raise ExplainError(422, "nothing to ask on a finished board")
+        snapshot = _snapshot(board, body.get("engine"))
+        color = str(body.get("orientation") or "")
+        if color not in ("white", "black"):
+            raise ExplainError(400, "orientation must be white or black")
+        game = dict(_NO_GAME)
+        origin = _dict(body.get("game"))
+        if origin is not None:
+            try:
+                g = games.game_for_review(conn, int(origin.get("id") or 0))
+            except games.GameNotFound:
+                raise ExplainError(404, "game not found") from None
+            except games.NotAnalysable:
+                raise ExplainError(422, "not_analysable") from None
+            ply = int(origin.get("ply") or 0)
+            spine = _spine(g, ply)
+            if spine[ply].split()[:4] != seed.split()[:4]:
+                raise ExplainError(400, "seed is not the game's board at that ply")
+            if not explored:
+                game = _game_block(conn, g, spine, ply)
+        context = ask_context(
+            origin="explore",
+            board=board,
+            color=color,
+            question=_question(str(body.get("question") or ""), snapshot["best_move"]),
+            engine_source=f"in-browser Stockfish {STOCKFISH_VERSION} at depth {snapshot['depth']}",
+            snapshot=snapshot,
+            game=game,
+            alternative=_alternative(board, snapshot["best_move"], body.get("alternative")),
+            explored=explored,
+            seed_fen=seed,
+        )
+        label = prompt.label or "Ask about this position"
+        return _prepare(prompt, ASK_PROMPT_KEY, label, context["fen"], context)
+
+    return _run(tx, prepare, dry_run=dry_run, client=client)
 
 
 # --- cache and budget --------------------------------------------------------------------
