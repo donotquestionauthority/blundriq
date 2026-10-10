@@ -27,6 +27,10 @@ import { messageOf } from "./PositionCard/aiMessage";
 export const QUESTION_MAX_CHARS = 500;
 const COUNTER_FROM = 400;
 const NO_SKIP: readonly string[] = [];
+/** The clipboard is one resource shared by every panel on the page — Review's, Explore's, a
+ *  reopened Explore's — so the right to write it is one counter for the whole module: the most
+ *  recent Copy prompt anywhere owns it, and an older dry run that finishes later writes nothing. */
+let clipboardSeq = 0;
 const OUTCOME_COPY: Record<AltOutcome, string> = { checkmate: "checkmate", stalemate: "stalemate", draw: "a draw by insufficient material" };
 
 const button = "rounded border px-3 py-1 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50";
@@ -69,6 +73,13 @@ export function AskOpusPanel({ fen, bestMoveSan, disabledReason = null, waiting 
   useEffect(() => {
     visitRef.current = visit.n;
   }, [visit.n]);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   /** Start a request in this visit; `owns()` says whether its reply may still be applied. */
   const begin = () => {
     const mine = { visit: visit.n, seq: ++seqRef.current };
@@ -130,9 +141,12 @@ export function AskOpusPanel({ fen, bestMoveSan, disabledReason = null, waiting 
 
   async function copy() {
     const { mine, owns, done } = begin();
+    const ticket = ++clipboardSeq;
     try {
       const prompt = formatDryRun(await dryRun(question, alternative()));
-      if (!owns()) return; // a newer copy or ask owns the clipboard now
+      // Nothing is written unless this is still the most recent copy on the page, from a panel
+      // that is still on it, in the visit and request it was asked in.
+      if (ticket !== clipboardSeq || !mounted.current || !owns()) return;
       await navigator.clipboard.writeText(prompt);
       if (owns()) {
         setCopied(true);

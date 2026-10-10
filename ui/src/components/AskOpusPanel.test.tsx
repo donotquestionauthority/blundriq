@@ -8,6 +8,7 @@ import { Chess } from "chess.js";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api";
+import type { DryRun } from "../blunders";
 import type { EngineEval } from "../engine/useStockfish";
 import { AskOpusPanel } from "./AskOpusPanel";
 
@@ -185,6 +186,38 @@ describe("asking", () => {
     await act(async () => resolveSlow(dry("obsolete prompt")));
     expect(writeText).toHaveBeenCalledTimes(1); // the obsolete dry run was never written
     expect(screen.getByText("✓ copied")).toBeInTheDocument();
+  });
+
+  it("the clipboard is shared: a slow copy from one panel never overwrites a newer copy from another, and an unmounted panel writes nothing", async () => {
+    const dry = (text: string): DryRun => ({ dry_run: true, model: "m", provider: "anthropic", temperature: null, max_tokens: 1, prefill: "", system_prompt: "", rendered_prompt: text });
+    // Two panels on one page, as Review and Explore are.
+    let resolveReview: (a: DryRun) => void = () => {};
+    const dryReview = vi.fn(() => new Promise<DryRun>((r) => (resolveReview = r)));
+    const dryExplore = vi.fn().mockResolvedValue(dry("explore prompt"));
+    const { unmount } = render(
+      <>
+        <AskOpusPanel fen={START} bestMoveSan="e4" ask={ask} dryRun={dryReview} />
+        <AskOpusPanel fen={AFTER_NF3} bestMoveSan="d5" ask={ask} dryRun={dryExplore} />
+      </>,
+    );
+    const [reviewCopy, exploreCopy] = screen.getAllByText("Copy prompt");
+    fireEvent.click(reviewCopy);
+    fireEvent.click(exploreCopy);
+    await flush();
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(writeText.mock.calls[0][0]).toContain("explore prompt");
+    await act(async () => resolveReview(dry("review prompt")));
+    expect(writeText).toHaveBeenCalledTimes(1); // the older copy lost the clipboard to the newer one
+    unmount();
+    // A panel closed while its dry run is out (Explore closed and reopened) writes nothing either.
+    let resolveGone: (a: DryRun) => void = () => {};
+    const dryGone = vi.fn(() => new Promise<DryRun>((r) => (resolveGone = r)));
+    const first = render(<AskOpusPanel fen={START} bestMoveSan="e4" ask={ask} dryRun={dryGone} />);
+    fireEvent.click(screen.getByText("Copy prompt"));
+    first.unmount();
+    render(<AskOpusPanel fen={START} bestMoveSan="e4" ask={ask} dryRun={dryGone} />);
+    await act(async () => resolveGone(dry("from the closed panel")));
+    expect(writeText).toHaveBeenCalledTimes(1);
   });
 
   it("Copy prompt waits for its dry run and drops a failure for an earlier board", async () => {
