@@ -5,7 +5,11 @@
  * explanation, the repertoire panel, and Learn mode — at each prompt ply the eval bar, arrows,
  * card and repertoire panel are blanked by the one `leakBlocked` flag until the player commits a
  * move (or asks to be shown), and the reveal draws the committed / engine / book / game /
- * opponent arrows with a legend. "Ask Opus" takes a question about the board at the ply, answered
+ * opponent arrows with a legend. "Read the whole line" in the repertoire panel opens the line
+ * that prescribes the move, on that move; the walk-through is page state that belongs to the
+ * line, kept across opponent-turn plies and every player-turn ply the line still covers
+ * (`reviewWalk.ts`), and closed when a player-turn ply offers another line or none, when a rep
+ * conceals the ply, or by its own Close. "Ask Opus" takes a question about the board at the ply, answered
  * over the stored analysis of that ply (hidden with the card while a rep is open: the answer names
  * the engine move). "Explore from here" mounts the Explore layer over the current board, carrying
  * the game and ply so a question asked there knows the game too. Landing on a game stamps it
@@ -26,6 +30,7 @@ import { AskOpusPanel } from "../components/AskOpusPanel";
 import { EvalBar } from "../components/EvalBar";
 import { ExploreLayer } from "../components/ExploreLayer";
 import { AiExplanationPanel } from "../components/PositionCard/AiExplanationPanel";
+import { LineWalkthrough, WholeLineToggle } from "../components/PositionCard/LineReaderPanel";
 import { PromotionChooser } from "../components/PromotionChooser";
 import { getGameReview, getReviewPrefs, markGameReviewed, setReviewPref } from "../games";
 import type { PlyAnalysisEntry, RepertoireEntry, RepertoireProjection, ReviewBlunder, ReviewMode } from "../games";
@@ -35,6 +40,8 @@ import { appendBookArrow, buildArrows, buildLearnRevealArrows, buildPgn, parsesA
 import type { BoardArrow, RevealArrows } from "../utils/chess";
 import { LEARN_COMMIT_PROMPT, LEARN_COPY, formatElapsed, learnPromptPlies, learnStepPly, useLearnMode } from "./learnMode";
 import type { LearnRep } from "./learnMode";
+import { walkOpenAt, walkSurvives } from "./reviewWalk";
+import type { ReviewWalk } from "./reviewWalk";
 import { returnTarget } from "../utils/returnTo";
 
 const CLASS_LABEL: Record<string, string> = { miss: "Miss", blunder: "Blunder", mistake: "Mistake", inaccuracy: "Inaccuracy" };
@@ -47,6 +54,7 @@ const COMMIT_FAILURE_COPY = { network: LEARN_COPY.commitNetwork, conflict: LEARN
 const btn = "rounded border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900 disabled:opacity-40 disabled:pointer-events-none";
 const panel = "rounded border border-zinc-200 p-3 text-sm dark:border-zinc-800";
 const select = "rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900";
+const readLink = "whitespace-nowrap text-xs text-sky-700 hover:underline dark:text-sky-400";
 
 // --- the repertoire panel ---------------------------------------------------------------------------
 
@@ -81,9 +89,12 @@ function ArrowLegend({ arrows, ply }: { arrows: BoardArrow[]; ply: LegendPly }) 
 }
 
 /** What the repertoire says at the ply, by status. `none` is a statement, not an empty state. The
- *  swatch appears only beside a `book` arrow that is actually on the board. */
-function RepertoirePanel({ entry, bookArrowDrawn }: { entry: RepertoireEntry; bookArrowDrawn: boolean }) {
+ *  swatch appears only beside a `book` arrow that is actually on the board. A ply that names a
+ *  line offers to walk it (`walk` says which line is open; the page owns that state): the
+ *  selected line's toggle after the copy, or one Read per conflict row, at most one open. */
+function RepertoirePanel({ entry, bookArrowDrawn, walk, onOpen, onClose }: { entry: RepertoireEntry; bookArrowDrawn: boolean; walk: ReviewWalk | null; onOpen: (lineId: number, openAt: number) => void; onClose: () => void }) {
   const provenance = entry.book && entry.chapter && entry.line_name ? `${entry.book} · ${entry.chapter} · ${entry.line_name}` : null;
+  const selectedOpen = walk != null && entry.line_id != null && walk.lineId === entry.line_id;
   return (
     <div className={`${panel} space-y-2`} data-testid="repertoire-panel">
       {provenance && <p className="break-words text-xs text-zinc-500">{provenance}</p>}
@@ -102,20 +113,62 @@ function RepertoirePanel({ entry, bookArrowDrawn }: { entry: RepertoireEntry; bo
           <p>{LEARN_COPY.conflictHeadline}</p>
           {/* Every distinct move, in the order received: the server owns the grouping. */}
           <ul className="space-y-1">
-            {(entry.conflict ?? []).map((g, i) => (
-              <li key={`${g.move}-${i}`} className="break-words">
-                <span className="font-mono">{g.move}</span>
-                <span className="text-zinc-500">
-                  {" "}
-                  — {g.book} / {g.chapter} / {g.line_name}
-                  {g.more_lines > 0 ? `, +${g.more_lines} more` : ""}
-                </span>
-              </li>
-            ))}
+            {(entry.conflict ?? []).map((g, i) => {
+              // A row is one occurrence of a line: the same line can reach the board twice with
+              // two moves, so the open one is told by where it opened, not by the line alone.
+              const open = walk != null && g.line_id != null && g.line_ply != null && walk.lineId === g.line_id && walk.openAt === walkOpenAt(entry.status, g.line_ply);
+              return (
+                <li key={`${g.move}-${i}`} className="break-words">
+                  <span className="font-mono">{g.move}</span>
+                  <span className="text-zinc-500">
+                    {" "}
+                    — {g.book} / {g.chapter} / {g.line_name}
+                    {g.more_lines > 0 ? `, +${g.more_lines} more` : ""}
+                  </span>
+                  {g.line_id != null && g.line_ply != null && (
+                    <>
+                      {" "}
+                      <button type="button" aria-expanded={open} aria-label={open ? `Close the line for ${g.move}` : `Read the line for ${g.move}`} className={readLink} onClick={() => (open ? onClose() : onOpen(g.line_id!, walkOpenAt(entry.status, g.line_ply!)))}>
+                        {open ? "Close" : "📖 Read"}
+                      </button>
+                    </>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </>
       )}
       {entry.transposed === true && <p className="text-xs text-zinc-500">{LEARN_COPY.transposedNote}</p>}
+      {entry.line_id != null && entry.line_ply != null && (
+        <div className="space-y-1 pt-1">
+          <WholeLineToggle open={selectedOpen} onToggle={() => (selectedOpen ? onClose() : onOpen(entry.line_id!, walkOpenAt(entry.status, entry.line_ply!)))} />
+          {!selectedOpen && entry.book_move && (
+            <p className="text-xs text-zinc-500">
+              opens on <span className="font-mono">{entry.book_move}</span>
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The open line, in the review's side column. Mounted by the page wherever the line's
+ *  walk-through is visible — on opponent-turn plies too, where no repertoire panel is shown —
+ *  so it carries its own Close. Keyed by what was opened, the line and the place in it: a new
+ *  line, or another occurrence of the same line, is a fresh walk-through; the review stepping
+ *  along the line never changes `walk`, so the walk-through keeps its place. */
+function ReviewLineReader({ walk, onClose }: { walk: ReviewWalk; onClose: () => void }) {
+  return (
+    <div className={`${panel} space-y-3`} data-testid="review-line-reader">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium uppercase tracking-widest text-zinc-500">Your line</span>
+        <button type="button" className={btn} onClick={onClose} aria-label="Close the line">
+          Close
+        </button>
+      </div>
+      <LineWalkthrough key={`${walk.lineId}:${walk.openAt}`} lineId={walk.lineId} initialPly={walk.openAt} />
     </div>
   );
 }
@@ -482,6 +535,7 @@ export default function GameReview() {
 
         {game && fenSeq && (
           <ReviewBody
+            key={game.id} // a different game is a fresh body: none of the old one's page state (the open line) survives it
             fenSeq={fenSeq}
             moves={game.moves}
             curPly={curPly}
@@ -572,6 +626,14 @@ function ReviewBody(p: {
   // to null here, once, so nothing downstream renders for it.
   const rawEntry: RepertoireEntry | null = repertoire ? (repertoire.by_ply[String(curPly)] ?? null) : null;
   const repEntry = rawEntry && rawEntry.status !== "not_your_turn" ? rawEntry : null;
+
+  // The open line walk-through: page state, because the panel it opens from is unmounted on every
+  // opponent-turn ply. Decided during render (never painted stale): it survives exactly the plies
+  // that still offer its line, and a rep concealing the ply closes it (the line's moves and notes
+  // are the answer).
+  const [walk, setWalk] = useState<ReviewWalk | null>(null);
+  if (walk && (leakBlocked || !walkSurvives(rawEntry, walk.lineId))) setWalk(null);
+  const walkOnShow = walk && !leakBlocked && walkSurvives(rawEntry, walk.lineId) ? walk : null;
 
   // Which blunder the position is reviewing. Stepping one ply at a time reviews the move after it
   // was played (the flagged move is the previous ply's, now on the board); the inaccuracies+ skip
@@ -764,7 +826,9 @@ function ReviewBody(p: {
           <div className={`${panel} text-zinc-500`}>{plyAnalysis ? "No flagged move here. Step through with Back / Next (or ← / → keys); flagged positions show the engine's best move and an explanation." : "This game has not been analysed yet: the board and the moves only, until the next hourly run reaches it."}</div>
         )}
 
-        {repEntry && !leakBlocked && <RepertoirePanel entry={repEntry} bookArrowDrawn={bookArrowDrawn} />}
+        {repEntry && !leakBlocked && <RepertoirePanel entry={repEntry} bookArrowDrawn={bookArrowDrawn} walk={walkOnShow} onOpen={(lineId, openAt) => setWalk({ lineId, openAt })} onClose={() => setWalk(null)} />}
+
+        {walkOnShow && <ReviewLineReader walk={walkOnShow} onClose={() => setWalk(null)} />}
 
         {/* Never while a rep is open: the answer names the engine move. */}
         {!leakBlocked && (

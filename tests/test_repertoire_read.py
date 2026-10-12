@@ -305,6 +305,25 @@ def test_f152_f155_conflict_ordering_is_stable_and_input_order_independent():
     reversed_ = read.project_ply(FEN, list(reversed(rows)))
     assert forward == reversed_
     assert [g["move"] for g in forward["conflict"]] == ["Nf3", "Nc3", "Bc4"]
+    # Each group names its representative's line, the one a walk-through of that move opens.
+    assert [(g["line_id"], g["line_ply"]) for g in forward["conflict"]] == [(1, 4), (2, 4), (3, 4)]
+
+
+def test_a_conflict_group_names_the_tie_break_minimum_of_its_members():
+    """Two lines prescribe the same move from the same board: the group's `line_id` and
+    `line_ply` are its representative's, the tie-break minimum (book, chapter, line name, line
+    id, line ply), whatever order the rows arrive in. The entry itself still selects no line."""
+    rows = [
+        cand(line_id=5, expected_move="Nf3", book="B book", line_name="later", line_ply=6),
+        cand(line_id=9, expected_move="Nf3", book="A book", line_name="first", line_ply=8),
+        cand(line_id=2, expected_move="Nc3", book="C book", line_name="other", line_ply=4),
+    ]
+    for order in (rows, list(reversed(rows))):
+        entry = read.project_ply(FEN, order)
+        assert entry["status"] == read.STATUS_CONFLICT and entry["line_id"] is None and entry["line_ply"] is None
+        groups = {g["move"]: g for g in entry["conflict"]}
+        assert (groups["Nf3"]["line_id"], groups["Nf3"]["line_ply"], groups["Nf3"]["more_lines"]) == (9, 8, 1)
+        assert (groups["Nc3"]["line_id"], groups["Nc3"]["line_ply"], groups["Nc3"]["more_lines"]) == (2, 4, 0)
 
 
 def test_f157_same_book_and_chapter_different_moves_still_two_groups():
