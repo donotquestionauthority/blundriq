@@ -364,15 +364,23 @@ export function LineWalkthrough({ lineId, initialPly = 0 }: { lineId: number; in
   );
 }
 
+/** The one "Read the whole line" button, wherever a walk-through is offered: here, with the
+ *  panel's own state, and on the review page, whose walk-through is page state. */
+export function WholeLineToggle({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  return (
+    <button type="button" aria-expanded={open} className={open ? wholeLineOpen : wholeLineClosed} onClick={onToggle}>
+      📖 Read the whole line
+    </button>
+  );
+}
+
 /** Keyed by what it shows, so a new position or line starts from a fresh, closed panel. */
 export function LineReaderPanel({ fen, repertoireLineId = null, initialPly = 0 }: { fen: string; repertoireLineId?: number | null; initialPly?: number }) {
   const [open, setOpen] = useState(false);
   if (repertoireLineId == null) return <SinglePosition key={fen} fen={fen} />;
   return (
     <div className="space-y-2">
-      <button type="button" aria-expanded={open} className={open ? wholeLineOpen : wholeLineClosed} onClick={() => setOpen((o) => !o)}>
-        📖 Read the whole line
-      </button>
+      <WholeLineToggle open={open} onToggle={() => setOpen((o) => !o)} />
       {open && (
         <div className="rounded border border-zinc-200 p-3 dark:border-zinc-800">
           <LineWalkthrough key={repertoireLineId} lineId={repertoireLineId} initialPly={initialPly} />

@@ -1,9 +1,10 @@
 /**
  * The per-game review against the real page: what Learn mode keeps off the screen before a
  * commit and restores after it, promotion, the fail-closed rows, the commit outcomes, the timer,
- * exactly one prompt surface at every width, the prep arrow and panel, the conflict list, Explore,
- * and the exits. The boundaries (the board, the eval bar, the Explore layer, the AI panel, the
- * API) are mocked; everything between the route and the DOM is the shipped code.
+ * exactly one prompt surface at every width, the prep arrow and panel, the conflict list, the line
+ * walk-through and what it survives, Explore, and the exits. The boundaries (the board, the eval
+ * bar, the Explore layer, the AI panel, the API) are mocked; everything between the route and the
+ * DOM is the shipped code, the line walk-through included.
  */
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { Chess } from "chess.js";
@@ -14,15 +15,35 @@ import { ApiError } from "../api";
 import type { GameReviewResponse, PlyAnalysisEntry, RepertoireEntry } from "../games";
 import { ARROWS } from "../utils/board";
 
+// The review board's options, and separately the walk-through's board (its id starts with "lw"):
+// two boards can be on the page, and an assertion about arrows is about the review's.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let boardOptions: any = null;
+let walkBoardPosition: string | null = null;
 vi.mock("react-chessboard", () => ({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   Chessboard: (props: any) => {
+    if (String(props.options?.id ?? "").startsWith("lw")) {
+      walkBoardPosition = props.options.position ?? null;
+      return <div data-testid="walk-board" data-position={props.options.position} />;
+    }
     boardOptions = props.options;
     return <div data-testid="board" />;
   },
 }));
+// The line reader's API: the line it walks, read by the real `LineWalkthrough`; a question asked
+// inside it is `LineAskPanel`'s own test's business and is never sent here.
+const getLineAnnotated = vi.fn();
+const explainLineMove = vi.fn();
+vi.mock("../repertoire", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../repertoire")>();
+  return {
+    ...actual,
+    getLineAnnotated: (...a: unknown[]) => getLineAnnotated(...a),
+    explainLineMove: (...a: unknown[]) => explainLineMove(...a),
+    getAnnotation: () => Promise.resolve(null),
+  };
+});
 // The eval bar captures its prop: an evaluation reaching it is the condition, not pixels.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let evalBarProps: any = null;
@@ -96,7 +117,8 @@ const STORED_BEST = "Bb5";
 const STORED_BEST_LINE = "Bb5 a6 Ba4";
 const CP_LOSS = 137;
 
-const entry = (over: Partial<RepertoireEntry>): RepertoireEntry => ({ status: "none", book_move: null, book: null, chapter: null, line_name: null, line_ply: null, plan: [], more_lines: 0, transposed: null, conflict: null, ...over });
+const entry = (over: Partial<RepertoireEntry>): RepertoireEntry => ({ status: "none", book_move: null, book: null, chapter: null, line_name: null, line_id: null, line_ply: null, plan: [], more_lines: 0, transposed: null, conflict: null, ...over });
+const LINE_ID = 7;
 
 function reviewPayload(): GameReviewResponse {
   return {
@@ -133,7 +155,7 @@ function reviewPayload(): GameReviewResponse {
         fen_sequence.map((_, i) => [
           String(i),
           i === 2
-            ? entry({ status: "match", book_move: BOOK_MOVE, book: "Italian", chapter: "Main line", line_name: "Giuoco Piano", line_ply: 4, plan: [BOOK_MOVE, "Bc5"], transposed: false })
+            ? entry({ status: "match", book_move: BOOK_MOVE, book: "Italian", chapter: "Main line", line_name: "Giuoco Piano", line_id: LINE_ID, line_ply: 4, plan: [BOOK_MOVE, "Bc5"], transposed: false })
             : i % 2 === 1
               ? entry({ status: "not_your_turn" })
               : entry({}),
@@ -198,7 +220,10 @@ const DESKTOP = 1440;
 
 beforeEach(() => {
   boardOptions = null;
+  walkBoardPosition = null;
   evalBarProps = null;
+  getLineAnnotated.mockReset().mockImplementation((id: number) => Promise.resolve(lineFixture(id)));
+  explainLineMove.mockReset().mockResolvedValue({ explanation: "x", cached: false, model: "m" });
   exploreProps = null;
   askProps = null;
   askReview.mockReset().mockResolvedValue({ explanation: "x", cached: false, model: "m" });
@@ -813,7 +838,7 @@ describe("the prep arrow and panel in Review mode", () => {
   });
   it("a conflict lists every distinct move in the order received, as a list", async () => {
     const p = reviewPayload();
-    const groups = ["Bc4", "Bb5", "d4", "c3", "Nc3"].map((move, i) => ({ move, book: "Book", chapter: `Ch${i}`, line_name: `L${i}`, more_lines: i === 1 ? 2 : 0 }));
+    const groups = ["Bc4", "Bb5", "d4", "c3", "Nc3"].map((move, i) => ({ move, book: "Book", chapter: `Ch${i}`, line_name: `L${i}`, line_id: 20 + i, line_ply: 4, more_lines: i === 1 ? 2 : 0 }));
     p.repertoire!.by_ply["2"] = entry({ status: "conflict", conflict: groups });
     getGameReview.mockResolvedValue(p);
     await renderReview(2);
@@ -822,6 +847,224 @@ describe("the prep arrow and panel in Review mode", () => {
     expect(items).toEqual(["Bc4", "Bb5", "d4", "c3", "Nc3"]);
     expect(bodyText()).toContain("+2 more");
     expect(arrowColors()).not.toContain(ARROWS.book);
+  });
+});
+
+// The line the walk-through reads: the game's own moves and then the book move, so `line_ply` 4
+// is the board under review and ply 5 the board after the prescribed move. Any id is served, named
+// by it, so a second line is told apart by what it shows.
+const LINE_SPINE = buildSpine(["e4", "e5", "Nf3", "Nc6", BOOK_MOVE, "Bc5"]);
+function lineFixture(id: number) {
+  return {
+    line_id: id,
+    line_name: `Line ${id}`,
+    color: "white" as const,
+    book_title: "Italian",
+    chapter_title: "Main line",
+    positions: LINE_SPINE.fen_sequence.map((fen, i) => ({ ply: i, fen, move: LINE_SPINE.moves[i] ?? null, annotation: null })),
+  };
+}
+
+describe("reading the whole line from the review's repertoire panel", () => {
+  beforeEach(() => getReviewPrefs.mockResolvedValue({ review_default_mode: "review", review_show_timer: true }));
+  const toggle = () => screen.getByRole("button", { name: "📖 Read the whole line" });
+  const reader = () => screen.queryByTestId("review-line-reader");
+  const walkPosition = () => screen.getByTestId("walkthrough-position").textContent ?? "";
+  const step = (key: "ArrowLeft" | "ArrowRight") => act(async () => fireEvent.keyDown(window, { key }));
+  async function openFromPanel() {
+    await act(async () => fireEvent.click(toggle()));
+    await flush();
+  }
+
+  it("a match ply offers the toggle, says which move it opens on, and opening walks the line from the move after the board", async () => {
+    await renderReview(2);
+    expect(reader()).toBeNull();
+    expect(toggle()).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByTestId("repertoire-panel").textContent).toContain(`opens on ${BOOK_MOVE}`);
+    await openFromPanel();
+    expect(getLineAnnotated).toHaveBeenCalledTimes(1);
+    expect(getLineAnnotated).toHaveBeenCalledWith(LINE_ID);
+    expect(toggle()).toHaveAttribute("aria-expanded", "true");
+    expect(reader()).toBeInTheDocument();
+    // `line_ply` 4 is the board under review; the walk-through opens one move on, on the prep move.
+    expect(walkBoardPosition).toBe(LINE_SPINE.fen_sequence[5]);
+    expect(walkPosition()).toContain(BOOK_MOVE);
+    // The review's own board is untouched by the second board on the page.
+    expect(boardOptions.position).toBe(fen_sequence[2]);
+    expect(boardOptions.id.startsWith("review")).toBe(true);
+    // Both ask panels are on the page, each about its own board.
+    expect(screen.getByTestId("ask-panel")).toBeInTheDocument();
+    expect(screen.getByLabelText("Your question")).toBeInTheDocument();
+  });
+
+  it("stepping player → opponent → player through the same line keeps the walk-through, its place and a typed question; the opponent ply shows no panel", async () => {
+    const p = reviewPayload();
+    // Plies 2 and 4 are the same line (1.e4 e5 2.Nf3 Nc6 is all inside it); 3 is the opponent's.
+    p.repertoire!.by_ply["4"] = entry({ status: "match", book_move: "Bb5", book: "Italian", chapter: "Main line", line_name: "Giuoco Piano", line_id: LINE_ID, line_ply: 6, transposed: false });
+    getGameReview.mockResolvedValue(p);
+    await renderReview(2);
+    await openFromPanel();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Next ›" })));
+    expect(walkPosition()).toContain("Bc5");
+    fireEvent.change(screen.getByLabelText("Your question"), { target: { value: "why not d4?" } });
+
+    await step("ArrowRight");
+    expect(bodyText()).toContain("move 3 / 4");
+    expect(screen.queryByTestId("repertoire-panel")).toBeNull();
+    expect(reader()).toBeInTheDocument();
+    expect(walkPosition()).toContain("Bc5");
+    expect(screen.getByLabelText("Your question")).toHaveValue("why not d4?");
+
+    await step("ArrowRight");
+    expect(bodyText()).toContain("move 4 / 4");
+    expect(screen.getByTestId("repertoire-panel")).toBeInTheDocument();
+    expect(toggle()).toHaveAttribute("aria-expanded", "true");
+    expect(reader()).toBeInTheDocument();
+    expect(walkPosition()).toContain("Bc5");
+    expect(screen.getByLabelText("Your question")).toHaveValue("why not d4?");
+    // One read of the line in all of that: the walk-through was never remounted.
+    expect(getLineAnnotated).toHaveBeenCalledTimes(1);
+  });
+
+  it("a direct jump to another player ply of the same line keeps it; a player ply with another line, or none, closes it", async () => {
+    const p = reviewPayload();
+    p.repertoire!.by_ply["4"] = entry({ status: "agree", book_move: "Bb5", book: "Italian", chapter: "Main line", line_name: "Giuoco Piano", line_id: LINE_ID, line_ply: 6, transposed: true });
+    getGameReview.mockResolvedValue(p);
+    await renderReview(2);
+    await openFromPanel();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Last move" })));
+    expect(bodyText()).toContain("move 4 / 4");
+    expect(reader()).toBeInTheDocument();
+    expect(toggle()).toHaveAttribute("aria-expanded", "true");
+    // Ply 0 is `none`: no line offered, the walk-through goes.
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "First move" })));
+    expect(bodyText()).toContain("Not in your repertoire.");
+    expect(reader()).toBeNull();
+    expect(screen.queryByRole("button", { name: "📖 Read the whole line" })).toBeNull();
+    // Back on the line: closed, a fresh open is a fresh read.
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Last move" })));
+    expect(reader()).toBeNull();
+    expect(toggle()).toHaveAttribute("aria-expanded", "false");
+    expect(getLineAnnotated).toHaveBeenCalledTimes(1);
+
+    cleanup();
+    const q = reviewPayload();
+    q.repertoire!.by_ply["4"] = entry({ status: "match", book_move: "Bb5", book: "Spanish", chapter: "Main", line_name: "Closed", line_id: 99, line_ply: 6, transposed: false });
+    getGameReview.mockResolvedValue(q);
+    await renderReview(2);
+    await openFromPanel();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Last move" })));
+    expect(reader()).toBeNull();
+    expect(toggle()).toHaveAttribute("aria-expanded", "false");
+    // An unreadable ply offers no line either.
+    cleanup();
+    const r = reviewPayload();
+    r.repertoire!.by_ply["4"] = entry({ status: "unreadable" });
+    getGameReview.mockResolvedValue(r);
+    await renderReview(2);
+    await openFromPanel();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Last move" })));
+    expect(reader()).toBeNull();
+  });
+
+  it("a conflict ply has one Read per group, at most one open, Read on a second replaces the first, and leaving the line and coming back returns it closed", async () => {
+    const p = reviewPayload();
+    const groups = [
+      { move: "Bc4", book: "Italian", chapter: "Main line", line_name: "Giuoco", line_id: 31, line_ply: 4, more_lines: 0 },
+      { move: "Bb5", book: "Spanish", chapter: "Main", line_name: "Closed", line_id: 32, line_ply: 4, more_lines: 1 },
+    ];
+    p.repertoire!.by_ply["2"] = entry({ status: "conflict", conflict: groups });
+    getGameReview.mockResolvedValue(p);
+    await renderReview(2);
+    expect(screen.queryByRole("button", { name: "📖 Read the whole line" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Read the line for Bc4" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Read the line for Bb5" })).toBeInTheDocument();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Read the line for Bc4" })));
+    await flush();
+    expect(getLineAnnotated).toHaveBeenLastCalledWith(31);
+    expect(walkBoardPosition).toBe(LINE_SPINE.fen_sequence[5]); // the group's `line_ply` + 1
+    expect(bodyText()).toContain("Line 31");
+    expect(screen.getByRole("button", { name: "Close the line for Bc4" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Read the line for Bb5" })).toBeInTheDocument();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Read the line for Bb5" })));
+    await flush();
+    expect(getLineAnnotated).toHaveBeenLastCalledWith(32);
+    expect(screen.getAllByTestId("review-line-reader")).toHaveLength(1);
+    expect(bodyText()).toContain("Line 32");
+    expect(bodyText()).not.toContain("Line 31");
+    expect(screen.getByRole("button", { name: "Read the line for Bc4" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Close the line for Bb5" })).toBeInTheDocument();
+    // Conflict → uncovered (ply 0 is `none`) → conflict: closed.
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "First move" })));
+    expect(reader()).toBeNull();
+    await step("ArrowRight");
+    await step("ArrowRight");
+    expect(bodyText()).toContain("move 2 / 4");
+    expect(reader()).toBeNull();
+    expect(screen.getByRole("button", { name: "Read the line for Bb5" })).toBeInTheDocument();
+    // The row's own Close closes it.
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Read the line for Bc4" })));
+    await flush();
+    expect(reader()).toBeInTheDocument();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Close the line for Bc4" })));
+    expect(reader()).toBeNull();
+  });
+
+  it("Close in the reader's own box closes it on an opponent-turn ply, where no panel is shown", async () => {
+    await renderReview(2);
+    await openFromPanel();
+    await step("ArrowRight");
+    expect(screen.queryByTestId("repertoire-panel")).toBeNull();
+    expect(reader()).toBeInTheDocument();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Close the line" })));
+    expect(reader()).toBeNull();
+    await step("ArrowLeft");
+    expect(reader()).toBeNull();
+    expect(toggle()).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("entering a Learn prompt closes it and the reveal does not reopen it", async () => {
+    getReviewPrefs.mockResolvedValue({ review_default_mode: "learn", review_show_timer: false });
+    const p = reviewPayload();
+    p.repertoire!.by_ply["0"] = entry({ status: "match", book_move: "e4", book: "Italian", chapter: "Main line", line_name: "Giuoco Piano", line_id: LINE_ID, line_ply: 0, transposed: false });
+    getGameReview.mockResolvedValue(p);
+    // Ply 2 is the one prompt ply; land before it, open the line, then step into the rep.
+    await renderReview(0);
+    expect(screen.getByTestId("repertoire-panel")).toBeInTheDocument();
+    await openFromPanel();
+    expect(reader()).toBeInTheDocument();
+    // The ask at the start of a line targets the prep move: `line_ply` 0 opens at 1.
+    expect(walkBoardPosition).toBe(LINE_SPINE.fen_sequence[1]);
+    expect(walkPosition()).toContain("e4");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Next →" })));
+    expect(bodyText()).toContain("move 2 / 4");
+    expect(reader()).toBeNull();
+    expect(screen.queryByTestId("repertoire-panel")).toBeNull();
+    expect(screen.queryByLabelText("Your question")).toBeNull();
+    await act(async () => fireEvent.click(screen.getByText("Just show me")));
+    expect(screen.getByTestId("repertoire-panel")).toBeInTheDocument();
+    expect(reader()).toBeNull();
+    expect(toggle()).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("the end of a line opens on the board itself: there is no move to explain", async () => {
+    const p = reviewPayload();
+    p.repertoire!.by_ply["2"] = entry({ status: "end_of_line", book: "Italian", chapter: "Main line", line_name: "Giuoco Piano", line_id: LINE_ID, line_ply: 4, transposed: false });
+    getGameReview.mockResolvedValue(p);
+    await renderReview(2);
+    expect(screen.getByTestId("repertoire-panel").textContent).not.toContain("opens on");
+    await openFromPanel();
+    expect(walkBoardPosition).toBe(LINE_SPINE.fen_sequence[4]);
+    expect(walkPosition()).toContain("Nc6");
+  });
+
+  it("with no projection, or a projection that names no line, nothing is offered", async () => {
+    const p = reviewPayload();
+    p.repertoire = null;
+    getGameReview.mockResolvedValue(p);
+    await renderReview(2);
+    expect(screen.queryByRole("button", { name: /Read/ })).toBeNull();
+    expect(reader()).toBeNull();
   });
 });
 
