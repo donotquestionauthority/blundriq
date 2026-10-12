@@ -52,7 +52,7 @@ from core.constants import (
     ROTATION_ROUTING_ORDER,
     SRS_BUCKETS,
 )
-from core.puzzles import srs, visibility
+from core.puzzles import custom, srs, visibility
 from core.puzzles.lines import fen_sequence
 from core.settings import Settings
 
@@ -139,6 +139,8 @@ def matches_subtype(row: dict[str, Any], ptype: str, subtype: str | None) -> boo
     if ptype == "repertoire":
         scope = parse_repertoire_subtype(subtype)
         return scope is None or row.get(_REP_COLUMN[scope.kind]) == scope.id
+    if ptype == "custom" and subtype in custom.CONTEXT_TAGS:
+        return subtype in _sources(row)  # the page the puzzle was made from; any other subtype is no filter
     return True
 
 

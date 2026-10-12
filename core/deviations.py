@@ -37,7 +37,7 @@ from typing import Any, LiteralString, cast
 
 from psycopg import Connection
 
-from core.chess.eligibility import analysable_sql, evidence_sql, window_cte
+from core.chess.eligibility import analysable_sql, time_class_sql, window_cte
 from core.constants import LOCK_SEEN_DEVIATIONS, PLAYER_ID
 from core.repertoire import read
 from core.settings import Settings
@@ -46,7 +46,6 @@ Row = dict[str, Any]
 Key = tuple[int, int, int, str]  # book_id, chapter_id, deviated_at_ply, expected_move
 
 PAGE_SIZE = 50
-TIME_CLASSES = ("focus", "all", "bullet", "blitz", "rapid", "classical")
 
 
 @dataclass(frozen=True)
@@ -76,18 +75,6 @@ def default_filters(config: Settings, mark_new: bool = False) -> DeviationFilter
     )
 
 
-def _time_class_sql(time_class: str, focus: str) -> str:
-    if time_class == "focus":
-        return evidence_sql("cg", focus)
-    if time_class == "all":
-        return "TRUE"
-    if time_class == "classical":
-        return "cg.time_class IN ('classical', 'correspondence')"
-    if time_class in ("bullet", "blitz", "rapid"):
-        return f"cg.time_class = '{time_class}'"
-    raise ValueError(f"unknown time class {time_class!r}")
-
-
 def _scope(f: DeviationFilters, focus: str) -> tuple[str, str, dict[str, Any]]:
     """`(WITH prefix, WHERE body over aliases grr/cg/pg/bk, params)` — which result rows are
     in play. Both queries below are built on it."""
@@ -97,7 +84,7 @@ def _scope(f: DeviationFilters, focus: str) -> tuple[str, str, dict[str, Any]]:
         "grr.deviation_by = 'me'",
         "grr.deviated_at_ply >= %(min_ply)s",
         analysable_sql("cg"),
-        _time_class_sql(f.time_class, focus),
+        time_class_sql("cg", f.time_class, focus),
     ]
     if f.color in ("white", "black"):
         clauses.append("bk.color = %(color)s")

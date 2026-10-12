@@ -200,7 +200,7 @@ export interface NewPuzzle {
   fen: string;
   solution_line: string[];
   color: "w" | "b";
-  source_types: Array<"blunder" | "deviation" | "scout">;
+  source_types: Array<"blunder" | "deviation" | "scout" | "gap">;
   title?: string;
   description?: string;
 }

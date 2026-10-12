@@ -73,6 +73,12 @@ REVIEW_HABIT_MIN_WEIGHT = 30  # below this recency-weighted game count, no trend
 BLUNDER_CLASSES = ("miss", "blunder", "mistake", "inaccuracy")
 BLUNDER_SCORE_WEIGHTS = {"miss": 8, "blunder": 4, "mistake": 2, "inaccuracy": 1}
 
+# The line report (core/repertoire/report.py): how many plies of each game follow a gap board
+# in the "most common continuations", and how much of the stored engine line pre-fills a custom
+# puzzle made from one (the modal extends it two plies at a time from there).
+REPORT_CONTINUATION_PLIES = 4
+REPORT_PREFILL_PLIES = 10
+
 # Scout: a position shared with an opponent counts only from this 0-based ply on (the first
 # few moves of every game are shared with everyone).
 SCOUT_MIN_MATCH_PLY = 6

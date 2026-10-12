@@ -26,6 +26,9 @@ import { errorLabel } from "../utils/errorLabel";
 const noop = () => {};
 const PLAY_TYPES: PracticeType[] = ["all", "motif", "repertoire", "blunder", "custom"];
 const TYPE_LABEL: Record<PracticeType, string> = { all: "All", motif: "Motif", repertoire: "Repertoire", blunder: "Blunder", custom: "Custom" };
+// A custom puzzle's subtype is the page it was made from (core/puzzles/custom.py CONTEXT_TAGS).
+const CUSTOM_SUBTYPES = ["blunder", "deviation", "scout", "gap"] as const;
+const CUSTOM_SUBTYPE_LABEL: Record<(typeof CUSTOM_SUBTYPES)[number], string> = { blunder: "From Blunders", deviation: "From Deviations", scout: "From Scout", gap: "From the line report" };
 
 function isPracticeType(v: unknown): v is PracticeType {
   return PLAY_TYPES.includes(v as PracticeType);
@@ -933,6 +936,7 @@ export default function Practice() {
   const subtypeOptions = (() => {
     if (type === "motif") return (data?.served_themes ?? []).map((t) => ({ value: t, label: t }));
     if (type === "blunder") return [...new Set(puzzles.flatMap((p) => p.themes ?? []))].sort().map((t) => ({ value: t, label: t }));
+    if (type === "custom") return CUSTOM_SUBTYPES.map((t) => ({ value: t, label: CUSTOM_SUBTYPE_LABEL[t] }));
     return [];
   })();
   // The repertoire filter's tree comes from the server, so a line appears whether or not one of

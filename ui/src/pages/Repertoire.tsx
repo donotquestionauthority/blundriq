@@ -4,7 +4,7 @@ import { ApiError } from "../api";
 import { LineWalkthrough } from "../components/PositionCard/LineReaderPanel";
 import { RefusalDialog, Toggle } from "../components/RepertoireBits";
 import { useApi } from "../hooks/useApi";
-import { conflictsPath, getBooks, getConflicts, getSections, provenanceLabel, refusalOf, setActive } from "../repertoire";
+import { conflictsPath, getBooks, getConflicts, getSections, provenanceLabel, refusalOf, reportPath, setActive } from "../repertoire";
 import type { Refusal, RepertoireBook, RepertoireLine, RepertoireSection } from "../repertoire";
 import { numbered } from "../utils/chess";
 
@@ -224,9 +224,12 @@ export default function Repertoire() {
     <div>
       <h1 className="text-xl font-semibold tracking-tight">Repertoire</h1>
       <p className="mt-1 text-sm text-zinc-500">The lines your games are matched against. Switch a book, chapter or line off to take it out of play; open a line to read it with its notes.</p>
-      <p className="mb-4 mt-1 text-sm">
+      <p className="mb-4 mt-1 flex flex-wrap gap-x-4 text-sm">
         <Link to={conflictsPath()} className="text-zinc-600 underline hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100">
           Conflicts: {contested === null ? "…" : contested === 0 ? "no contested positions" : `${contested} contested`} →
+        </Link>
+        <Link to={reportPath()} className="text-zinc-600 underline hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100">
+          Line report →
         </Link>
       </p>
       {(error || actionError) && (

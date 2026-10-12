@@ -42,6 +42,8 @@ def test_everything_needs_login(app_env: None) -> None:
     assert c.get("/repertoire/annotation", params={"fen": h.START}).status_code == 401
     assert c.get("/repertoire/conflicts").status_code == 401
     assert c.get("/repertoire/coverage", params={"fen": h.START}).status_code == 401
+    assert c.get("/repertoire/report/lines").status_code == 401
+    assert c.get("/repertoire/report/gaps", params={"colour": "white"}).status_code == 401
 
 
 def test_deviations_list_and_seen(client: TestClient) -> None:
@@ -158,3 +160,20 @@ def test_coverage_route(client: TestClient) -> None:
         assert client.get("/repertoire/coverage", params={"fen": bad}).status_code == 400
     for bad_move in ("Nf6", "--", "0000"):
         assert client.get("/repertoire/coverage", params={"fen": fens[4], "move": bad_move}).status_code == 400
+
+
+def test_the_line_report_routes(client: TestClient) -> None:
+    """The fixture's two games both leave the Italian at Bc4 (the player played d4)."""
+    lines = client.get("/repertoire/report/lines", params={"time_class": "all"}).json()["books"]
+    assert lines[0]["title"] == "Italian" and lines[0]["games"] == 2 and lines[0]["left_by_me"] == 2
+    line = lines[0]["chapters"][0]["lines"][0]
+    assert line["title"] == "Main" and line["slip"] == {"own_move": 3, "expected": "Bc4", "played": "d4", "count": 2}
+    assert line["depth_total"] == 3 and line["depth_reached"] == {"2": 2} and line["puzzles"] == 0
+    assert client.get("/repertoire/report/lines").json()["books"][0]["games"] == 2  # focus: rapid games count
+    assert client.get("/repertoire/report/lines", params={"time_class": "nope"}).status_code == 422
+    gaps = client.get("/repertoire/report/gaps", params={"colour": "white", "time_class": "all"}).json()
+    assert gaps == {"colour": "white", "no_book": False, "prepared": [], "gaps": [], "prefill_plies": 10}
+    black = client.get("/repertoire/report/gaps", params={"colour": "black"}).json()
+    assert black == {"colour": "black", "no_book": False, "prepared": [], "gaps": [], "prefill_plies": 10}
+    assert client.get("/repertoire/report/gaps").status_code == 422  # colour is required
+    assert client.get("/repertoire/report/gaps", params={"colour": "red"}).status_code == 422

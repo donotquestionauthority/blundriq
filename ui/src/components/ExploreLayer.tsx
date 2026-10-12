@@ -24,12 +24,11 @@ import type { ExploreAskRequest } from "../ask";
 import { AskOpusPanel } from "./AskOpusPanel";
 import { engineSnapshot, fmtCp, uciPvToSan } from "../engine/eval";
 import { useExploreLine } from "../engine/exploreLine";
-import { useStockfish } from "../engine/useStockfish";
+import { DEFAULT_DEPTH, useStockfish } from "../engine/useStockfish";
 import { ARROWS, HIGHLIGHT, SQUARES } from "../utils/board";
 import type { BoardArrow } from "../utils/chess";
 import { EvalBar } from "./EvalBar";
 
-const DEFAULT_DEPTH = 16;
 /** The selector's steps; the settings row's value joins them when it is not one. */
 const DEPTH_STEPS = [12, 16, 18, 20, 24];
 const btn = "rounded border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900 disabled:opacity-40 disabled:pointer-events-none";

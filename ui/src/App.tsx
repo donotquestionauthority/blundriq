@@ -12,6 +12,7 @@ import Practice from "./pages/Practice";
 import Preferences from "./pages/Preferences";
 import Repertoire from "./pages/Repertoire";
 import RepertoireConflicts from "./pages/RepertoireConflicts";
+import RepertoireReport from "./pages/RepertoireReport";
 import Review from "./pages/Review";
 import ReviewPosition from "./pages/ReviewPosition";
 import Scout from "./pages/Scout";
@@ -41,6 +42,7 @@ export default function App() {
         <Route path="/deviations" element={<Deviations />} />
         <Route path="/repertoire" element={<Repertoire />} />
         <Route path="/repertoire/conflicts" element={<RepertoireConflicts />} />
+        <Route path="/repertoire/report" element={<RepertoireReport />} />
         <Route path="/review" element={<Review />} />
         <Route path="/review/positions/:colour/:key" element={<ReviewPosition />} />
         <Route path="/review/:gameId" element={<GameReview />} />

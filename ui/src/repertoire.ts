@@ -295,3 +295,91 @@ export function provenanceLabel(b: RepertoireBook): string | null {
   if (b.source_author) return `by ${b.source_author}`;
   return b.source_url;
 }
+
+// --- the line report (GET /repertoire/report/lines, /gaps) --------------------------------
+
+/** One scope's games: a line, a chapter or a book. `slip` is the most common whole departure. */
+export interface ReportTally {
+  games: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  score: number | null;
+  left_by_me: number;
+  left_by_opponent: number;
+  ended: number;
+  ran_out: number;
+  faithful: number;
+  /** {own moves reached: games} */
+  depth_reached: Record<string, number>;
+  slip: { own_move: number; expected: string; played: string; count: number } | null;
+  last_played: string | null;
+  /** The positions Practice serves for this scope; 0 means nothing to drill. */
+  puzzles: number;
+}
+export interface ReportLine extends ReportTally {
+  id: number;
+  title: string;
+  is_alternative: boolean;
+  depth_total: number;
+  shared: boolean;
+}
+export interface ReportChapter extends ReportTally {
+  id: number;
+  title: string;
+  lines: ReportLine[];
+}
+export interface ReportBook extends ReportTally {
+  id: number;
+  title: string;
+  color: "white" | "black";
+  chapters: ReportChapter[];
+}
+
+export interface GapCard {
+  fen: string;
+  colour: "white" | "black";
+  /** The move that reached the board (the opponent's, or White's first move for a bookless opening). */
+  arrived_by: string | null;
+  games: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  score: number | null;
+  family: string | null;
+  /** The book the games were in and where the opponent left it; null for a board no book reaches. */
+  context: { book_id: number; book: string; chapter_id: number; chapter: string; line_id: number; line_name: string; expected: string; played: string; count: number } | null;
+  continuations: { moves: string[]; games: number; score: number | null }[];
+  /** The stored engine line from the board (the most recent analysed game's); null when none is analysed. */
+  engine: { best_move: string | null; line: string[]; eval: number | null; mate_in: number | null } | null;
+  last_played: string | null;
+  /** The active standard puzzle on the board, and whether Practice serves it. */
+  puzzle: { id: number; playable: boolean } | null;
+}
+export interface PreparedRow {
+  fen: string;
+  book_move: string;
+  played: string;
+  games: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  line_id: number | null;
+  line_name: string | null;
+  book: string | null;
+  chapter: string | null;
+  puzzles: number;
+  last_played: string | null;
+}
+export interface GapsResponse {
+  colour: "white" | "black";
+  no_book: boolean;
+  prepared: PreparedRow[];
+  gaps: GapCard[];
+  /** How much of a card's engine line a new puzzle opens with (core/constants.py). */
+  prefill_plies: number;
+}
+
+export const getReportLines = (timeClass: string) => api.get<{ books: ReportBook[] }>(`/repertoire/report/lines?time_class=${encodeURIComponent(timeClass)}`);
+export const getReportGaps = (colour: "white" | "black", timeClass: string) => api.get<GapsResponse>(`/repertoire/report/gaps?colour=${colour}&time_class=${encodeURIComponent(timeClass)}`);
+export const reportPath = () => "/repertoire/report";
