@@ -45,6 +45,7 @@ const askExploreDryRun = vi.fn();
 vi.mock("../ask", () => ({
   askExplore: (...a: unknown[]) => askExplore(...a),
   askExploreDryRun: (...a: unknown[]) => askExploreDryRun(...a),
+  getAskHistory: () => Promise.resolve({ items: [] }),
 }));
 
 const START = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";

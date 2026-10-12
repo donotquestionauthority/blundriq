@@ -30,10 +30,14 @@ vi.mock("../engine/useStockfish", async (importOriginal) => {
   };
 });
 
+// The two GETs the panel makes: the saved Explore depth (`settingsGet`, for a named move's
+// engine) and the board's history (`historyGet`, by `AskHistory`, whose own behaviour is
+// AskHistory.test.tsx's; here it answers with no rows unless a test says otherwise).
 const settingsGet = vi.fn();
+const historyGet = vi.fn();
 vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();
-  return { ...actual, api: { ...actual.api, get: (...a: unknown[]) => settingsGet(...a) } };
+  return { ...actual, api: { ...actual.api, get: (path: string, ...a: unknown[]) => (path.startsWith("/ai/history") ? historyGet(path, ...a) : settingsGet(path, ...a)) } };
 });
 
 const START = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
@@ -64,6 +68,7 @@ beforeEach(() => {
   dryRun.mockReset();
   analyze.mockReset();
   settingsGet.mockReset().mockResolvedValue({ explore_engine_depth: 20 });
+  historyGet.mockReset().mockResolvedValue({ items: [] });
   writeText.mockReset().mockResolvedValue(undefined);
   Object.assign(navigator, { clipboard: { writeText } });
 });
@@ -259,6 +264,49 @@ describe("asking", () => {
     expect(screen.getByText("No engine analysis for this position.")).toBeInTheDocument();
     expect(screen.queryByLabelText("Your question")).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();
+  });
+});
+
+describe("what was asked here before", () => {
+  const row = (question: string) => ({ question, prompt_label: "Ask about this position", model: "m", explanation: "An answer.", created_at: "2026-10-01T12:00:00+00:00" });
+
+  it("is read for the board once at mount, again after an answer, and not after a refusal", async () => {
+    historyGet.mockResolvedValueOnce({ items: [row("earlier")] }).mockResolvedValueOnce({ items: [row("just now"), row("earlier")] });
+    ask.mockResolvedValueOnce({ explanation: "New.", cached: false, model: "m" });
+    render(<Host />);
+    expect(await screen.findByText("Asked here before (1)")).toBeInTheDocument();
+    expect(historyGet).toHaveBeenCalledTimes(1);
+    expect(historyGet.mock.calls[0][0]).toBe(`/ai/history?fen=${encodeURIComponent(START)}`);
+    type("just now");
+    fireEvent.click(askButton());
+    await flush();
+    expect(screen.getByText("New.")).toBeInTheDocument();
+    expect(historyGet).toHaveBeenCalledTimes(2);
+    expect(await screen.findByText("Asked here before (2)")).toBeInTheDocument();
+    ask.mockRejectedValueOnce(new ApiError(429, JSON.stringify({ window: "daily", message: "Limit reached." })));
+    fireEvent.click(askButton());
+    await flush();
+    expect(screen.getByRole("alert")).toHaveTextContent("Limit reached.");
+    expect(historyGet).toHaveBeenCalledTimes(2);
+  });
+
+  it("Ask again puts the past question in the box; sending it is still the player's click", async () => {
+    historyGet.mockResolvedValue({ items: [row("Why not Nf3?")] });
+    render(<Host />);
+    await screen.findByText("Asked here before (1)");
+    expect(ask).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Ask again" }));
+    expect(box().value).toBe("Why not Nf3?");
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("shows with a disabled reason, where there is no box, and then without Ask again", async () => {
+    historyGet.mockResolvedValue({ items: [row("asked in Explore")] });
+    render(<Host reason="No engine analysis for this position." />);
+    expect(await screen.findByText("Asked here before (1)")).toBeInTheDocument();
+    expect(screen.getByText("asked in Explore")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Your question")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Ask again" })).toBeNull();
   });
 });
 
