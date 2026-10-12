@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from api.routes import ai as ai_routes
 from api.routes import auth as auth_routes
 from api.routes import blunders as blunders_routes
 from api.routes import deviations as deviations_routes
@@ -118,6 +119,7 @@ def create_app() -> FastAPI:
     app.include_router(puzzles_routes.router)
     app.include_router(review_routes.router)
     app.include_router(explore_routes.router)
+    app.include_router(ai_routes.router)
     return app
 
 

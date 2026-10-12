@@ -367,3 +367,119 @@ def test_a_chess960_blunder_row_cannot_be_explained(tx: Tx, monkeypatch: pytest.
     assert seen == [] and _calls(tx) == []
     with tx() as conn:
         assert conn.execute("SELECT count(*) AS n FROM ai_explanation_cache").fetchone() == {"n": 0}
+
+
+# --- what was asked at a board -----------------------------------------------------------------
+
+
+def _cache_row(conn: psycopg.Connection[DictRow], fen: str, label: str, question: str | None, **kw: Any) -> None:
+    conn.execute(
+        "INSERT INTO ai_explanation_cache"
+        " (fen, prompt_hash, context_hash, model, prompt_label, rendered_prompt, explanation, question, created_at)"
+        " VALUES (%s, %s, %s, 'm', %s, %s, %s, %s, %s)",
+        (
+            fen,
+            kw.get("prompt_hash", f"p-{label}"),
+            kw.get("context_hash", f"c-{question}"),
+            label,
+            kw.get("rendered_prompt", "rendered"),
+            kw.get("explanation", f"answer to {question}"),
+            question,
+            kw.get("created_at", "2026-10-01T12:00:00+00:00"),
+        ),
+    )
+
+
+def test_history_lists_every_answer_at_the_board_newest_first_whatever_the_clocks(tx: Tx) -> None:
+    """The three callers key their rows by the board on show with different clocks; a blunder
+    Explain has no question and comes back with None; a board nobody asked about is empty;
+    the limit holds (newest kept)."""
+    with tx() as conn:
+        _cache_row(conn, FEN, "Explain", None, created_at="2026-10-01T10:00:00+00:00")
+        _cache_row(
+            conn,
+            FEN.replace(" 7 12", " 0 1"),
+            "Ask about this position",
+            "why not Nf6?",
+            created_at="2026-10-01T12:00:00+00:00",
+        )
+        _cache_row(
+            conn,
+            FEN.replace(" 7 12", " 3 12"),
+            "Explain this move (line)",
+            "and d6?",
+            created_at="2026-10-01T11:00:00+00:00",
+        )
+        _cache_row(
+            conn, FEN.replace("b KQkq", "w KQkq"), "Explain", "other board", created_at="2026-10-02T12:00:00+00:00"
+        )
+    with tx() as conn:
+        rows = ai.history(conn, FEN)
+        assert [(r["question"], r["prompt_label"]) for r in rows] == [
+            ("why not Nf6?", "Ask about this position"),
+            ("and d6?", "Explain this move (line)"),
+            (None, "Explain"),
+        ]
+        assert rows[0] == {
+            "question": "why not Nf6?",
+            "prompt_label": "Ask about this position",
+            "model": "m",
+            "explanation": "answer to why not Nf6?",
+            "created_at": "2026-10-01T12:00:00+00:00",
+        }
+        assert [r["question"] for r in ai.history(conn, FEN, limit=2)] == ["why not Nf6?", "and d6?"]
+        assert ai.history(conn, FEN.replace("b KQkq", "w Kkq")) == []
+        assert ai.history(conn, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1") == []
+        assert _calls(tx) == []
+
+
+def test_a_blunder_explanation_records_no_question(tx: Tx, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    _configure(tx)
+    ai.explain(tx, 1, 7, "a", client=_anthropic())
+    with tx() as conn:
+        rows = ai.history(conn, FEN)
+    assert len(rows) == 1 and rows[0]["question"] is None and rows[0]["prompt_label"] == "Explain"
+    assert rows[0]["explanation"] == "Because the knight hangs."
+
+
+def test_backfill_fills_exactly_the_rows_the_extractor_answers_for_and_is_a_no_op_after(tx: Tx) -> None:
+    """The extractor sees the prompt hash and the rendered prompt of every row without a
+    question; a row it answers for is written by primary key and nothing else about it
+    changes; a second run is given only the rows still without one and changes nothing."""
+    other = FEN.replace(" 7 12", " 0 1")
+    with tx() as conn:
+        _cache_row(conn, FEN, "Ask", None, prompt_hash="ask", context_hash="c1", rendered_prompt="My question: one")
+        _cache_row(conn, FEN, "Ask", None, prompt_hash="ask", context_hash="c2", rendered_prompt="My question: two")
+        _cache_row(conn, FEN, "Line", None, prompt_hash="line", context_hash="c3", rendered_prompt="unknown layout")
+        _cache_row(conn, other, "Explain", None, prompt_hash="blunder", context_hash="c4", rendered_prompt=None)
+        _cache_row(
+            conn, other, "Ask", "kept", prompt_hash="ask", context_hash="c5", rendered_prompt="My question: not read"
+        )
+    seen: list[tuple[str, str]] = []
+
+    def extract(p_hash: str, rendered: str) -> str | None:
+        seen.append((p_hash, rendered))
+        return rendered.removeprefix("My question: ") if p_hash == "ask" else None
+
+    def rows() -> list[tuple[Any, ...]]:
+        with tx() as conn:
+            return [
+                tuple(r.values())
+                for r in conn.execute(
+                    "SELECT fen, prompt_hash, context_hash, rendered_prompt, explanation, question"
+                    " FROM ai_explanation_cache ORDER BY context_hash"
+                ).fetchall()
+            ]
+
+    before = rows()
+    with tx() as conn:
+        assert ai.backfill_questions(conn, extract) == {"filled": 2, "left_null": 1}
+    assert sorted(seen) == [("ask", "My question: one"), ("ask", "My question: two"), ("line", "unknown layout")]
+    after = rows()
+    assert [r[5] for r in after] == ["one", "two", None, None, "kept"]
+    assert [r[:5] for r in after] == [r[:5] for r in before]  # nothing but `question` changed
+    seen.clear()
+    with tx() as conn:
+        assert ai.backfill_questions(conn, extract) == {"filled": 0, "left_null": 1}
+    assert seen == [("line", "unknown layout")] and rows() == after
