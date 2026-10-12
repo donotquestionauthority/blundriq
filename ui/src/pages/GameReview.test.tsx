@@ -1012,6 +1012,55 @@ describe("reading the whole line from the review's repertoire panel", () => {
     expect(reader()).toBeNull();
   });
 
+  it("two conflict moves from two occurrences of one line are two Reads: the chosen one is open, the other switches straight to its move", async () => {
+    // A legal line that revisits its first board: Nf3 at line ply 0 and e4 at line ply 4 are two
+    // occurrences of the same line, so both groups carry line 7.
+    const gameSpine = buildSpine(["Nf3", "Nf6", "Ng1", "Ng8", "Nf3", "Nf6", "Ng1", "Ng8"]);
+    const lineSpine = buildSpine(["Nf3", "Nf6", "Ng1", "Ng8", "e4"]);
+    const p = reviewPayload();
+    p.game.moves = gameSpine.moves;
+    p.game.fen_sequence = gameSpine.fen_sequence;
+    p.game.ply_analysis = null;
+    p.blunders = [];
+    const groups = [
+      { move: "Nf3", book: "Book", chapter: "Chapter", line_name: "Repeated board", line_id: LINE_ID, line_ply: 0, more_lines: 0 },
+      { move: "e4", book: "Book", chapter: "Chapter", line_name: "Repeated board", line_id: LINE_ID, line_ply: 4, more_lines: 0 },
+    ];
+    p.repertoire = { by_ply: Object.fromEntries(gameSpine.fen_sequence.map((_, i) => [String(i), i % 2 ? entry({ status: "not_your_turn" }) : entry({ status: "conflict", conflict: groups })])) };
+    getGameReview.mockResolvedValue(p);
+    getLineAnnotated.mockResolvedValue({ line_id: LINE_ID, line_name: "Repeated board", color: "white", book_title: "Book", chapter_title: "Chapter", positions: lineSpine.fen_sequence.map((fen, i) => ({ ply: i, fen, move: lineSpine.moves[i] ?? null, annotation: null })) });
+    await renderReview(8);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Read the line for Nf3" })));
+    await flush();
+    expect(walkPosition()).toContain("Nf3");
+    expect(walkBoardPosition).toBe(lineSpine.fen_sequence[1]);
+    expect(screen.getByRole("button", { name: "Close the line for Nf3" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Read the line for e4" })).toBeInTheDocument();
+    // Stepping the review along the line (the opponent's ply, then the player's, where the same
+    // two occurrences are offered) keeps the walk-through where it is, with its typed question.
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Next ›" })));
+    expect(walkPosition()).toContain("Nf6");
+    fireEvent.change(screen.getByLabelText("Your question"), { target: { value: "why the knight?" } });
+    await step("ArrowLeft");
+    await step("ArrowLeft");
+    expect(bodyText()).toContain("move 6 / 8");
+    expect(walkPosition()).toContain("Nf6");
+    expect(screen.getByLabelText("Your question")).toHaveValue("why the knight?");
+    expect(screen.getByRole("button", { name: "Close the line for Nf3" })).toBeInTheDocument();
+    expect(getLineAnnotated).toHaveBeenCalledTimes(1);
+    // The other occurrence is a deliberate switch: it opens on its own move, a fresh walk-through.
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Read the line for e4" })));
+    await flush();
+    expect(getLineAnnotated).toHaveBeenCalledTimes(2);
+    expect(screen.getAllByTestId("review-line-reader")).toHaveLength(1);
+    expect(walkPosition()).toContain("e4");
+    expect(walkBoardPosition).toBe(lineSpine.fen_sequence[5]);
+    expect(screen.getByRole("button", { name: "Close the line for e4" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Read the line for Nf3" })).toBeInTheDocument();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Close the line for e4" })));
+    expect(reader()).toBeNull();
+  });
+
   it("Close in the reader's own box closes it on an opponent-turn ply, where no panel is shown", async () => {
     await renderReview(2);
     await openFromPanel();

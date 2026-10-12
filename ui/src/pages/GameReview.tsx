@@ -114,7 +114,9 @@ function RepertoirePanel({ entry, bookArrowDrawn, walk, onOpen, onClose }: { ent
           {/* Every distinct move, in the order received: the server owns the grouping. */}
           <ul className="space-y-1">
             {(entry.conflict ?? []).map((g, i) => {
-              const open = walk != null && g.line_id != null && walk.lineId === g.line_id;
+              // A row is one occurrence of a line: the same line can reach the board twice with
+              // two moves, so the open one is told by where it opened, not by the line alone.
+              const open = walk != null && g.line_id != null && g.line_ply != null && walk.lineId === g.line_id && walk.openAt === walkOpenAt(entry.status, g.line_ply);
               return (
                 <li key={`${g.move}-${i}`} className="break-words">
                   <span className="font-mono">{g.move}</span>
@@ -154,7 +156,9 @@ function RepertoirePanel({ entry, bookArrowDrawn, walk, onOpen, onClose }: { ent
 
 /** The open line, in the review's side column. Mounted by the page wherever the line's
  *  walk-through is visible — on opponent-turn plies too, where no repertoire panel is shown —
- *  so it carries its own Close. Keyed by the line: a new line is a fresh walk-through. */
+ *  so it carries its own Close. Keyed by what was opened, the line and the place in it: a new
+ *  line, or another occurrence of the same line, is a fresh walk-through; the review stepping
+ *  along the line never changes `walk`, so the walk-through keeps its place. */
 function ReviewLineReader({ walk, onClose }: { walk: ReviewWalk; onClose: () => void }) {
   return (
     <div className={`${panel} space-y-3`} data-testid="review-line-reader">
@@ -164,7 +168,7 @@ function ReviewLineReader({ walk, onClose }: { walk: ReviewWalk; onClose: () => 
           Close
         </button>
       </div>
-      <LineWalkthrough key={walk.lineId} lineId={walk.lineId} initialPly={walk.openAt} />
+      <LineWalkthrough key={`${walk.lineId}:${walk.openAt}`} lineId={walk.lineId} initialPly={walk.openAt} />
     </div>
   );
 }
