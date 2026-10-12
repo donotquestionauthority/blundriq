@@ -483,6 +483,30 @@ def test_an_explore_answer_is_recorded_under_the_ask_key(tx: Tx, monkeypatch: py
     assert ai.ask_explore(tx, body, client=_client(status=500))["cached"] is True
 
 
+def test_a_paid_answer_records_the_question_as_sent_the_default_included(
+    tx: Tx, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cache row says what was actually asked: the trimmed text, or the default question a
+    blank box is sent as, so the board's history can show it; a review and an explore answer
+    at one board are both listed there, newest first."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    _configure(tx)
+    ai.ask_review(tx, 1, 7, "  why not Nf6?\n ", client=_client("Asked."))
+    ai.ask_review(tx, 1, 7, "", client=_client("Default."))
+    ai.ask_explore(
+        tx,
+        _body(seed_fen=FENS[7], engine=_snap(best_move="d7d6", pv=["d7d6"]), question="in explore"),
+        client=_client("Explored."),
+    )
+    with tx() as conn:
+        rows = ai.history(conn, FENS[7])
+    assert [(r["question"], r["explanation"], r["prompt_label"]) for r in rows] == [
+        ("in explore", "Explored.", "Ask about this position"),
+        ("Why is d6 the engine's choice here?", "Default.", "Ask about this position"),
+        ("why not Nf6?", "Asked.", "Ask about this position"),
+    ]
+
+
 def test_a_terminal_alternative_from_explore_renders_its_outcome(tx: Tx) -> None:
     _configure(tx)
     body = _body(

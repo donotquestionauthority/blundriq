@@ -33,6 +33,7 @@ import re
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
+from datetime import UTC
 from typing import Any, LiteralString, cast
 
 import chess
@@ -683,7 +684,7 @@ def ask_review(
             seed_fen="",
         )
         label = prompt.label or "Ask about this position"
-        return _prepare(prompt, ASK_PROMPT_KEY, label, context["fen"], context)
+        return _prepare(prompt, ASK_PROMPT_KEY, label, context["fen"], context, question=context["question"])
 
     return _run(tx, prepare, dry_run=dry_run, client=client)
 
@@ -753,7 +754,7 @@ def ask_explore(
             seed_fen=seed,
         )
         label = prompt.label or "Ask about this position"
-        return _prepare(prompt, ASK_PROMPT_KEY, label, context["fen"], context)
+        return _prepare(prompt, ASK_PROMPT_KEY, label, context["fen"], context, question=context["question"])
 
     return _run(tx, prepare, dry_run=dry_run, client=client)
 
@@ -770,6 +771,58 @@ def _cached(conn: Connection[Any], fen: str, p_hash: str, c_hash: str) -> str | 
         )
         row = cur.fetchone()
     return str(row["explanation"]) if row else None
+
+
+HISTORY_LIMIT = 20
+
+
+def history(conn: Connection[Any], fen: str, limit: int = HISTORY_LIMIT) -> list[dict[str, Any]]:
+    """Every cached answer at the board `fen` shows (clocks ignored), newest first: what was
+    asked (None when no question was recorded), by which prompt, when, and the answer. A read,
+    never a claim: no `ai_calls` row. `fen` has been through `full_fen`, so the predicate is
+    never NULL."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT question, prompt_label, model, explanation, created_at FROM ai_explanation_cache"
+            " WHERE canonical_fen = bq_canonical_fen(%s) || ' 0 1' ORDER BY created_at DESC LIMIT %s",
+            (fen, limit),
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "question": row["question"],
+            "prompt_label": str(row["prompt_label"]),
+            "model": str(row["model"]),
+            "explanation": str(row["explanation"]),
+            "created_at": row["created_at"].astimezone(UTC).isoformat(),
+        }
+        for row in rows
+    ]
+
+
+def backfill_questions(conn: Connection[Any], extract: Callable[[str, str], str | None]) -> dict[str, int]:
+    """Fill `question` on every cache row that has none from its rendered prompt: `extract`
+    is given the row's prompt hash and rendered prompt and answers the question or None, and
+    only a row it answers for is written, by primary key. The prompt itself is never changed.
+    Rerunning finds fewer rows without a question and fills none twice."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT fen, prompt_hash, context_hash, rendered_prompt FROM ai_explanation_cache"
+            " WHERE question IS NULL AND rendered_prompt IS NOT NULL"
+        )
+        rows = cur.fetchall()
+        fills: list[tuple[str, Any, Any, Any]] = []
+        for row in rows:
+            question = extract(str(row["prompt_hash"]), str(row["rendered_prompt"]))
+            if question is not None:
+                fills.append((question, row["fen"], row["prompt_hash"], row["context_hash"]))
+        if fills:
+            cur.executemany(
+                "UPDATE ai_explanation_cache SET question = %s"
+                " WHERE fen = %s AND prompt_hash = %s AND context_hash = %s",
+                fills,
+            )
+    return {"filled": len(fills), "left_null": len(rows) - len(fills)}
 
 
 def _claim(conn: Connection[Any], settings: Settings, prompt_key: str, model: str) -> int:
@@ -907,9 +960,18 @@ class _Prepared:
     context: dict[str, Any]
     eff: dict[str, Any]
     rendered: str
+    question: str | None  # what the cache row records as asked; None when the prompt has no question
 
 
-def _prepare(prompt: AiPrompt, calls_key: str, label: str, fen: str, context: dict[str, Any]) -> _Prepared:
+def _prepare(
+    prompt: AiPrompt,
+    calls_key: str,
+    label: str,
+    fen: str,
+    context: dict[str, Any],
+    *,
+    question: str | None = None,
+) -> _Prepared:
     """Parameters first (an unsupported model or combination is refused before anything is
     read or claimed), then the template (a broken one costs nothing)."""
     eff = effective_params(prompt)
@@ -917,7 +979,7 @@ def _prepare(prompt: AiPrompt, calls_key: str, label: str, fen: str, context: di
         rendered = prompts.render(prompt.text, context)
     except TemplateError as exc:
         raise ExplainError(500, f"prompt template failed to render ({type(exc).__name__})") from None
-    return _Prepared(prompt, calls_key, label, fen, context, eff, rendered)
+    return _Prepared(prompt, calls_key, label, fen, context, eff, rendered, question)
 
 
 def _run(
@@ -962,7 +1024,7 @@ def _run(
 
     try:
         with tx() as conn:
-            _record(conn, claim_id, reply, prep.fen, p_hash, c_hash, model, prep.label, prep.rendered)
+            _record(conn, claim_id, reply, prep.fen, p_hash, c_hash, model, prep.label, prep.rendered, prep.question)
     except psycopg.Error:
         pass  # the answer was paid for; failing to cache it must not lose it
     return {"explanation": reply.text, "cached": False, "model": model, "prompt_label": prep.label}
@@ -1021,7 +1083,7 @@ def explain_line(
         if line is None or context is None:
             raise ExplainError(404, "no move arrives at that ply of the line")
         label = prompt.label or "Line explanation"
-        return _prepare(prompt, LINE_PROMPT_KEY, label, context["fen_after"], context)
+        return _prepare(prompt, LINE_PROMPT_KEY, label, context["fen_after"], context, question=question or None)
 
     return _run(tx, prepare, dry_run=dry_run, client=client)
 
@@ -1036,6 +1098,7 @@ def _record(
     model: str,
     label: str,
     rendered: str,
+    question: str | None,
 ) -> None:
     conn.execute(
         "UPDATE ai_calls SET input_tokens = %s, output_tokens = %s WHERE id = %s",
@@ -1043,8 +1106,8 @@ def _record(
     )
     conn.execute(
         "INSERT INTO ai_explanation_cache"
-        " (fen, prompt_hash, context_hash, model, prompt_label, rendered_prompt, explanation)"
-        " VALUES (%s, %s, %s, %s, %s, %s, %s)"
+        " (fen, prompt_hash, context_hash, model, prompt_label, rendered_prompt, explanation, question)"
+        " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
         " ON CONFLICT (canonical_fen, prompt_hash, context_hash) DO NOTHING",
-        (fen, p_hash, c_hash, model, label, rendered, reply.text),
+        (fen, p_hash, c_hash, model, label, rendered, reply.text, question),
     )

@@ -359,7 +359,7 @@ export function LineWalkthrough({ lineId, initialPly = 0 }: { lineId: number; in
           />
         )}
       </div>
-      <LineAskPanel key={lineId} lineId={lineId} ply={curPly} notesGeneration={notesGeneration} />
+      <LineAskPanel key={lineId} lineId={lineId} ply={curPly} fen={cur.fen} notesGeneration={notesGeneration} />
     </div>
   );
 }

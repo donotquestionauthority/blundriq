@@ -69,7 +69,10 @@ Chess.com / Lichess APIs
            (POST /explore/ask): the explored line and the engine's snapshot for the board on show go to
            core/ai.py, which parses them as chess and renders them in its own words before they reach a
            prompt. The game review has the same panel (POST /games/{id}/ask) over the stored analysis of
-           the ply; a question that names a move gets that move analysed in the browser too.
+           the ply; a question that names a move gets that move analysed in the browser too. Every paid
+           answer is cached by its board (ai_explanation_cache, the question recorded with it), and every
+           panel at a board — Ask Opus, the walk-through's line question, a card's Explain — lists what was
+           asked there before, from any of them (GET /ai/history, `components/AskHistory`): a read, no call.
 
   Home page reads: due count (Practice eligibility), games today/week, streaks, new blunders — recurring
            boards the Blunders list has never shown (seen_blunder_boards, which that page fills with what it

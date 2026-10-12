@@ -11,6 +11,10 @@
  * for the search and terminated when the chip clears or the panel unmounts) so the engine's
  * reply goes with the question. A move that ends the game is sent with its outcome and no
  * search. The ✕ on the chip dismisses that move for as long as the board stays.
+ *
+ * What was asked at this board before, by any panel, is listed under the box (`AskHistory`):
+ * a read, so it shows whether or not there is anything to ask here, and it is refreshed after
+ * each answer this panel gets. Its Ask again fills the box; the send is still the player's.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
@@ -21,7 +25,8 @@ import { engineSnapshot } from "../engine/eval";
 import { clampDepth, useStockfish } from "../engine/useStockfish";
 import { namedMove } from "../utils/namedMove";
 import type { AltOutcome } from "../utils/namedMove";
-import { MinimalMarkdown } from "./PositionCard/AiExplanationPanel";
+import { AskHistory } from "./AskHistory";
+import { MinimalMarkdown } from "./MinimalMarkdown";
 import { messageOf } from "./PositionCard/aiMessage";
 
 export const QUESTION_MAX_CHARS = 500;
@@ -66,6 +71,8 @@ export function AskOpusPanel({ fen, bestMoveSan, disabledReason = null, waiting 
   const [copied, setCopied] = useState(false);
   const [dismissed, setDismissed] = useState<{ visit: number; sans: string[] }>({ visit: 0, sans: [] });
   const [depth, setDepth] = useState<number | undefined>(undefined);
+  // Bumped after every answer this panel gets: the history under the box is read again.
+  const [answerRevision, setAnswerRevision] = useState(0);
   const answer = result?.visit === visit.n ? result.answer : null;
   const error = result?.visit === visit.n ? result.error : null;
   const loading = pending?.visit === visit.n;
@@ -132,6 +139,8 @@ export function AskOpusPanel({ fen, bestMoveSan, disabledReason = null, waiting 
     try {
       const r = await ask(question, alternative());
       if (owns()) setResult({ visit: mine.visit, answer: r, error: null });
+      // Whatever board it was for, an answer landed and is cached: read the board on show again.
+      if (mounted.current) setAnswerRevision((n) => n + 1);
     } catch (e) {
       if (owns()) setResult({ visit: mine.visit, answer: null, error: messageOf(e) });
     } finally {
@@ -198,26 +207,28 @@ export function AskOpusPanel({ fen, bestMoveSan, disabledReason = null, waiting 
               </span>
             )}
           </div>
-          {(loading || error || answer) && (
-            <div className="min-h-[4rem] rounded border border-zinc-200 p-3 dark:border-zinc-800">
-              {loading && <p className="text-xs text-zinc-500">Thinking…</p>}
-              {!loading && error && (
-                <p role="alert" className="text-xs text-red-600 dark:text-red-400">
-                  {error}
-                </p>
-              )}
-              {!loading && answer && (
-                <>
-                  <MinimalMarkdown text={answer.explanation} />
-                  <p className="mt-2 text-xs text-zinc-400">
-                    {answer.model}
-                    {answer.cached ? " · cached" : ""}
-                  </p>
-                </>
-              )}
-            </div>
-          )}
         </>
+      )}
+      {/* One place in the tree whichever branch is shown, so a change of gate at one board does not read it again. */}
+      <AskHistory fen={fen} answerRevision={answerRevision} onReuse={disabledReason ? undefined : setQuestion} />
+      {!disabledReason && (loading || error || answer) && (
+        <div className="min-h-[4rem] rounded border border-zinc-200 p-3 dark:border-zinc-800">
+          {loading && <p className="text-xs text-zinc-500">Thinking…</p>}
+          {!loading && error && (
+            <p role="alert" className="text-xs text-red-600 dark:text-red-400">
+              {error}
+            </p>
+          )}
+          {!loading && answer && (
+            <>
+              <MinimalMarkdown text={answer.explanation} />
+              <p className="mt-2 text-xs text-zinc-400">
+                {answer.model}
+                {answer.cached ? " · cached" : ""}
+              </p>
+            </>
+          )}
+        </div>
       )}
     </div>
   );

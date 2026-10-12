@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { explainLineMove } from "../../repertoire";
-import { MinimalMarkdown } from "./AiExplanationPanel";
+import { AskHistory } from "../AskHistory";
+import { MinimalMarkdown } from "../MinimalMarkdown";
 import { messageOf } from "./aiMessage";
 
 /** The most a question may carry, after trimming (the server refuses more). */
@@ -20,12 +21,17 @@ const btn = "rounded border border-zinc-300 px-2.5 py-1 text-xs font-medium hove
  * asked under the current `notesGeneration`: the parent bumps that after a note is saved or
  * deleted, which clears every answer (their context no longer matches the line) and drops any
  * request still in flight when it lands. Mount it keyed by line: answers are kept by ply.
+ *
+ * `fen` is the board the walk-through shows at `ply`, the board every answer here is cached
+ * under: what was asked at it before, from here or from a review of a game through it, is
+ * listed above the box (`AskHistory`), and read again after each answer that lands.
  */
-export function LineAskPanel({ lineId, ply, notesGeneration }: { lineId: number; ply: number; notesGeneration: number }) {
+export function LineAskPanel({ lineId, ply, fen, notesGeneration }: { lineId: number; ply: number; fen: string; notesGeneration: number }) {
   const [question, setQuestion] = useState("");
   const [answers, setAnswers] = useState<Record<number, Answer>>({});
   const [pending, setPending] = useState<Record<number, number>>({});
   const [generation, setGeneration] = useState(notesGeneration);
+  const [answerRevision, setAnswerRevision] = useState(0);
   const liveGeneration = useRef(notesGeneration);
 
   // A note changed: everything asked so far was asked about another line. Derived during
@@ -35,7 +41,10 @@ export function LineAskPanel({ lineId, ply, notesGeneration }: { lineId: number;
     setAnswers({});
     setPending({});
   }
-  useEffect(() => {
+  // The generation a landing response is checked against moves with the commit itself, before
+  // anything else can run: a passive effect would leave a gap after the commit in which a
+  // response asked under the old notes could still be applied.
+  useLayoutEffect(() => {
     liveGeneration.current = notesGeneration;
   }, [notesGeneration]);
 
@@ -52,6 +61,7 @@ export function LineAskPanel({ lineId, ply, notesGeneration }: { lineId: number;
       result = { question: asked, error: messageOf(e) };
     }
     if (liveGeneration.current !== startedUnder) return;
+    if (!("error" in result)) setAnswerRevision((n) => n + 1);
     setAnswers((a) => ({ ...a, [at]: result }));
     setPending((p) => {
       const next = { ...p };
@@ -65,6 +75,7 @@ export function LineAskPanel({ lineId, ply, notesGeneration }: { lineId: number;
   const tooLong = [...question.trim()].length > QUESTION_MAX; // characters, as the server counts them
   return (
     <div className="space-y-2 rounded border border-zinc-200 p-3 dark:border-zinc-800">
+      <AskHistory fen={fen} answerRevision={answerRevision} onReuse={setQuestion} />
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" className={btn} disabled={ply === 0 || busy || tooLong} onClick={() => void ask()}>
           Ask Opus why this move matters

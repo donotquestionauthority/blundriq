@@ -77,9 +77,12 @@ vi.mock("../components/AskOpusPanel", () => ({
 }));
 const askReview = vi.fn();
 const askReviewDryRun = vi.fn();
+// The history under the walk-through's box (the real `AskHistory`, inside the real `LineAskPanel`).
+const getAskHistory = vi.fn();
 vi.mock("../ask", () => ({
   askReview: (...a: unknown[]) => askReview(...a),
   askReviewDryRun: (...a: unknown[]) => askReviewDryRun(...a),
+  getAskHistory: (...a: unknown[]) => getAskHistory(...a),
 }));
 
 const getGameReview = vi.fn();
@@ -230,6 +233,7 @@ beforeEach(() => {
   askProps = null;
   askReview.mockReset().mockResolvedValue({ explanation: "x", cached: false, model: "m" });
   askReviewDryRun.mockReset().mockResolvedValue({});
+  getAskHistory.mockReset().mockResolvedValue({ items: [] });
   setViewport(DESKTOP);
   getGameReview.mockResolvedValue(reviewPayload());
   getReviewPrefs.mockResolvedValue({ review_default_mode: "learn", review_show_timer: true });
@@ -260,7 +264,9 @@ describe("before a commit nothing that answers the question is on screen", () =>
     expect(text).toContain("1. e4 e5");
     expect(screen.queryByTestId("blunder-card")).toBeNull();
     expect(screen.queryByTestId("repertoire-panel")).toBeNull();
-    expect(screen.queryByTestId("ask-panel")).toBeNull(); // its answer would name the engine move
+    // Its answer would name the engine move, and so could what was asked here before: the whole
+    // panel, history included, stays off the page until the reveal.
+    expect(screen.queryByTestId("ask-panel")).toBeNull();
   });
   it("the reveal restores them, so the gate is not passing by rendering nothing", async () => {
     await renderReview();
@@ -508,7 +514,9 @@ describe("Ask Opus on the Review page", () => {
     getGameReview.mockResolvedValue(p);
     getReviewPrefs.mockResolvedValue({ review_default_mode: "review", review_show_timer: true });
     await renderReview(3);
+    // The panel is still mounted, with its reason: what was asked here before is read all the same.
     expect(screen.getByTestId("ask-panel").getAttribute("data-reason")).toBe("No engine analysis for this position.");
+    expect(screen.getByTestId("ask-panel").getAttribute("data-fen")).toBe(fen_sequence[3]);
   });
 });
 
@@ -897,6 +905,23 @@ describe("reading the whole line from the review's repertoire panel", () => {
     // Both ask panels are on the page, each about its own board.
     expect(screen.getByTestId("ask-panel")).toBeInTheDocument();
     expect(screen.getByLabelText("Your question")).toBeInTheDocument();
+  });
+
+  it("the reader's ask panel lists what was asked at the board it shows, and the review's panel is given the review's board", async () => {
+    const row = (question: string) => ({ question, prompt_label: "Ask about this position", model: "m", explanation: "An answer.", created_at: "2026-10-01T12:00:00+00:00" });
+    getAskHistory.mockImplementation((fen: string) => Promise.resolve({ items: fen === LINE_SPINE.fen_sequence[5] ? [row("asked at the prep move")] : fen === LINE_SPINE.fen_sequence[4] ? [row("asked at the review's board")] : [] }));
+    await renderReview(2);
+    expect(screen.getByTestId("ask-panel").getAttribute("data-fen")).toBe(fen_sequence[2]); // the review's own panel asks its own history
+    await openFromPanel();
+    expect(await screen.findByText("Asked here before (1)")).toBeInTheDocument();
+    expect(screen.getByText("asked at the prep move")).toBeInTheDocument();
+    expect(getAskHistory).toHaveBeenCalledWith(LINE_SPINE.fen_sequence[5]);
+    fireEvent.click(screen.getByRole("button", { name: "‹ Prev" })); // the reader steps back to the review's board
+    expect(await screen.findByText("asked at the review's board")).toBeInTheDocument();
+    expect(screen.queryByText("asked at the prep move")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Ask again" }));
+    expect((screen.getByLabelText("Your question") as HTMLInputElement).value).toBe("asked at the review's board");
+    expect(explainLineMove).not.toHaveBeenCalled();
   });
 
   it("stepping player → opponent → player through the same line keeps the walk-through, its place and a typed question; the opponent ply shows no panel", async () => {

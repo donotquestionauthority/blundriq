@@ -811,7 +811,7 @@ function ReviewBody(p: {
                 .
               </p>
             )}
-            <AiExplanationPanel key={`${gameId}:${cardBlunder.ply}`} chessGameId={gameId} ply={cardBlunder.ply} />
+            <AiExplanationPanel key={`${gameId}:${cardBlunder.ply}`} chessGameId={gameId} ply={cardBlunder.ply} fen={cardFen} />
           </div>
         ) : learnHere ? null : here?.best_move ? (
           <div className={`${panel} space-y-2`}>

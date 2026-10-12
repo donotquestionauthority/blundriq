@@ -28,7 +28,7 @@ type Reply = { status: number; body: unknown };
 type Call = { method: string; path: string; body: Record<string, unknown> | null };
 
 /** Every explain request waits until the test settles it, in any order. */
-function stubFetch() {
+function stubFetch(history: Record<string, unknown[]> = {}) {
   const calls: Call[] = [];
   const waiting: ((r: Reply) => void)[] = [];
   vi.stubGlobal(
@@ -41,17 +41,19 @@ function stubFetch() {
       if (/^\/repertoire\/lines\/\d+\/annotated$/.test(path)) r = { status: 200, body: line() };
       else if (path === "/repertoire/annotation") r = { status: 200, body: { detail: "saved" } };
       else if (path === "/repertoire/lines/1/explain") r = await new Promise<Reply>((resolve) => waiting.push(resolve));
+      else if (path === "/ai/history") r = { status: 200, body: { items: history[new URLSearchParams(url.split("?")[1]).get("fen") ?? ""] ?? [] } };
       else r = { status: 404, body: { detail: "no route" } };
       return { ok: r.status < 400, status: r.status, statusText: String(r.status), json: async () => r.body };
     }),
   );
   const explains = () => calls.filter((c) => c.path === "/repertoire/lines/1/explain");
+  const histories = () => calls.filter((c) => c.path === "/ai/history");
   const settle = async (i: number, r: Reply) => {
     await act(async () => {
       waiting[i](r);
     });
   };
-  return { calls, explains, settle };
+  return { calls, explains, histories, settle };
 }
 
 const answer = (text: string, cached = false): Reply => ({ status: 200, body: { explanation: text, cached, model: "claude-opus-5-5", prompt_label: "x" } });
@@ -177,6 +179,29 @@ describe("LineAskPanel in the walk-through", () => {
     await f.settle(0, { status: 429, body: { detail: { window: "hourly", message: "Limit reached: 20 AI calls per hour." } } });
     expect(screen.getByRole("alert")).toHaveTextContent("Limit reached: 20 AI calls per hour.");
     expect(ask()).toBeEnabled();
+  });
+
+  it("lists what was asked at the board on show, read again after an answer lands; Ask again fills the box", async () => {
+    const row = (question: string | null, label = "Explain this move (line)") => ({ question, prompt_label: label, model: "m", explanation: "An answer.", created_at: "2026-10-01T12:00:00+00:00" });
+    const history = { [AFTER_E4]: [row("asked at e4")], [AFTER_E5]: [row("from a review", "Ask about this position"), row(null)] };
+    const f = stubFetch(history);
+    render(<LineWalkthrough lineId={1} initialPly={1} />);
+    expect(await screen.findByText("Asked here before (1)")).toBeInTheDocument();
+    expect(screen.getByText("asked at e4")).toBeInTheDocument();
+    expect(f.histories()).toHaveLength(1);
+    next(); // the board after e5: its own rows, from any origin
+    expect(await screen.findByText("Asked here before (2)")).toBeInTheDocument();
+    expect(screen.getByText("from a review")).toBeInTheDocument();
+    expect(screen.getByText("Explain this move (line)")).toBeInTheDocument(); // the label in place of no question
+    expect(screen.queryByText("asked at e4")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Ask again" }));
+    expect((screen.getByLabelText("Your question") as HTMLInputElement).value).toBe("from a review");
+    expect(f.explains()).toHaveLength(0); // filling the box sends nothing
+    fireEvent.click(ask());
+    history[AFTER_E5] = [row("from a review"), ...history[AFTER_E5]];
+    await f.settle(0, answer("Asked again."));
+    expect(await screen.findByText("Asked here before (3)")).toBeInTheDocument();
+    expect(f.histories().map((c) => c.path)).toHaveLength(3);
   });
 
   it("refuses a question longer than the server takes", async () => {

@@ -238,7 +238,7 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
           </p>
         )}
 
-        {d.chessGameId != null && d.ply != null && <AiExplanationPanel key={`${d.chessGameId}:${d.ply}`} chessGameId={d.chessGameId} ply={d.ply} />}
+        {d.chessGameId != null && d.ply != null && <AiExplanationPanel key={`${d.chessGameId}:${d.ply}`} chessGameId={d.chessGameId} ply={d.ply} fen={d.fen} />}
 
         <LineReaderPanel fen={d.fen} repertoireLineId={null} />
 

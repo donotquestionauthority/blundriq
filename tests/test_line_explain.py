@@ -291,6 +291,25 @@ def test_a_line_explanation_is_cached_by_its_notes_and_its_question(tx: Tx, monk
     assert len(_calls(tx)) == 3
 
 
+def test_a_line_answer_records_its_question_and_an_empty_one_records_none(
+    tx: Tx, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The row is keyed by the board after the move, which is the board the walk-through shows
+    at that ply, so its history lists both answers there; the implicit question is NULL and the
+    label says what it was."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    _configure(tx)
+    ai.explain_line(tx, 1, 4, " why not d6? ", client=_client("Asked."))
+    ai.explain_line(tx, 1, 4, "  ", client=_client("Implicit."))
+    with tx() as conn:
+        rows = ai.history(conn, FENS[4])
+        assert ai.history(conn, FENS[3]) == []
+    assert [(r["question"], r["explanation"], r["prompt_label"]) for r in rows] == [
+        (None, "Implicit.", "Explain this move (line)"),
+        ("why not d6?", "Asked.", "Explain this move (line)"),
+    ]
+
+
 def test_a_line_explanation_shares_the_caps_and_gives_a_failed_slot_back(
     tx: Tx, monkeypatch: pytest.MonkeyPatch
 ) -> None:

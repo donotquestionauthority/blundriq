@@ -106,7 +106,7 @@ $function$
 -- Tables
 -- ---------------------------------------------------------------------------
 
--- Cached AI explanations keyed by position + prompt, so a repeat click costs nothing.
+-- Cached AI explanations keyed by position + prompt, so a repeat click costs nothing. `question` is the player's question as sent, trimmed; NULL means no question recorded (a blunder Explain, or a row written before the column existed), and such a row is still listed at its board by its label.
 CREATE TABLE public.ai_explanation_cache (
     fen text NOT NULL,
     prompt_hash text NOT NULL,
@@ -116,7 +116,8 @@ CREATE TABLE public.ai_explanation_cache (
     explanation text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     context_hash text NOT NULL,
-    canonical_fen text GENERATED ALWAYS AS ((public.bq_canonical_fen(fen) || ' 0 1'::text)) STORED
+    canonical_fen text GENERATED ALWAYS AS ((public.bq_canonical_fen(fen) || ' 0 1'::text)) STORED,
+    question text
 );
 
 -- One row per (player, game, ply) the engine flagged; the input to the Blunders page and blunder puzzles.
@@ -856,6 +857,8 @@ CREATE INDEX idx_puzzle_attempts_player ON public.puzzle_attempts USING btree (p
 CREATE UNIQUE INDEX idx_puzzles_repertoire_line ON public.puzzles USING btree (repertoire_line_id) WHERE (repertoire_line_id IS NOT NULL);
 
 CREATE INDEX idx_repertoire_lines_fen_sequence ON public.repertoire_lines USING gin (fen_sequence);
+
+CREATE INDEX ix_ai_explanation_cache_board_time ON public.ai_explanation_cache USING btree (canonical_fen, created_at DESC);
 
 CREATE UNIQUE INDEX ix_ai_explanation_cache_canonical ON public.ai_explanation_cache USING btree (canonical_fen, prompt_hash, context_hash);
 

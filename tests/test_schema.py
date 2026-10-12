@@ -217,3 +217,40 @@ def test_fresh_install_equals_baseline_plus_migrations(fresh_db_url: str) -> Non
         c.commit()
         schema.upgrade(c)
     assert _signature(url) == _signature(fresh_db_url)
+
+
+def test_migration_013_keeps_every_cached_answer_and_lists_it_with_no_question(
+    fresh_db_url: str, tmp_path: Path
+) -> None:
+    """A version-12 database with a cached answer written before the question column existed:
+    after the upgrade the row is intact, its question is NULL (no question recorded), and the
+    board's history lists it by its label."""
+    from psycopg.rows import DictRow as _Row
+
+    from core import ai
+
+    url = _scratch(fresh_db_url, "ai_v12")
+    v12 = tmp_path / "v12"
+    v12.mkdir()
+    for n, path in schema.migration_files():
+        if n <= 12:
+            (v12 / path.name).write_text(path.read_text())
+    with psycopg.Connection[_Row].connect(url, row_factory=dict_row) as c:
+        c.execute(sql.SQL((FIXTURES / "schema_baseline.sql").read_text()))  # type: ignore[arg-type]  # repo fixture
+        c.execute("INSERT INTO schema_version (version) VALUES (0)")
+        assert schema.upgrade(c, v12)[-1] == 12
+        c.execute(
+            "INSERT INTO ai_explanation_cache (fen, prompt_hash, context_hash, model, prompt_label, rendered_prompt, explanation)"
+            " VALUES (%s, 'p', 'c', 'm', 'Ask about this position', 'My question: why?', 'Because.')",
+            (AFTER_E4,),
+        )
+        c.commit()
+        assert schema.upgrade(c)[-1] == 13
+        row = c.execute("SELECT * FROM ai_explanation_cache").fetchone()
+        assert row is not None and row["question"] is None and row["explanation"] == "Because."
+        (listed,) = ai.history(c, AFTER_E4.replace(" 0 1", " 5 9"))
+        assert (listed["question"], listed["prompt_label"], listed["explanation"]) == (
+            None,
+            "Ask about this position",
+            "Because.",
+        )
