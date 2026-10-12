@@ -241,7 +241,8 @@ def canonicalise(fen: str, pool: list[Row]) -> list[Row]:
 
 def conflict_groups(pool: list[Row]) -> list[Row]:
     """One entry per distinct canonical move, ordered by each group's representative under the
-    tie-break; `more_lines` counts other distinct lines prescribing the same move."""
+    tie-break; `more_lines` counts other distinct lines prescribing the same move. `line_id` and
+    `line_ply` name the representative's occurrence: the line to walk through for that move."""
     by_move: dict[str, list[Row]] = {}
     for c in pool:
         by_move.setdefault(str(c["canonical_move"]), []).append(c)
@@ -256,6 +257,8 @@ def conflict_groups(pool: list[Row]) -> list[Row]:
                     "book": rep.get("book"),
                     "chapter": rep.get("chapter"),
                     "line_name": rep.get("line_name"),
+                    "line_id": rep.get("line_id"),
+                    "line_ply": rep.get("line_ply"),
                     "more_lines": len({m.get("line_id") for m in members}) - 1,
                 },
             )

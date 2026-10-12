@@ -118,6 +118,10 @@ export interface RepertoireConflictGroup {
   book: string | null;
   chapter: string | null;
   line_name: string | null;
+  /** The representative line arguing for this move, and where the board sits in it: the line a
+   *  walk-through of the move opens. */
+  line_id: number | null;
+  line_ply: number | null;
   more_lines: number;
 }
 
@@ -128,6 +132,9 @@ export interface RepertoireEntry {
   book: string | null;
   chapter: string | null;
   line_name: string | null;
+  /** The selected line and the board's ply in it: non-null exactly when the status is `match`,
+   *  `agree` or `end_of_line`. A conflict selects no line; its groups each name one. */
+  line_id: number | null;
   line_ply: number | null;
   plan: string[];
   more_lines: number;

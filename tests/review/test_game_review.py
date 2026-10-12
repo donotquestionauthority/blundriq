@@ -210,6 +210,13 @@ def test_review_payload(client: TestClient, corpus: psycopg.Connection[DictRow])
     assert b["fen_occurrence_count"] == 1
     by = body["repertoire"]["by_ply"]
     assert by["4"]["status"] == "conflict" and by["1"]["status"] == "not_your_turn"
+    # A conflict ply selects no line itself; each group carries the line that argues for its move.
+    assert by["4"]["line_id"] is None and by["4"]["line_ply"] is None
+    groups = by["4"]["conflict"]
+    assert [g["move"] for g in groups] == ["Bc4", "Bb5"]
+    assert all(isinstance(g["line_id"], int) and g["line_ply"] == 4 for g in groups)
+    assert len({g["line_id"] for g in groups}) == 2
+    assert by["2"]["status"] in ("match", "agree") and isinstance(by["2"]["line_id"], int)
 
 
 def test_review_out_of_window_game(client: TestClient) -> None:
