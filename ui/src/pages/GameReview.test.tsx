@@ -8,7 +8,7 @@
  */
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { Chess } from "chess.js";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router";
+import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import GameReview from "./GameReview";
 import { ApiError } from "../api";
@@ -178,6 +178,8 @@ async function renderReview(ply = 2, state?: unknown) {
         <Route path="/review" element={<Probe />} />
         <Route path="/games" element={<Probe />} />
       </Routes>
+      {/* Another game under the same route, as the browser's history or a typed URL would reach it. */}
+      <Link to="/review/2?ply=0">other game</Link>
     </MemoryRouter>,
   );
   await act(async () => {
@@ -1045,6 +1047,24 @@ describe("reading the whole line from the review's repertoire panel", () => {
     expect(screen.getByTestId("repertoire-panel")).toBeInTheDocument();
     expect(reader()).toBeNull();
     expect(toggle()).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("a different game under the same route starts with no line open, even where its first ply is the opponent's", async () => {
+    const p = reviewPayload();
+    p.game.player_color = "black";
+    p.repertoire!.by_ply["1"] = entry({ status: "match", book_move: "e5", book: "Black", chapter: "Open", line_name: "Double King Pawn", line_id: LINE_ID, line_ply: 1, transposed: false });
+    p.repertoire!.by_ply["0"] = entry({ status: "not_your_turn" });
+    p.repertoire!.by_ply["2"] = entry({ status: "not_your_turn" });
+    getGameReview.mockImplementation((id: number) => Promise.resolve(id === 2 ? { ...reviewPayload(), game: { ...p.game, id: 2 }, repertoire: p.repertoire } : p));
+    await renderReview(1);
+    await openFromPanel();
+    expect(reader()).toBeInTheDocument();
+    await act(async () => fireEvent.click(screen.getByText("other game")));
+    await flush();
+    expect(getGameReview).toHaveBeenLastCalledWith(2);
+    expect(bodyText()).toContain("move 0 / 4");
+    expect(reader()).toBeNull();
+    expect(getLineAnnotated).toHaveBeenCalledTimes(1);
   });
 
   it("the end of a line opens on the board itself: there is no move to explain", async () => {

@@ -531,6 +531,7 @@ export default function GameReview() {
 
         {game && fenSeq && (
           <ReviewBody
+            key={game.id} // a different game is a fresh body: none of the old one's page state (the open line) survives it
             fenSeq={fenSeq}
             moves={game.moves}
             curPly={curPly}
