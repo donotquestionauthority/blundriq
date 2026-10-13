@@ -94,6 +94,17 @@ _PRECEDENCE = {ME: 0, OPPONENT: 1, ENDED: 2, RAN_OUT: 3}
 # Python (`status_of`, `own_moves`): the Python is what the tests check against the matcher, and
 # a parity test holds the two together. Every text tie-break orders under COLLATE "C": Python
 # compares strings by code point and the database's default collation does not.
+# The reduction's session settings, for its transaction. A hosted database's estimates for one
+# player's rows are off by orders of magnitude (nine matched games for a thousand, six lines for
+# two thousand), and the plans built on them — nested loops over the (game, line) pairs — took
+# half a minute: so no nested loops (every join here is a hash join over tables of thousands of
+# rows whatever the estimates say), enough working memory that no hash or sort of the pairs
+# spills to the instance's throttled disk, and no JIT (the statement's two hundred expressions
+# cost more to compile on every run than they save). The gap boards' lookups by id that follow
+# are nested loops by right, so that one comes back.
+READ_SETTINGS = ("SET LOCAL jit = off", "SET LOCAL enable_nestloop = off", "SET LOCAL work_mem = '32MB'")
+READ_SETTINGS_AFTER = ("SET LOCAL enable_nestloop = on",)
+
 _PRECEDENCE_SQL = "CASE status WHEN 'me' THEN 0 WHEN 'opponent' THEN 1 WHEN 'ended' THEN 2 ELSE 3 END"
 
 # What a (game `g`, line `n`) pair derives: the status in `who_deviated`'s order of stops, the
@@ -289,13 +300,8 @@ def _reduced(conn: Connection[Any], config: Settings, time_class: str) -> tuple[
     game whose representative over every attached line is `opponent`, with that line as context)."""
     params, tc = _window_params(config, time_class)
     sql = _REPORT_SQL.format(window=window_cte(), analysable=analysable_sql("cg"), time_class=tc)
-    # For this statement only: no JIT (its two hundred expressions cost more to compile on every
-    # run than they save) and no nested loops (the planner's estimates for a small player's rows
-    # are off by orders of magnitude on a hosted database — nine games for a thousand — and a
-    # nested loop over the (game, line) pairs built on them took half a minute; every join here
-    # is a hash join over tables of thousands of rows whatever the estimates say).
-    conn.execute("SET LOCAL jit = off")
-    conn.execute("SET LOCAL enable_nestloop = off")
+    for setting in READ_SETTINGS:
+        conn.execute(setting)
     compact: dict[tuple[str, int], list[Row]] = defaultdict(list)
     gap_games: list[Row] = []
     for r in conn.execute(cast(LiteralString, sql), params).fetchall():
@@ -303,7 +309,8 @@ def _reduced(conn: Connection[Any], config: Settings, time_class: str) -> tuple[
             gap_games.append({"id": int(r["id"]), **cast(Row, r["ctx"])})
             continue
         compact[(str(r["scope"]), int(r["id"]))].append(r)
-    conn.execute("SET LOCAL enable_nestloop = on")  # the gap boards' lookups by id are nested loops by right
+    for setting in READ_SETTINGS_AFTER:
+        conn.execute(setting)
     scopes: dict[str, dict[int, Row]] = {"line": {}, "chapter": {}, "book": {}}
     for (scope, sid), rows in compact.items():
         scopes[scope][sid] = _summary(rows)
