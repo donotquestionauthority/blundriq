@@ -160,30 +160,22 @@ n AS MATERIALIZED (
     JOIN books bk ON bk.id = ch.book_id AND bk.active AND bk.player_id = %(pid)s
     WHERE rl.active
 ),
-c AS MATERIALIZED (
-    -- How many lines of each chapter a game is attached to: a line is shared when no game is alone.
-    SELECT grl.game_repertoire_result_id AS rid, n.chapter_id, count(*) AS siblings
-    FROM game_result_lines grl JOIN n ON n.line_id = grl.line_id
-    WHERE grl.game_repertoire_result_id IN (SELECT rid FROM g)
-    GROUP BY 1, 2
-),
-r AS NOT MATERIALIZED (
+r AS MATERIALIZED (
     -- One row per (game, attached line), with its precedence for the reduction and how many
-    -- lines of the chapter the game is attached to. Never written out: each of its two readers
-    -- below is a hash aggregate over this join, whose hash tables are the games and the lines
-    -- (thousands of rows), so nothing grows with the (game, line) pairs or spills past a small
-    -- work_mem — the fact the read's speed rests on.
+    -- lines of the chapter the game is attached to (a window over the pairs, never a join: a
+    -- join on the game alone multiplied the pairs by the game's chapters before the line could
+    -- narrow them). Two joins whose hash tables are the games and the lines (thousands of rows),
+    -- held once in the read's working memory for the two aggregates below.
     SELECT g.gid, g.result, g.played_at, g.m, n.line_id, n.chapter_id, n.book_id, n.rank,
            s.status, """
     + _PRECEDENCE_SQL
     + """ AS prec,"""
     + _DERIVED_SQL
     + """,
-           c.siblings
+           count(*) OVER (PARTITION BY g.rid, n.chapter_id) AS siblings
     FROM g
     JOIN game_result_lines grl ON grl.game_repertoire_result_id = g.rid
-    JOIN n ON n.line_id = grl.line_id
-    JOIN c ON c.rid = g.rid AND c.chapter_id = n.chapter_id"""
+    JOIN n ON n.line_id = grl.line_id"""
     + _STATUS_SQL
     + """
 ),
