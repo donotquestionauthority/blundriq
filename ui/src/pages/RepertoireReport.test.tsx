@@ -9,8 +9,8 @@ vi.mock("react-chessboard", () => ({
   Chessboard: ({ options }: { options: { id?: string; position?: string } }) => <div data-testid="board" data-id={options.id} data-position={options.position} />,
 }));
 vi.mock("../components/AddLineModal", () => ({
-  AddLineModal: ({ card, prefillPlies, maxPlies, onClose, onAdded }: { card: GapCard; prefillPlies: number; maxPlies: number; onClose: () => void; onAdded: (r: { id: number }) => void }) => (
-    <div role="dialog" aria-label="Add to repertoire" data-fen={card.fen} data-prefill={prefillPlies} data-max={maxPlies}>
+  AddLineModal: ({ card, destinations, prefillPlies, maxPlies, onClose, onAdded }: { card: GapCard; destinations: { id: number }[]; prefillPlies: number; maxPlies: number; onClose: () => void; onAdded: (r: { id: number }) => void }) => (
+    <div role="dialog" aria-label="Add to repertoire" data-fen={card.fen} data-destinations={destinations.map((d) => d.id).join(",")} data-prefill={prefillPlies} data-max={maxPlies}>
       <button type="button" onClick={() => onAdded({ id: 42 })}>
         fake-save
       </button>
@@ -463,9 +463,15 @@ describe("the line report page", () => {
     fireEvent.click(within(cards[0]).getByRole("button", { name: "Add to repertoire" }));
     const dialog = screen.getByRole("dialog", { name: "Add to repertoire" });
     expect(dialog).toHaveAttribute("data-fen", GAP);
+    expect(dialog).toHaveAttribute("data-destinations", "1"); // White's destinations, from the one read
     expect(dialog).toHaveAttribute("data-prefill", "10");
     expect(dialog).toHaveAttribute("data-max", "60");
     const before = calls.filter((c) => c.path === "/repertoire/report").length;
+    // Cancelling re-reads nothing.
+    fireEvent.click(screen.getByText("fake-close"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(calls.filter((c) => c.path === "/repertoire/report")).toHaveLength(before);
+    fireEvent.click(within(screen.getAllByTestId("gap-card")[0]).getByRole("button", { name: "Add to repertoire" }));
     fireEvent.click(screen.getByText("fake-save"));
     expect(calls.filter((c) => c.path === "/repertoire/report")).toHaveLength(before); // the card is marked at once; the read waits for the close
     fireEvent.click(screen.getByText("fake-close"));

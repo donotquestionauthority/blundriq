@@ -373,14 +373,14 @@ export default function RepertoireReport() {
   const activeColour = shown?.colour ?? gapColour ?? "white";
   const refetch = report.refetch;
   // A saved line marks its card at once; the lines and the gaps are re-read together when the
-  // modal closes (the one read serves both).
+  // modal closes after a save (the one read serves both). A cancelled modal re-reads nothing.
   const onAdded = useCallback(() => {
     if (source) setAdded((a) => ({ ...a, [source.fen]: true }));
   }, [source]);
   const closeModal = useCallback(() => {
+    if (source && added[source.fen]) refetch();
     setSource(null);
-    refetch();
-  }, [refetch]);
+  }, [source, added, refetch]);
 
   const columns = COLUMNS.filter((c) => c.views.includes(view));
   const sortable = COLUMNS.filter((c) => (c.sortViews ?? c.views).includes(view));

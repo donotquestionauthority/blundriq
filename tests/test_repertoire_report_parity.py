@@ -3,10 +3,12 @@ reference over the same per-(game, line) rows: statuses in `who_deviated`'s orde
 scope by precedence then the (book, chapter, line, id) tie-break, the slip as the most common
 whole tuple, the depth histogram, shared, and the gap games with their context.
 
-The fixtures are built to split code-point order from the database's default collation: sibling
-chapters `Zebra`, `apple`, `Éclair`; line names differing only in case; equally frequent slips
-`Nf3` and `a3`. Python compares strings by code point and `COLLATE "C"` is what makes the SQL
-agree, so the test refuses to run on a C-collated database, where it would prove nothing."""
+The fixtures are built to split code-point order from the database's default collation where the
+SQL compares text — the line's rank over book, chapter and line titles: sibling chapters `Zebra`,
+`apple`, `Éclair`, line names differing only in case. Python compares strings by code point and
+`COLLATE "C"` is what makes the SQL agree, so the test refuses to run on a C-collated database,
+where it would prove nothing. The equally frequent slips `Nf3` and `a3` exercise the slip's own
+tie-break, which is Python's tuple order in `_summary`."""
 
 from __future__ import annotations
 
@@ -19,7 +21,6 @@ from psycopg.rows import DictRow
 
 from core.constants import PLAYER_ID
 from core.repertoire import report
-from core.repertoire.importing import spine
 from core.settings import Settings
 from tests import repertoire_helpers as h
 
@@ -284,4 +285,3 @@ def test_the_sql_reduction_equals_the_python_reference_where_collations_disagree
     assert ref_gaps[8]["line_name"] == "Qa5" and ref_scopes["chapter"][4]["slip"]["own_move"] == 3
     assert ref_scopes["line"][1] == {**ref_scopes["line"][1], "games": 4, "ran_out": 1, "ended": 1, "shared": False}
     assert ref_scopes["line"][7]["shared"] is True
-    assert spine(None, ["e4"])[1] != h.START

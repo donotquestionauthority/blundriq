@@ -48,11 +48,11 @@ active repertoire through the read module's continuing-move projection: a covere
 "prepared but not played" (the book prescribes a move there, the player played another), an
 uncovered one is a gap (kind B). A line that merely ends at the board is not preparation.
 
-**Puzzles and the stem.** Line, chapter and book puzzle counts are the positions Practice serves
-for that scope (`visibility.repertoire_scopes`); the practice numbers per line are
-`core.puzzles.stats`. A gap card carries `stem`, the representative game's own moves from the
-start to the gap board, re-rendered and checked to reach it, which is what a line added from the
-card opens with; and the chapters such a line may go into (`core.repertoire.lines`).
+**Puzzles and the stem.** A prepared row's `puzzles` is the positions Practice serves for its
+line (`visibility.repertoire_scopes`); the practice numbers per line are `core.puzzles.stats`.
+A gap card carries `stem`, the representative game's own moves from the start to the gap board,
+re-rendered and checked to reach it, which is what a line added from the card opens with; the
+chapters such a line may go into are sent once per colour (`core.repertoire.lines`).
 """
 
 from __future__ import annotations
@@ -98,7 +98,7 @@ _PRECEDENCE_SQL = "CASE status WHEN 'me' THEN 0 WHEN 'opponent' THEN 1 WHEN 'end
 
 # A scope's compact rows: one per (scope id, own moves, status, the slip's two moves), with the
 # count, the results, the latest game and — for a line — whether every game in the group sits
-# under another line of the chapter too. `_summary` adds them up; a scope has a few rows per line.
+# under another line of the chapter too. `_summary` adds them up; a line has a few such rows.
 _COMPACT = """SELECT '{scope}' AS scope, {key} AS id, own, status,
        CASE WHEN status = 'me' THEN expected END AS expected, CASE WHEN status = 'me' THEN played END AS played,
        count(*) AS n, count(*) FILTER (WHERE result = 'win') AS wins, count(*) FILTER (WHERE result = 'draw') AS draws,
@@ -450,12 +450,12 @@ def full(conn: Connection[Any], config: Settings, *, time_class: str) -> Row:
 
 
 def lines(conn: Connection[Any], config: Settings, *, time_class: str) -> Row:
-    """The lines half of `read`."""
+    """The lines half of `full`, computed alone (the tests' convenience; the API reads `full`)."""
     return _lines(conn, _reduced(conn, config, time_class)[0])
 
 
 def gaps(conn: Connection[Any], config: Settings, *, time_class: str, colour: str) -> Row:
-    """One colour's half of `read`'s gaps."""
+    """One colour's half of `full`'s gaps, computed alone (the tests' convenience)."""
     _, gap_games = _reduced(conn, config, time_class)
     return _gaps(conn, config, time_class, colour, gap_games, _line_counts(conn, config))
 
