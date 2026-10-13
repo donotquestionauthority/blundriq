@@ -4,10 +4,10 @@
 import type { PracticeNumbers, ReportBook, ReportLine, ReportTally } from "../repertoire";
 
 export type View = "lines" | "chapters" | "books";
-export type SortKey = "colour" | "book" | "chapter" | "line" | "games" | "score" | "faithful" | "depth" | "loads" | "first_right" | "first_wrong" | "last_played";
+export type SortKey = "colour" | "book" | "chapter" | "line" | "games" | "score" | "faithful" | "depth" | "loads" | "first_right" | "last_played";
 export type Dir = "asc" | "desc";
 export const VIEWS: View[] = ["lines", "chapters", "books"];
-export const SORT_KEYS: SortKey[] = ["colour", "book", "chapter", "line", "games", "score", "faithful", "depth", "loads", "first_right", "first_wrong", "last_played"];
+export const SORT_KEYS: SortKey[] = ["colour", "book", "chapter", "line", "games", "score", "faithful", "depth", "loads", "first_right", "last_played"];
 
 /** One row of any view: a line, a chapter or a book, with the ids of the lines it stands for. */
 export interface Row extends ReportTally {
@@ -83,8 +83,6 @@ function sortValue(r: Row, key: SortKey): number | string | null {
       return r.practice.loads;
     case "first_right":
       return r.practice.first_right;
-    case "first_wrong":
-      return r.practice.first_wrong;
     case "last_played":
       return r.last_played;
   }

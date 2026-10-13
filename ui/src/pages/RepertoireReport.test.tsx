@@ -195,20 +195,22 @@ describe("the line report page", () => {
     const rows = screen.getAllByTestId("report-row-lines");
     expect(rows).toHaveLength(3);
     const cells = (i: number) => within(rows[i]).getAllByRole("cell").map((c) => c.textContent);
-    expect(cells(0).slice(1, 5)).toEqual(["Black", "Scandi", "Qa5", expect.stringContaining("Line C")]);
-    expect(cells(1).slice(1, 5)).toEqual(["White", "Italian", "Giuoco", expect.stringContaining("Main")]);
-    expect(cells(1)[5]).toBe("32–0–1");
-    expect(cells(1).slice(6, 12)).toEqual(["67%", "67%", "3 of 3", "5", "3", "2"]);
+    expect(cells(0).slice(1, 3)).toEqual(["Black", expect.stringContaining("Line C")]);
+    expect(cells(1).slice(1, 3)).toEqual(["White", expect.stringContaining("Main")]);
+    expect(cells(1)[2]).toContain("Italian › Giuoco");
+    expect(cells(1)[3]).toBe("32–0–1");
+    expect(cells(1).slice(4, 9)).toEqual(["67%", "67%", "3 of 3", "5", "3 ✓ · 2 ✗"]);
+    expect(cells(1)).toHaveLength(10);
     expect(within(rows[1]).getByText(/You left at your move 3 in 1 of 1/)).toBeInTheDocument();
     expect(within(rows[2]).getByText("custom")).toBeInTheDocument();
     expect(within(rows[2]).getByText("shared")).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: /Games/ })).toHaveAttribute("aria-sort", "descending");
     fireEvent.click(screen.getByRole("button", { name: /Games/ }));
     expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?dir=asc");
-    expect(screen.getAllByTestId("report-row-lines").map((r) => within(r).getAllByRole("cell")[2].textContent)).toEqual(["Italian", "Italian", "Scandi"]);
+    expect(firstCells(2).map((t) => /^(Evans|Main|Line C)/.exec(t ?? "")?.[1])).toEqual(["Evans", "Main", "Line C"]); // 1, 3, 9 games
     fireEvent.click(screen.getByRole("button", { name: /Score/ }));
     expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?dir=desc&sort=score");
-    expect(firstCells(4).map((t) => /^(Evans|Main|Line C)/.exec(t ?? "")?.[1])).toEqual(["Evans", "Main", "Line C"]);
+    expect(firstCells(2).map((t) => /^(Evans|Main|Line C)/.exec(t ?? "")?.[1])).toEqual(["Evans", "Main", "Line C"]);
     expect(screen.queryByRole("link", { name: /Drill/ })).toBeNull();
     expect(calls.filter((c) => c.path === "/repertoire/report/lines").map((c) => c.query.get("time_class"))).toEqual(["focus"]);
     fireEvent.change(screen.getByLabelText("Time class"), { target: { value: "all" } });
@@ -227,7 +229,7 @@ describe("the line report page", () => {
     expect(screen.getByTestId("report-table")).toHaveAttribute("data-view", "chapters");
     let rows = screen.getAllByTestId("report-row-chapters");
     expect(rows.map((r) => within(r).getAllByRole("cell")[3].textContent)).toEqual(["Qa5(1 lines)", "Giuoco(2 lines)"]);
-    expect(within(rows[1]).getAllByRole("cell").slice(7, 10).map((c) => c.textContent)).toEqual(["5", "3", "2"]);
+    expect(within(rows[1]).getAllByRole("cell").slice(7, 9).map((c) => c.textContent)).toEqual(["5", "3 ✓ · 2 ✗"]);
     expect(screen.queryByLabelText("Origin")).toBeNull();
     fireEvent.click(screen.getByRole("tab", { name: "By book" }));
     rows = screen.getAllByTestId("report-row-books");
@@ -265,6 +267,9 @@ describe("the line report page", () => {
     expect(screen.getByRole("columnheader", { name: /Book/ })).toHaveAttribute("aria-sort", "ascending");
     expect(within(screen.getByLabelText("Chapter")).getAllByRole("option").map((o) => o.textContent)).toEqual(["All chapters", "Giuoco"]);
     fireEvent.click(screen.getByRole("tab", { name: "By line" }));
+    // No Book or Chapter column on a line row (they sit under the title), but both still sort.
+    expect(screen.queryByRole("columnheader", { name: /Book/ })).toBeNull();
+    expect(screen.getByLabelText("Sort")).toHaveValue("book");
     fireEvent.change(screen.getByLabelText("Origin"), { target: { value: "manual" } });
     expect(screen.getAllByTestId("report-row-lines")).toHaveLength(1);
     expect(screen.getByTestId("location").textContent).toContain("origin=manual");
@@ -332,6 +337,84 @@ describe("the line report page", () => {
     release!();
     await new Promise((r) => setTimeout(r, 0));
     expect(screen.queryByTestId("report-table")).toBeNull();
+  });
+
+
+  it("the Sort control sorts like a header: text ascending, numbers descending, the arrow flips", async () => {
+    stubFetch({
+      "/repertoire/report/lines": () => ({ status: 200, body: { books: books(), drill_max_lines: 50 } }),
+      "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
+    });
+    renderPage();
+    await screen.findByTestId("report-table");
+    expect(within(screen.getByLabelText("Sort")).getAllByRole("option").map((o) => o.textContent)).toEqual(["Colour", "Book", "Chapter", "Line", "Games", "Score", "Faithful", "Depth", "Loads", "First try", "Last played"]);
+    fireEvent.change(screen.getByLabelText("Sort"), { target: { value: "line" } });
+    expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?sort=line&dir=asc");
+    expect(firstCells(2).map((c) => /^(Evans|Main|Line C)/.exec(c ?? "")?.[1])).toEqual(["Evans", "Line C", "Main"]);
+    fireEvent.click(screen.getByRole("button", { name: /Ascending; sort descending/ }));
+    expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?sort=line&dir=desc");
+    fireEvent.change(screen.getByLabelText("Sort"), { target: { value: "first_right" } });
+    expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?sort=first_right&dir=desc");
+    expect(screen.getByRole("columnheader", { name: /First try/ })).toHaveAttribute("aria-sort", "descending");
+    fireEvent.click(screen.getByRole("tab", { name: "By book" }));
+    expect(within(screen.getByLabelText("Sort")).getAllByRole("option").map((o) => o.textContent)).toEqual(["Colour", "Book", "Games", "Score", "Faithful", "Loads", "First try", "Last played"]);
+  });
+
+  it("lists the first page and reveals more; a control change starts the listing over; the drill and Select all shown see every shown line", async () => {
+    const many: ReportBook[] = [{ ...books()[0], chapters: [{ ...books()[0].chapters[0], lines: Array.from({ length: 205 }, (_, i) => line({ id: 100 + i, title: `L${i}`, games: 300 - i })) }] }];
+    stubFetch({
+      "/repertoire/report/lines": () => ({ status: 200, body: { books: many, drill_max_lines: 500 } }),
+      "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
+    });
+    renderPage();
+    await screen.findByTestId("report-table");
+    expect(screen.getAllByTestId("report-row-lines")).toHaveLength(200);
+    expect(screen.getByText("205 lines shown, first 200 listed")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Select all shown"));
+    expect(screen.getByRole("button", { name: "Drill 205 lines" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Show 5 more (5 left)" }));
+    expect(screen.getAllByTestId("report-row-lines")).toHaveLength(205);
+    expect(screen.queryByRole("button", { name: /Show .* more/ })).toBeNull();
+    expect(screen.getByLabelText("Select L204")).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: /Games/ }));
+    expect(screen.getAllByTestId("report-row-lines")).toHaveLength(200);
+    expect(screen.getByLabelText("Select L204")).toBeChecked(); // ascending now: the last line is listed first
+    expect(firstCells(2)[0]).toContain("L204");
+  });
+
+  it("on a phone the rows are cards with the same selection, the numbers in one strip and no table", async () => {
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: false, media: q, addEventListener: () => {}, removeEventListener: () => {} }));
+    stubFetch({
+      "/repertoire/report/lines": () => ({ status: 200, body: { books: books(), drill_max_lines: 50 } }),
+      "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
+    });
+    renderPage();
+    const cards = await screen.findByTestId("report-cards");
+    expect(screen.queryByTestId("report-table")).toBeNull();
+    expect(cards).toHaveAttribute("data-view", "lines");
+    const rows = screen.getAllByTestId("report-row-lines");
+    expect(rows).toHaveLength(3);
+    expect(rows[1].textContent).toContain("White · Italian › Giuoco");
+    expect(within(rows[1]).getByText(/You left at your move 3 in 1 of 1/)).toBeInTheDocument();
+    expect(rows[1].textContent).toContain("3 (2–0–1) games");
+    expect(rows[1].textContent).toContain("67% score");
+    expect(rows[1].textContent).toContain("3 of 3 depth");
+    expect(rows[1].textContent).toContain("5 loads");
+    expect(rows[1].textContent).toContain("3 ✓ · 2 ✗ first try");
+    expect(rows[1].textContent).toContain("2026-10-10 last");
+    expect(within(rows[2]).getByText("custom")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Select Main"));
+    expect(screen.getByRole("button", { name: "Drill 1 line" })).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("Sort"), { target: { value: "score" } });
+    expect(screen.getAllByTestId("report-row-lines")[0].textContent).toContain("Evans");
+    fireEvent.click(screen.getByRole("tab", { name: "By chapter" }));
+    const chapters = screen.getAllByTestId("report-row-chapters");
+    expect(chapters.map((c) => c.textContent?.slice(0, 30))).toEqual(["Giuoco(2 lines)White · Italian", "Qa5(1 lines)Black · Scandi9 (2"]); // still by score
+    expect(chapters[0].textContent).not.toContain("depth");
+    fireEvent.change(screen.getByLabelText("Book"), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("tab", { name: "By line" }));
+    expect(screen.getAllByTestId("report-row-lines")[0].textContent).toContain("White · Giuoco");
+    expect(screen.getAllByTestId("report-row-lines")[0].textContent).not.toContain("Italian");
   });
 
   it("shows the gaps for the colour with more of them, Add to repertoire only with a stem, Prepared but not played, and the no-book notice", async () => {
