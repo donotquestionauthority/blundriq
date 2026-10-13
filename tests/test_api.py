@@ -18,6 +18,17 @@ def test_health_is_public(client: TestClient) -> None:
     assert client.get("/health").json() == {"status": "ok"}
 
 
+def test_bodies_over_a_kilobyte_go_out_gzipped(client: TestClient) -> None:
+    client.post("/login", json={"password": "correct horse"})
+    small = client.get("/me", headers={"Accept-Encoding": "gzip"})
+    assert small.status_code == 200 and "content-encoding" not in small.headers
+    big = client.get("/settings", headers={"Accept-Encoding": "gzip"})
+    assert big.status_code == 200 and len(big.content) > 1024  # decoded by the client
+    assert big.headers.get("content-encoding") == "gzip"
+    plain = client.get("/settings", headers={"Accept-Encoding": "identity"})
+    assert "content-encoding" not in plain.headers and plain.json() == big.json()
+
+
 def test_settings_require_login(client: TestClient) -> None:
     assert client.get("/settings").status_code == 401
 

@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from api.routes import ai as ai_routes
@@ -101,6 +102,9 @@ async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="BlundrIQ Personal", lifespan=_lifespan, docs_url=None, redoc_url=None)
+    # Inner: a body over 1 KiB goes out gzipped when the client accepts it (the line report
+    # is a megabyte of repeated titles). Outer: CORS, so a preflight never reaches the app.
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.add_middleware(_ConfiguredCors)
 
     @app.get("/health")
