@@ -214,6 +214,45 @@ def test_create_and_remove_a_puzzle_over_http(client: TestClient) -> None:
     assert client.get(f"/practice/puzzles/{pid}").status_code == 404
 
 
+def test_a_gap_puzzle_over_http_is_tagged_and_visible_when_it_agrees_with_the_repertoire(
+    client: TestClient, clean: psycopg.Connection[DictRow]
+) -> None:
+    """A puzzle made from the line report's gap card carries the `gap` tag. Agreeing with the
+    repertoire does not hide it (redundancy is a blunder-only rule); a conflict with it does."""
+    from tests import repertoire_helpers as h
+
+    h.book(clean, 1, "Italian", "white")
+    h.chapter(clean, 1, 1, "Giuoco")
+    h.line(clean, 1, 1, "Main", ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3"])
+    clean.commit()
+    after_bc5 = "r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"
+    agreeing = {"fen": after_bc5, "solution_line": ["c3", "Nf6", "d4"], "color": "w", "source_types": ["gap"]}
+    made = client.post("/puzzles", json=agreeing)
+    assert made.status_code == 200 and made.json()["visible"] is True
+    pid = made.json()["id"]
+    assert client.get(f"/practice/puzzles/{pid}").json()["source_types"] == ["gap", "custom"]
+    served = client.get("/practice/puzzles", params={"ptype": "custom", "subtype": "gap", "srs": "all"}).json()
+    assert [p["id"] for p in served["puzzles"]] == [pid]
+    assert (
+        client.get("/practice/puzzles", params={"ptype": "custom", "subtype": "blunder", "srs": "all"}).json()[
+            "puzzles"
+        ]
+        == []
+    )
+    assert [
+        p["id"]
+        for p in client.get(
+            "/practice/puzzles", params={"ptype": "custom", "subtype": "nonsense", "srs": "all"}
+        ).json()["puzzles"]
+    ] == [pid]
+    assert client.delete(f"/puzzles/{pid}").status_code == 200
+    # The same board, a line the repertoire answers differently inside (d3 where the book plays c3).
+    conflicting = {**agreeing, "solution_line": ["d3", "Nf6", "Bg5"]}
+    made = client.post("/puzzles", json=conflicting)
+    assert made.status_code == 200 and made.json()["visible"] is False
+    assert client.post("/puzzles", json={**agreeing, "source_types": ["report"]}).status_code == 422
+
+
 def test_a_puzzle_the_dismissed_board_hides_says_so(client: TestClient) -> None:
     client.post("/blunders/dismiss", json={"fen": FORK})
     made = client.post("/puzzles", json={"fen": FORK, "solution_line": ["Nxe5"], "color": "w"})

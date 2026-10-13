@@ -25,7 +25,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MATE_SCORE } from "./eval";
 
-const DEFAULT_DEPTH = 16;
+export const DEFAULT_DEPTH = 16;
 /** The settings field's bounds: a bad row cannot send a pathological `go depth`. */
 const MIN_DEPTH = 6;
 const MAX_DEPTH = 30;

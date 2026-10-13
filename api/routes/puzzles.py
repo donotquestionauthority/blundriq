@@ -18,7 +18,7 @@ class CreateBody(BaseModel):
     fen: str = Field(max_length=100)
     solution_line: list[str] = Field(min_length=1, max_length=custom.MAX_PLIES)
     color: Literal["w", "b"]
-    source_types: list[Literal["blunder", "deviation", "scout"]] = Field(default=[], max_length=3)
+    source_types: list[Literal["blunder", "deviation", "scout", "gap"]] = Field(default=[], max_length=4)
     title: str | None = Field(None, max_length=200)
     description: str | None = Field(None, max_length=2000)
 

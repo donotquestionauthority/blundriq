@@ -58,3 +58,22 @@ def evidence_sql(alias: str, focus: str) -> str:
         return "TRUE"
     classes = ", ".join(f"'{c}'" for c in FOCUS_TIME_CLASSES)
     return f"{alias}.time_class IN ({classes})"
+
+
+# The time-class filter the Deviations page and the line report share (docs/decisions/005):
+# "focus" is the player's study time controls, "all" every class, "classical" includes daily.
+TIME_CLASSES = ("focus", "all", "bullet", "blitz", "rapid", "classical")
+
+
+def time_class_sql(alias: str, time_class: str, focus: str) -> str:
+    """Predicate for one of TIME_CLASSES over a chess_games alias; `focus` is the
+    `time_class_focus` setting."""
+    if time_class == "focus":
+        return evidence_sql(alias, focus)
+    if time_class == "all":
+        return "TRUE"
+    if time_class == "classical":
+        return f"{alias}.time_class IN ('classical', 'correspondence')"
+    if time_class in ("bullet", "blitz", "rapid"):
+        return f"{alias}.time_class = '{time_class}'"
+    raise ValueError(f"unknown time class {time_class!r}")

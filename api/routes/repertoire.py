@@ -7,7 +7,9 @@ the Conflicts page. GET|PUT|DELETE /repertoire/annotation, GET /repertoire/lines
 editor and the line walk-through, on every card and in Practice. GET /repertoire/coverage — whether a
 card's board is in the repertoire, and the line to walk through. POST /repertoire/lines/{id}/explain —
 the walk-through's "why does this move matter" (core/ai.py `explain_line`). GET /repertoire/similar and
-GET /repertoire/branch-compare — the two compare surfaces (literal paths, registered before `/{book_id}`).
+GET /repertoire/branch-compare — the two compare surfaces. GET /repertoire/report/lines and
+GET /repertoire/report/gaps — the line report (core/repertoire/report.py). All literal paths are
+registered before `/{book_id}`.
 
 Both compare routes re-serialise their FENs through python-chess before anything reads them: every
 stored FEN is python-chess-generated (the en-passant field is a square only when a capture is legal),
@@ -26,7 +28,8 @@ from pydantic import BaseModel, Field
 
 from api import auth
 from core import ai, db, settings
-from core.repertoire import annotations, books, branch_compare, conflicts, neighbourhood, read
+from core.chess.eligibility import TIME_CLASSES
+from core.repertoire import annotations, books, branch_compare, conflicts, neighbourhood, read, report
 
 router = APIRouter(prefix="/repertoire", tags=["repertoire"], dependencies=[auth.Authed])
 
@@ -43,6 +46,25 @@ def _board_or_400(fen: str) -> chess.Board:
     if board.status() & chess.STATUS_BAD_CASTLING_RIGHTS:
         raise HTTPException(400, "Not a position")
     return board
+
+
+TimeClass = Literal["focus", "all", "bullet", "blitz", "rapid", "classical"]
+assert set(TimeClass.__args__) == set(TIME_CLASSES)  # the route's literal is the module's tuple
+
+
+@router.get("/report/lines")
+def report_lines(time_class: TimeClass = Query("focus")) -> dict[str, Any]:
+    """Book › chapter › line rows with games, results, depth and faithfulness, most games first."""
+    with db.transaction() as conn:
+        return report.lines(conn, settings.load(conn), time_class=time_class)
+
+
+@router.get("/report/gaps")
+def report_gaps(colour: Literal["white", "black"] = Query(), time_class: TimeClass = Query("focus")) -> dict[str, Any]:
+    """The boards where the player's games left the repertoire by the opponent's hand or never
+    found a book, for one colour, with the prepared-but-not-played rows."""
+    with db.transaction() as conn:
+        return report.gaps(conn, settings.load(conn), time_class=time_class, colour=colour)
 
 
 @router.get("/similar")
