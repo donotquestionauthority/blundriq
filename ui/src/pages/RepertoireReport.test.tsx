@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import RepertoireReport from "./RepertoireReport";
+import RepertoireReport, { PAGE } from "./RepertoireReport";
 import { filterRows, flatten, sortRows } from "./reportRows";
 import type { GapCard, GapsResponse, PracticeNumbers, ReportBook, ReportLine, ReportTally } from "../repertoire";
 
@@ -368,7 +368,8 @@ describe("the line report page", () => {
     });
     renderPage();
     await screen.findByTestId("report-table");
-    expect(screen.getAllByTestId("report-row-lines")).toHaveLength(200);
+    expect(PAGE).toBe(200);
+    expect(screen.getAllByTestId("report-row-lines")).toHaveLength(PAGE);
     expect(screen.getByText("205 lines shown, first 200 listed")).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("Select all shown"));
     expect(screen.getByRole("button", { name: "Drill 205 lines" })).toBeEnabled();
@@ -380,6 +381,30 @@ describe("the line report page", () => {
     expect(screen.getAllByTestId("report-row-lines")).toHaveLength(200);
     expect(screen.getByLabelText("Select L204")).toBeChecked(); // ascending now: the last line is listed first
     expect(firstCells(2)[0]).toContain("L204");
+    // A view change starts over too; the Gaps tabs leave the listing alone.
+    fireEvent.click(screen.getByRole("button", { name: "Show 5 more (5 left)" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Black" }));
+    expect(screen.getAllByTestId("report-row-lines")).toHaveLength(205);
+    fireEvent.click(screen.getByRole("tab", { name: "By chapter" }));
+    fireEvent.click(screen.getByRole("tab", { name: "By line" }));
+    expect(screen.getAllByTestId("report-row-lines")).toHaveLength(200);
+  });
+
+  it("a sort the view does not offer falls back to games, and a view change drops it from the URL", async () => {
+    stubFetch({
+      "/repertoire/report/lines": () => ({ status: 200, body: { books: books(), drill_max_lines: 50 } }),
+      "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
+    });
+    renderPage("/repertoire/report?view=books&sort=depth&dir=asc");
+    await screen.findByTestId("report-table");
+    expect(screen.getByLabelText("Sort")).toHaveValue("games");
+    expect(screen.getByRole("columnheader", { name: /Games/ })).toHaveAttribute("aria-sort", "ascending");
+    fireEvent.click(screen.getByRole("tab", { name: "By line" }));
+    fireEvent.change(screen.getByLabelText("Sort"), { target: { value: "depth" } });
+    expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?sort=depth&dir=desc");
+    fireEvent.click(screen.getByRole("tab", { name: "By book" }));
+    expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?view=books");
+    expect(screen.getByLabelText("Sort")).toHaveValue("games");
   });
 
   it("on a phone the rows are cards with the same selection, the numbers in one strip and no table", async () => {

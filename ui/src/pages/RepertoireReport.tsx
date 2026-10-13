@@ -50,7 +50,7 @@ const COLUMNS: { key: SortKey; label: string; views: View[]; sortViews?: View[];
   { key: "book", label: "Book", views: ["chapters", "books"], sortViews: VIEWS },
   { key: "chapter", label: "Chapter", views: ["chapters"], sortViews: ["lines", "chapters"] },
   { key: "line", label: "Line", views: ["lines"] },
-  { key: "games", label: "Games", views: VIEWS, numeric: true, title: "Games through this line, then wins–draws–losses" },
+  { key: "games", label: "Games", views: VIEWS, numeric: true, title: "Games through it, then wins–draws–losses" },
   { key: "score", label: "Score", views: VIEWS, numeric: true, title: "Wins and half the draws, over the decided games" },
   { key: "faithful", label: "Faithful", views: VIEWS, numeric: true, title: "Games where you never left the line" },
   { key: "depth", label: "Depth", views: ["lines"], numeric: true, title: "How many of your moves in the line the games played, median" },
@@ -60,14 +60,17 @@ const COLUMNS: { key: SortKey; label: string; views: View[]; sortViews?: View[];
 ];
 
 const colTitle = (key: SortKey) => COLUMNS.find((c) => c.key === key)?.title;
+/** Whether `view` offers sorting by `key`. */
+const sortsBy = (view: View, key: SortKey) => COLUMNS.some((c) => c.key === key && (c.sortViews ?? c.views).includes(view));
 const firstTry = (p: { first_right: number; first_wrong: number }) => `${p.first_right} ✓ · ${p.first_wrong} ✗`;
 const depthText = (r: Row) => (r.line ? (r.games === 0 ? "–" : `${medianDepth(r.depth_reached)} of ${r.line.depth_total}`) : null);
 const lastPlayed = (r: Row) => (r.last_played ? r.last_played.slice(0, 10) : "–");
 
 /** The row's name as the table's first text column shows it: the line, the chapter or the book. */
 function Title({ r }: { r: Row }) {
-  if (r.kind === "lines" && r.line) {
+  if (r.kind === "lines") {
     const l = r.line;
+    if (!l) return null;
     return (
       <>
         <span className={l.is_alternative ? "italic" : ""}>{l.title}</span>
@@ -265,7 +268,8 @@ const TIME_CLASSES = Object.keys(TIME_CLASS_LABELS) as TimeClass[];
 /** The page's state is the URL: view, sort, direction, the filters and the time class. */
 function readParams(p: URLSearchParams): { view: View; sort: SortKey; dir: Dir; filters: Filters; timeClass: TimeClass; gapColour: "white" | "black" | null } {
   const view = (VIEWS as string[]).includes(p.get("view") ?? "") ? (p.get("view") as View) : "lines";
-  const sort = (SORT_KEYS as string[]).includes(p.get("sort") ?? "") ? (p.get("sort") as SortKey) : "games";
+  const wanted = (SORT_KEYS as string[]).includes(p.get("sort") ?? "") ? (p.get("sort") as SortKey) : "games";
+  const sort = sortsBy(view, wanted) ? wanted : "games";
   const dir = p.get("dir") === "asc" ? "asc" : "desc";
   const num = (k: string) => (p.get(k) && /^\d+$/.test(p.get(k)!) ? Number(p.get(k)) : null);
   const colour = p.get("colour") === "white" || p.get("colour") === "black" ? (p.get("colour") as "white" | "black") : null;
@@ -289,15 +293,17 @@ export default function RepertoireReport() {
   const [listed, setListed] = useState(PAGE);
   // A phone gets the rows as cards; the table needs the width of a laptop (the breakpoint is lg).
   const wide = useMediaQuery("(min-width: 1024px)", true);
+  // Every control writes the URL here; a change to the rows starts the listing over, a change
+  // that leaves them alone (the Gaps tabs) keeps the reader's place.
   const update = useCallback(
-    (changes: Record<string, string | null>) => {
+    (changes: Record<string, string | null>, { keepListed = false } = {}) => {
       const next = new URLSearchParams(params);
       for (const [k, v] of Object.entries(changes)) {
         if (v === null || v === "") next.delete(k);
         else next.set(k, v);
       }
       setParams(next, { replace: true });
-      setListed(PAGE);
+      if (!keepListed) setListed(PAGE);
     },
     [params, setParams],
   );
@@ -402,7 +408,7 @@ export default function RepertoireReport() {
         <h2 className="text-lg font-semibold">Lines</h2>
         <div role="tablist" aria-label="View" className="flex gap-2">
           {VIEWS.map((v) => (
-            <button key={v} type="button" role="tab" aria-selected={view === v} onClick={() => update({ view: v === "lines" ? null : v })} className={tab(view === v)}>
+            <button key={v} type="button" role="tab" aria-selected={view === v} onClick={() => update({ view: v === "lines" ? null : v, ...(sortsBy(v, sort) ? {} : { sort: null, dir: null }) })} className={tab(view === v)}>
               {v === "lines" ? "By line" : v === "chapters" ? "By chapter" : "By book"}
             </button>
           ))}
@@ -447,7 +453,7 @@ export default function RepertoireReport() {
                 </option>
               ))}
             </select>
-            <button type="button" aria-label={dir === "asc" ? "Ascending; sort descending" : "Descending; sort ascending"} onClick={() => update({ dir: dir === "desc" ? "asc" : "desc" })} className={`${select} px-2`}>
+            <button type="button" aria-label={dir === "asc" ? "Ascending; sort descending" : "Descending; sort ascending"} onClick={() => update({ dir: dir === "desc" ? "asc" : "desc" })} className={select}>
               <span aria-hidden>{dir === "asc" ? "▲" : "▼"}</span>
             </button>
           </span>
@@ -532,7 +538,7 @@ export default function RepertoireReport() {
         <h2 className="text-lg font-semibold">Gaps</h2>
         <div role="tablist" className="flex gap-2">
           {(["white", "black"] as const).map((c) => (
-            <button key={c} type="button" role="tab" aria-selected={activeColour === c} onClick={() => update({ gaps: c })} className={tab(activeColour === c)}>
+            <button key={c} type="button" role="tab" aria-selected={activeColour === c} onClick={() => update({ gaps: c }, { keepListed: true })} className={tab(activeColour === c)}>
               {c === "white" ? "White" : "Black"}
             </button>
           ))}
