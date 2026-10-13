@@ -21,6 +21,7 @@ export interface UnsavedAttempt {
   solved: boolean;
   moves_played: string;
   presentation_ply: number | null;
+  attempt_seq?: number | null;
 }
 
 let current: UnsavedAttempt | null = null;

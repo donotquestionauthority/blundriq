@@ -32,7 +32,13 @@ A puzzle that was **served and never acknowledged** stays gradable even when it 
 visible: switching a book off, an import or the hourly match can make it (or, through the
 conflict rules, a standard puzzle) unattemptable while an attempt on it sits in the browser's
 queue waiting to be sent. The exposure row is the proof it was served; finishing that work is
-allowed, starting new work on it is not.
+allowed, starting new work on it is not. A **drill's** exposure (`core.puzzles.drill`) is that
+proof for `DRILL_PROOF_DAYS` after it was served, acknowledged or not: every attempt of a drill
+load, Try Again's new id, a first attempt that lands after the second, a retry from the durable
+queue, all finish work the player started, and nothing but time ends the proof.
+
+Every attempt carries `attempt_seq`, its order within its load as the solver counted it, so the
+first attempt of a load is known whatever order the requests arrive in (`core.puzzles.stats`).
 """
 
 from __future__ import annotations
@@ -47,10 +53,10 @@ from core.chess.eligibility import analysable_sql
 from core.chess.mate_acceptance import walk_acceptance_map
 from core.chess.san import normalize_san
 from core.chess.san import parse as parse_san
-from core.constants import PLAYER_ID
+from core.constants import DRILL_PROOF_DAYS, PLAYER_ID
 from core.puzzles import srs, visibility
 from core.puzzles.lines import fen_sequence, is_mate_line
-from core.puzzles.serve import CC0_SOURCE, OWN_MATE_SOURCE, lookahead_plies
+from core.puzzles.serve import CC0_SOURCE, DRILL_SCOPE, OWN_MATE_SOURCE, lookahead_plies
 from core.puzzles.serve import acknowledged_sql as serve_acknowledged
 from core.settings import Settings
 
@@ -198,7 +204,8 @@ _SERVED_PENDING = cast(
     WHERE p.id = %(id)s AND p.player_id = %(pid)s
       AND NOT (p.source_types @> ARRAY['own_mate'] AND p.acceptance_map IS NULL)
       AND NOT (p.source_types @> ARRAY['custom'] AND NOT p.active)
-      AND NOT {serve_acknowledged()}
+      AND ((e.scope <> %(drill)s AND NOT {serve_acknowledged()})
+           OR (e.scope = %(drill)s AND e.served_at >= now() - make_interval(days => %(proof_days)s)))
     ORDER BY e.served_at DESC
     LIMIT 1
     """,
@@ -206,11 +213,13 @@ _SERVED_PENDING = cast(
 
 
 def _served_pending(conn: Connection[Any], puzzle_id: int) -> dict[str, Any] | None:
-    """The puzzle row if it was served in a batch and nothing has acknowledged that yet, with
-    the ply it was truncated to when served. A hand-made puzzle that was removed is not
-    finished: its removal was the player's own act."""
+    """The puzzle row if it was served in a batch and nothing has acknowledged that yet, or
+    served by a drill within the proof window, with the ply it was truncated to when served. A
+    hand-made puzzle that was removed is not finished: its removal was the player's own act."""
     with conn.cursor() as cur:
-        cur.execute(_SERVED_PENDING, {"id": puzzle_id, "pid": PLAYER_ID})
+        cur.execute(
+            _SERVED_PENDING, {"id": puzzle_id, "pid": PLAYER_ID, "drill": DRILL_SCOPE, "proof_days": DRILL_PROOF_DAYS}
+        )
         row = cur.fetchone()
     return dict(row) if row else None
 
@@ -234,10 +243,13 @@ def record(
     attempt_id: str | None,
     session_id: str | None,
     presentation_ply: int | None = None,
+    attempt_seq: int | None = None,
 ) -> dict[str, Any]:
     """Grade, record and score one attempt; the caller commits. `presentation_ply` is the
     segment the solver displayed (None for a standard puzzle, or from a client that cannot
-    say). Raises NotAttemptable, or SegmentMismatch for a segment the puzzle does not have."""
+    say); `attempt_seq` the attempt's order within its load (None from a client that does not
+    number them). Raises NotAttemptable, or SegmentMismatch for a segment the puzzle does not
+    have."""
     if attempt_id is not None:
         # A replay of an attempt already recorded is always answerable, whatever the puzzle's
         # visibility has become since: the client only wants the verdict it never received.
@@ -284,12 +296,13 @@ def record(
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO puzzle_attempts (puzzle_id, player_id, solved, moves_played, attempt_id, session_id)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO puzzle_attempts
+                (puzzle_id, player_id, solved, moves_played, attempt_id, session_id, attempt_seq)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (player_id, attempt_id) WHERE attempt_id IS NOT NULL DO NOTHING
             RETURNING id
             """,
-            (puzzle_id, PLAYER_ID, solved, moves_played, attempt_id, session_id),
+            (puzzle_id, PLAYER_ID, solved, moves_played, attempt_id, session_id, attempt_seq),
         )
         inserted = cur.fetchone()
     if inserted is None:

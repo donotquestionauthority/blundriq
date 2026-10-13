@@ -245,7 +245,7 @@ def test_migration_013_keeps_every_cached_answer_and_lists_it_with_no_question(
             (AFTER_E4,),
         )
         c.commit()
-        assert schema.upgrade(c)[-1] == 13
+        assert 13 in schema.upgrade(c)
         row = c.execute("SELECT * FROM ai_explanation_cache").fetchone()
         assert row is not None and row["question"] is None and row["explanation"] == "Because."
         (listed,) = ai.history(c, AFTER_E4.replace(" 0 1", " 5 9"))

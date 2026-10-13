@@ -233,7 +233,7 @@ def candidates(conn: Connection[Any], kind: Kind, id: int) -> list[importing.Pre
     return out
 
 
-def _holders(conn: Connection[Any], fen: str, move: str) -> list[Row]:
+def holders(conn: Connection[Any], fen: str, move: str) -> list[Row]:
     """The effective lines at `fen` prescribing something other than `move`."""
     rows = conn.execute(
         f"SELECT * FROM ({REP_SIGNATURES}) sig WHERE effective AND fen = %(fen)s AND move <> %(move)s"
@@ -274,7 +274,7 @@ def gate(conn: Connection[Any], kind: Kind, id: int, *, batch: list[importing.Pr
                 if q.line_id is not None and q.line_id in accepted and (v.fen, winner) in q.signatures
             ]
         else:
-            rivals = _holders(conn, v.fen, v.move)
+            rivals = holders(conn, v.fen, v.move)
         out.append(Refusal(p.line_id, p.line.name, meta[p.line_id]["chapter_title"], v.fen, v.move, v.reason, rivals))
     return out
 

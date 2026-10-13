@@ -29,7 +29,9 @@ new lines must agree with, and a book that is only added to keeps every line as 
 A chapter is found by its source id first, so a renamed chapter keeps its lines, its puzzles
 and their progress (the new title is applied); a chapter with no source id yet is adopted by
 its title, and a title that already belongs to a chapter with a different source id stops the
-import rather than fork the learning history.
+import rather than fork the learning history. A line the player added by hand (`origin =
+'manual'`, `core.repertoire.lines`) and the chapter holding it are never retired by a
+replacement; a course line arriving later with the same moves is found, not duplicated.
 
 A new line is inserted inactive when the repertoire already disagrees with it: at any of its
 player-turn positions an effectively-active existing line prescribes a different move, or two
@@ -556,7 +558,7 @@ def _vanishing(conn: Connection[Any], replaced: list[_Book]) -> set[int]:
     for book in replaced:
         rows = conn.execute(
             "SELECT rl.id FROM repertoire_lines rl JOIN chapters ch ON ch.id = rl.chapter_id"
-            " WHERE ch.book_id = %s AND rl.active AND NOT (rl.id = ANY(%s))",
+            " WHERE ch.book_id = %s AND rl.active AND rl.origin = 'course' AND NOT (rl.id = ANY(%s))",
             (book.book_id, book.line_ids),
         ).fetchall()
         out |= {int(r["id"]) for r in rows}
@@ -565,17 +567,21 @@ def _vanishing(conn: Connection[Any], replaced: list[_Book]) -> set[int]:
 
 def _retire_absent(conn: Connection[Any], book: _Book, counts: dict[str, Any]) -> bool:
     """Switch off what the file no longer has, and drop the course notes it no longer
-    carries. Only for a book the file declares complete; nothing is deleted but notes."""
+    carries. Only for a book the file declares complete; nothing is deleted but notes. A line
+    the player added by hand is not the file's to retire, and neither is a chapter that holds
+    one: the chapter stays on with its vanished course lines switched off."""
     changed = False
     cur = conn.execute(
         "UPDATE repertoire_lines rl SET active = FALSE FROM chapters ch"
-        " WHERE rl.chapter_id = ch.id AND ch.book_id = %s AND rl.active AND NOT (rl.id = ANY(%s))",
+        " WHERE rl.chapter_id = ch.id AND ch.book_id = %s AND rl.active AND rl.origin = 'course'"
+        " AND NOT (rl.id = ANY(%s))",
         (book.book_id, book.line_ids),
     )
     counts["lines"]["vanished_deactivated"] += cur.rowcount
     changed |= cur.rowcount > 0
     cur = conn.execute(
-        "UPDATE chapters SET active = FALSE WHERE book_id = %s AND active AND NOT (id = ANY(%s))",
+        "UPDATE chapters SET active = FALSE WHERE book_id = %s AND active AND NOT (id = ANY(%s))"
+        " AND NOT EXISTS (SELECT 1 FROM repertoire_lines m WHERE m.chapter_id = chapters.id AND m.origin = 'manual')",
         (book.book_id, book.chapter_ids),
     )
     counts["chapters"]["deactivated"] += cur.rowcount

@@ -207,3 +207,37 @@ def test_today_counts_the_attempts_the_attempt_route_recorded(client: tuple[Test
         assert r.status_code == 200, r.text
     after = c.get("/practice/today").json()
     assert after["solved"] == 1
+
+
+def test_the_drill_route_serves_whole_lines_and_an_attempt_carries_its_sequence(
+    client: tuple[TestClient, int], clean: psycopg.Connection[DictRow]
+) -> None:
+    from tests import repertoire_helpers as h
+
+    c, _ = client
+    h.book(clean, 901, "White: Italian", "white")
+    h.chapter(clean, 901, 901, "Main line")
+    italian = ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3"]
+    h.line(clean, 901, 901, "Giuoco", italian)
+    clean.commit()
+    assert c.get("/practice/drill", params={"lines": "x,1"}).status_code == 422
+    assert c.get("/practice/drill", params={"lines": ""}).status_code == 422
+    assert c.get("/practice/drill", params={"lines": ",".join(str(i) for i in range(1, 52))}).status_code == 422
+    out = c.get("/practice/drill", params={"lines": "901,777"}).json()
+    assert out["skipped"] == [777] and out["batch_id"] == 1 and out["max_lines"] == 50
+    (row,) = out["puzzles"]
+    assert row["presentation_ply"] == 6 and row["repertoire_line_id"] == 901 and row["srs"] is None
+    assert row["game_links"] == [] and row["correct_game_links"] == []
+    session = str(uuid.uuid4())
+    body = {"solved": True, "moves_played": "e4,Nf3,Bc4,c3", "session_id": session, "presentation_ply": 6}
+    assert c.post(f"/practice/puzzles/{row['id']}/attempt", json={**body, "attempt_seq": 0}).status_code == 422
+    first = c.post(
+        f"/practice/puzzles/{row['id']}/attempt", json={**body, "attempt_id": str(uuid.uuid4()), "attempt_seq": 1}
+    )
+    assert first.status_code == 200 and first.json()["solved"] is True
+    seqs = clean.execute("SELECT attempt_seq, session_id::text AS s FROM puzzle_attempts").fetchall()
+    assert [(r["attempt_seq"], r["s"]) for r in seqs] == [(1, session)]
+    # The repertoire sections read carries the new fields the Repertoire page needs.
+    sections = c.get("/repertoire/901/sections").json()
+    (line,) = sections["sections"][0]["lines"]
+    assert line["origin"] == "course" and line["loads"] == 1

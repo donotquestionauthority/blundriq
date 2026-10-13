@@ -10,12 +10,13 @@ import { legalMove, numberedLine } from "../utils/chess";
 export interface MoveBuilderState {
   solutionLine: string[];
   isValid: boolean;
+  /** Whose move it is at the end of the line. */
+  endTurn: "w" | "b";
 }
 
-/** The server's limit on a custom puzzle's line (core/puzzles/custom.py MAX_PLIES). */
+/** The server's limit on a custom puzzle's line (core/puzzles/custom.py MAX_PLIES); a parent
+ *  building something else passes its own `maxPlies`. */
 export const MAX_PLIES = 30;
-/** How many plies one press of the extend control adds. */
-const EXTEND_PLIES = 2;
 
 /** `moves` played from `fen`, or as many of them as play. */
 function replay(fen: string, moves: string[]): { game: Chess; played: string[] } {
@@ -49,30 +50,41 @@ function playable(fen: string, line: string[], n: number): string[] {
  * before it is approved. A move made at an earlier position replaces the suffix. Undo and Clear
  * act on the line and clamp the cursor; the cursor never reaches the server.
  *
- * With `extend`, a control appends the next moves without the player supplying them: from the
- * rest of a stored engine line while `moves` is still its prefix, else from one search of the
- * browser engine at the end of the line. A search is owned by the line revision it was asked for:
- * any change to the line drops it and stops the engine, and a finished search is applied once,
- * only to its own request (the revision, the end board and a fresh dispatch all match).
+ * With `extend`, **Extend** appends the next moves without the player supplying them, always
+ * bringing the line to end on the player's (`color`) move: from a line that ends on the opponent's
+ * move it adds the player's move alone, one ply; from a line that ends on the player's it adds the
+ * opponent's reply and the player's next, two plies. A continuation that cannot reach the player's
+ * move (a terminal board, an engine with one ply to give and it the opponent's) adds nothing and
+ * says so. The plies come from the rest of a stored engine line while `moves` is still its prefix,
+ * else from one search of the browser engine at the end of the line. A search is owned by the line
+ * revision it was asked for: any change to the line drops it and stops the engine, and a finished
+ * search is applied once, only to its own request (the revision, the end board and a fresh
+ * dispatch all match).
  */
 export function MoveBuilder({
   fen,
   color,
   onChange,
   initialMoves,
+  initialShown = 0,
   extend,
   disabled = false,
+  maxPlies = MAX_PLIES,
 }: {
   fen: string;
   color: "w" | "b";
   onChange: (state: MoveBuilderState) => void;
   initialMoves?: string[];
+  /** The cursor's starting ply into `initialMoves` (a seed that opens on a later board). */
+  initialShown?: number;
   extend?: { line: string[]; engine: StockfishApi; depth?: number };
   /** While the line is being saved: every control is off and a pending search is dropped. */
   disabled?: boolean;
+  maxPlies?: number;
 }) {
-  const [moves, setMoves] = useState<string[]>(() => (initialMoves?.length ? playable(fen, initialMoves, MAX_PLIES) : []));
-  const [shown, setShown] = useState(0);
+  const [moves, setMoves] = useState<string[]>(() => (initialMoves?.length ? playable(fen, initialMoves, maxPlies) : []));
+  const [shown, setShown] = useState(() => Math.max(0, Math.min(initialShown, initialMoves?.length ? playable(fen, initialMoves, maxPlies).length : 0)));
+  const [extendNote, setExtendNote] = useState<string | null>(null);
   const [selected, setSelected] = useState<Square | null>(null);
   const [lastMove, setLastMove] = useState<[string, string] | null>(null);
   // The line's revision: every change to `moves` bumps it and invalidates a pending search.
@@ -88,8 +100,8 @@ export function MoveBuilder({
     onChangeRef.current = onChange;
   }, [onChange]);
   useEffect(() => {
-    onChangeRef.current({ solutionLine: moves, isValid: moves.length >= 1 });
-  }, [moves]);
+    onChangeRef.current({ solutionLine: moves, isValid: moves.length >= 1, endTurn: end.turn() });
+  }, [moves, end]);
 
   // The hook hands out a new object every render; a ref keeps `cancelPending` stable so the
   // unmount cleanup below runs once, at unmount, and never on a re-render.
@@ -111,6 +123,7 @@ export function MoveBuilder({
     (next: string[], cursor: number) => {
       revisionRef.current += 1;
       cancelPending();
+      setExtendNote(null);
       setMoves(next);
       setShown(Math.max(0, Math.min(cursor, next.length)));
     },
@@ -127,7 +140,7 @@ export function MoveBuilder({
     } catch {
       return false;
     }
-    if (shown >= MAX_PLIES) return false;
+    if (shown >= maxPlies) return false;
     const next = [...moves.slice(0, shown), san];
     setLine(next, next.length);
     setLastMove([from, to]);
@@ -153,20 +166,24 @@ export function MoveBuilder({
     setSelected(null);
   }
 
-  // The extend control. The stored line is reused while `moves` is its prefix with moves to spare;
-  // otherwise one search at the end board, owned by this revision and this board.
+  // The extend control. How many plies it wants is whose turn it is at the end of the line: the
+  // player's move alone when it is theirs, the opponent's reply and then the player's when not.
+  // The stored line is reused while `moves` is its prefix with moves to spare; otherwise one
+  // search at the end board, owned by this revision and this board.
   const terminal = end.isGameOver();
-  const atCap = moves.length >= MAX_PLIES;
+  const want = end.turn() === color ? 1 : 2;
+  const room = maxPlies - moves.length;
+  const atCap = room < want;
   const stored = extend?.line ?? [];
   const storedRest = stored.length > moves.length && moves.every((m, i) => m === stored[i]) ? stored.slice(moves.length) : [];
   const canExtend = !!extend && !terminal && !atCap && !searching && !disabled;
+  const NO_MORE = "The engine has no further move here.";
 
-  /** Appends up to two of `plies` that play from the end board; false when none does. */
+  /** Appends exactly the plies wanted, when `plies` supplies them from the end board; false otherwise. */
   function appendPlies(plies: string[]): boolean {
-    const room = MAX_PLIES - moves.length;
-    const next = [...moves, ...playable(end.fen(), plies, Math.min(EXTEND_PLIES, room))];
-    if (next.length === moves.length) return false;
-    setLine(next, next.length);
+    const got = playable(end.fen(), plies, want);
+    if (got.length < want) return false;
+    setLine([...moves, ...got], moves.length + got.length);
     setLastMove(null);
     setSelected(null);
     return true;
@@ -174,9 +191,9 @@ export function MoveBuilder({
 
   function extendLine() {
     if (!extend || !canExtend) return;
-    // The stored line is used while it has a playable move to give; a token that does not play
-    // (a seed that stopped early) hands over to the engine instead of leaving the button inert.
-    if (storedRest.length > 0 && appendPlies(storedRest)) return;
+    // The stored line is used while it has the plies to give; a token that does not play (a seed
+    // that stopped early) hands over to the engine instead of leaving the button inert.
+    if (storedRest.length >= want && appendPlies(storedRest)) return;
     const endFen = end.fen();
     pendingRef.current = { revision: revisionRef.current, endFen, armed: false };
     setSearching(true);
@@ -198,17 +215,19 @@ export function MoveBuilder({
     if (!pending.armed || pending.revision !== revisionRef.current) return;
     pendingRef.current = null;
     setSearching(false);
-    const room = MAX_PLIES - moves.length;
     const pv = ev.pvUci.length ? ev.pvUci : ev.bestMoveUci ? [ev.bestMoveUci] : [];
-    const san = uciPvToSan(pending.endFen, pv, Math.min(EXTEND_PLIES, room));
-    const next = san ? [...moves, ...san.split(" ")] : moves;
-    if (next.length === moves.length) return;
+    const san = uciPvToSan(pending.endFen, pv, want);
+    const got = san ? san.split(" ") : [];
+    if (got.length < want) {
+      setExtendNote(NO_MORE);
+      return;
+    }
     revisionRef.current += 1;
-    setMoves(next);
-    setShown(next.length);
+    setMoves([...moves, ...got]);
+    setShown(moves.length + got.length);
     setLastMove(null);
     setSelected(null);
-  }, [ev, moves]);
+  }, [ev, moves, want]);
 
   // Saving drops a pending request (the line sent is the line at the click); so does unmounting.
   useEffect(() => {
@@ -286,11 +305,16 @@ export function MoveBuilder({
           ✕ Clear
         </button>
         {extend && (
-          <button type="button" disabled={!canExtend} onClick={extendLine} className={tool} title={atCap ? `A puzzle holds at most ${MAX_PLIES} plies` : terminal ? "The game is over at the end of the line" : "Add the next two plies from the engine"}>
-            {searching ? "searching…" : "+2 plies"}
+          <button type="button" disabled={!canExtend} onClick={extendLine} className={tool} title={atCap ? `A line holds at most ${maxPlies} plies` : terminal ? "The game is over at the end of the line" : want === 1 ? "Add your move from the engine" : "Add the reply and your next move from the engine"}>
+            {searching ? "searching…" : want === 1 ? "Extend +1" : "Extend +2"}
           </button>
         )}
       </div>
+      {extendNote && (
+        <p role="status" className="text-xs text-zinc-500">
+          {extendNote}
+        </p>
+      )}
     </div>
   );
 }

@@ -4,7 +4,7 @@ import { ApiError } from "../api";
 import { LineWalkthrough } from "../components/PositionCard/LineReaderPanel";
 import { RefusalDialog, Toggle } from "../components/RepertoireBits";
 import { useApi } from "../hooks/useApi";
-import { conflictsPath, getBooks, getConflicts, getSections, provenanceLabel, refusalOf, reportPath, setActive } from "../repertoire";
+import { conflictsPath, deleteLine, getBooks, getConflicts, getSections, provenanceLabel, refusalOf, reportPath, setActive } from "../repertoire";
 import type { Refusal, RepertoireBook, RepertoireLine, RepertoireSection } from "../repertoire";
 import { numbered } from "../utils/chess";
 
@@ -92,6 +92,30 @@ function Book({ book, onError, onOpenLine, onRefusal, onToggled }: { book: Reper
   }
 
   const patchChapter = (id: number, f: (c: RepertoireSection) => RepertoireSection) => setSections((s) => s?.map((c) => (c.chapter_id === id ? f(c) : c)) ?? s);
+  const [confirming, setConfirming] = useState<number | null>(null);
+
+  // Deleting a line, course or manual, is the player's act (decision 007 is the import's rule):
+  // the line, its puzzle and that puzzle's practice history go, and the games citing it are
+  // matched again. The row leaves the list on the server's word, never before.
+  async function remove(chapterId: number, line: RepertoireLine) {
+    const key = `delete:${line.id}`;
+    setBusy((b) => new Set(b).add(key));
+    onError(null);
+    try {
+      await deleteLine(line.id);
+      patchChapter(chapterId, (x) => ({ ...x, lines: x.lines.filter((y) => y.id !== line.id) }));
+      setConfirming(null);
+      onToggled();
+    } catch (e) {
+      onError(e instanceof ApiError ? e.message : "Could not delete the line.");
+    } finally {
+      setBusy((b) => {
+        const next = new Set(b);
+        next.delete(key);
+        return next;
+      });
+    }
+  }
   const activeLines = shown ? shown.reduce((n, c) => n + c.lines.filter((l) => l.active).length, 0) : book.active_lines;
   const provenance = provenanceLabel(book);
 
@@ -145,12 +169,35 @@ function Book({ book, onError, onOpenLine, onRefusal, onToggled }: { book: Reper
               </div>
               <ul className="ml-4 mt-1 space-y-0.5">
                 {c.lines.map((l) => (
-                  <li key={l.id} className={`flex items-center gap-2 text-xs ${l.active ? "" : "text-zinc-400"}`}>
+                  <li key={l.id} className={`text-xs ${l.active ? "" : "text-zinc-400"}`}>
+                    <div className="flex items-center gap-2">
                     <button type="button" className="min-w-0 flex-1 truncate text-left hover:underline" title="Read the line" onClick={() => onOpenLine(l)}>
                       <span className="italic">{l.name}</span>
-                      {l.is_alternative ? " (alt)" : ""} <span className="font-mono text-zinc-500">{numbered(l.moves)}</span>
+                      {l.is_alternative ? " (alt)" : ""}
+                      {l.origin === "manual" && <span className="ml-1 rounded border border-zinc-300 px-1 text-[10px] uppercase text-zinc-500 dark:border-zinc-700">custom</span>} <span className="font-mono text-zinc-500">{numbered(l.moves)}</span>
+                    </button>
+                    <button type="button" aria-label={`Delete ${l.name}`} aria-expanded={confirming === l.id} title="Delete this line" onClick={() => setConfirming((v) => (v === l.id ? null : l.id))} className="shrink-0 text-zinc-400 hover:text-red-600 dark:hover:text-red-400">
+                      ✕
                     </button>
                     <Toggle on={l.active} label={`${l.name} active`} busy={busy.has(`lines:${l.id}`)} onChange={(on, el) => void flip("lines", l.id, on, (v) => patchChapter(c.chapter_id, (x) => ({ ...x, lines: x.lines.map((y) => (y.id === l.id ? { ...y, active: v } : y)) })), el)} />
+                    </div>
+                    {/* The confirm is a row of its own under the line, wrapping as it needs to, so the
+                        sentence and both actions stay inside a phone's width. */}
+                    {confirming === l.id && (
+                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-red-200 bg-red-50 px-2 py-1.5 dark:border-red-900 dark:bg-red-950/30" role="group" aria-label={`Delete ${l.name}?`}>
+                        <span className="min-w-0 text-zinc-700 dark:text-zinc-300">
+                          Delete the line, its puzzle and {l.loads} {l.loads === 1 ? "load" : "loads"} of practice history{l.origin === "course" ? "; a full import brings the line back" : ""}?
+                        </span>
+                        <span className="flex shrink-0 gap-3">
+                          <button type="button" disabled={busy.has(`delete:${l.id}`)} onClick={() => void remove(c.chapter_id, l)} className="font-medium text-red-600 disabled:opacity-40 dark:text-red-400">
+                            Delete
+                          </button>
+                          <button type="button" disabled={busy.has(`delete:${l.id}`)} onClick={() => setConfirming(null)} className="text-zinc-500 disabled:opacity-40">
+                            Keep
+                          </button>
+                        </span>
+                      </div>
+                    )}
                   </li>
                 ))}
               </ul>

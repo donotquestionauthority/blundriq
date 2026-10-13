@@ -12,7 +12,6 @@ import pytest
 from psycopg.rows import DictRow
 
 from core.constants import PLAYER_ID, REPERTOIRE_PUZZLE_MIN_EVENTS
-from core.puzzles import custom
 from core.puzzles.lines import fen_sequence
 from core.repertoire import matching, report
 from core.repertoire.importing import spine
@@ -334,7 +333,7 @@ def test_the_opponent_turn_tie_is_a_gap_with_the_continuing_lines_context(
     }
     assert card["games"] == 1 and card["losses"] == 1 and card["score"] == 0.0
     assert card["continuations"] == [{"moves": ["d4"], "games": 1, "score": 0.0}]
-    assert card["engine"] is None and card["puzzle"] is None and card["colour"] == "white"
+    assert card["engine"] is None and card["colour"] == "white"
     # The lines report agrees: A ran out, B left by the opponent, the chapter says opponent.
     rows = _line_rows(_lines(clean))
     assert rows["A"]["ran_out"] == 1 and rows["B"]["left_by_opponent"] == 1
@@ -490,6 +489,7 @@ def test_white_without_an_effectively_active_line_gets_the_notice_and_black_gets
         "prepared": [],
         "gaps": [],
         "prefill_plies": 10,
+        "max_plies": 60,
     }
     out = _gaps(clean, "black")
     assert out["no_book"] is False and out["prepared"] == []
@@ -497,7 +497,6 @@ def test_white_without_an_effectively_active_line_gets_the_notice_and_black_gets
     card = out["gaps"][0]
     assert card["fen"] == spine(None, ["d4"])[1] and card["games"] == 2 and card["context"] is None
     assert card["arrived_by"] == "d4" and {c["moves"][0] for c in card["continuations"]} == {"d5", "Nf6"}
-    assert card["puzzle"] is None
     # No Black book at all: the same cards.
     clean.execute("DELETE FROM books WHERE id = 2")
     clean.commit()
@@ -524,43 +523,83 @@ def test_a_board_where_a_line_only_ends_is_not_preparation(clean: psycopg.Connec
     assert out["prepared"] == [] and len(out["gaps"]) == 1
 
 
-# --- the puzzle on a gap board ----------------------------------------------------------
+# --- the stem and the destinations of a gap card ----------------------------------------
 
 
-def test_the_boards_standard_owner_and_whether_practice_serves_it(clean: psycopg.Connection[DictRow]) -> None:
+def test_a_gap_card_carries_the_games_own_stem_to_the_board_and_the_chapters_a_line_may_go_into(
+    clean: psycopg.Connection[DictRow],
+) -> None:
     _seed(clean)
     h.line(clean, 1, 1, "Main", ITALIAN)
-    fens = h.game(clean, 1, ITALIAN[:5] + ["d6", "c3"])
+    h.game(clean, 1, ["e4", "e5", "Nf3", "Nc6", "Bc4", "d6", "c3"])
+    clean.execute(
+        "INSERT INTO chapters (id, book_id, title, active, root_fen) VALUES (7, 1, 'Tabiya', TRUE, %s)",
+        (spine(None, ITALIAN[:4])[4],),
+    )
+    h.chapter(clean, 8, 1, "Off", active=False)
+    h.chapter(clean, 9, 1, "Also start-rooted")
     _match(clean)
-    gap = fens[6]
-    assert _gaps(clean, "white")["gaps"][0]["puzzle"] is None
-    # A repertoire puzzle on the board is not an owner.
+    (card,) = _gaps(clean, "white")["gaps"]
+    assert card["stem"] == ["e4", "e5", "Nf3", "Nc6", "Bc4", "d6"] and card["fen"] == spine(None, card["stem"])[-1]
+    assert "puzzle" not in card
+    # Start-rooted active chapters of White's books only, the context chapter first.
+    assert [(c["id"], c["title"], c["book"]) for c in card["chapters"]] == [
+        (1, "Giuoco", "Italian"),
+        (9, "Also start-rooted", "Italian"),
+    ]
+    assert card["catch_all"] == {"book": "Catch-all (White)", "chapter": card["family"] or "Unnamed opening"}
+    # Kind B as Black: the stem is the one opponent move; no Black book means no chapters.
+    h.game(clean, 2, ["d4", "d5", "c4"], color="black")
+    _match(clean)
+    out = _gaps(clean, "black")
+    (b,) = out["gaps"]
+    assert b["stem"] == ["d4"] and b["chapters"] == [] and b["catch_all"]["book"] == "Catch-all (Black)"
+    assert out["max_plies"] == 60 and out["prefill_plies"] == 10
+
+
+def test_a_stem_that_does_not_replay_to_the_board_is_none(clean: psycopg.Connection[DictRow]) -> None:
+    _seed(clean)
+    h.line(clean, 1, 1, "Main", ITALIAN)
+    h.game(clean, 1, ["e4", "e5", "Nf3", "Nc6", "Bc4", "d6", "c3"])
+    _match(clean)
+    # A game whose stored moves were damaged after matching: the card still exists, without a stem.
+    damaged = ["e4", "e5", "Nf3", "Nc6", "Bc4", "Zz9", "c3"]
+    clean.execute("UPDATE chess_games SET moves = %s::jsonb WHERE id = 1", (json.dumps(damaged),))
+    clean.commit()
+    (card,) = _gaps(clean, "white")["gaps"]
+    assert card["stem"] is None and card["fen"] == spine(None, ["e4", "e5", "Nf3", "Nc6", "Bc4", "d6"])[-1]
+
+
+def test_every_active_line_is_a_row_with_its_origin_and_practice_numbers(clean: psycopg.Connection[DictRow]) -> None:
+    _seed(clean)
+    h.line(clean, 1, 1, "Main", ITALIAN)
+    h.line(clean, 2, 1, "Never played", ["e4", "c5", "Nf3"])
+    clean.execute("UPDATE repertoire_lines SET origin = 'manual' WHERE id = 2")
+    h.line(clean, 3, 1, "Off", ["e4", "c6", "d4"], active=False)
+    h.game(clean, 1, ITALIAN[:5] + ["d6", "c3"], result="win")
     clean.execute(
-        "INSERT INTO puzzles (fen, solution_line, solution_fen_sequence, source_types, color, player_id,"
-        " is_repertoire, repertoire_line_id) VALUES (%s, %s::jsonb, %s::jsonb, ARRAY['deviation'], 'w', %s, TRUE, 1)",
-        (gap, json.dumps(["c3"]), json.dumps(fen_sequence(gap, ["c3"])), PLAYER_ID),
+        "INSERT INTO puzzles (id, fen, solution_line, solution_fen_sequence, source_types, color, player_id,"
+        " is_repertoire, repertoire_line_id) VALUES (50, %s, %s::jsonb, %s::jsonb, ARRAY['deviation'], 'w', %s, TRUE, 2)",
+        (h.START, json.dumps(["e4", "c5", "Nf3"]), json.dumps(spine(None, ["e4", "c5", "Nf3"])), PLAYER_ID),
     )
-    clean.commit()
-    assert _gaps(clean, "white")["gaps"][0]["puzzle"] is None
-    pid = custom.create(
-        clean, fen=gap, solution_line=["c3", "Nf6", "d4"], color="w", context_tags=["gap"], title=None, description=None
-    )
-    clean.commit()
-    assert _gaps(clean, "white")["gaps"][0]["puzzle"] == {"id": pid, "playable": True}
+    sid = "33333333-3333-3333-3333-333333333333"
     clean.execute(
-        "INSERT INTO dismissed_blunder_fens (player_id, fen) VALUES (%s, %s)",
-        (PLAYER_ID, gap),
+        "INSERT INTO puzzle_attempts (puzzle_id, player_id, solved, session_id, attempt_seq)"
+        " VALUES (50, %s, FALSE, %s, 1), (50, %s, TRUE, %s, 2)",
+        (PLAYER_ID, sid, PLAYER_ID, sid),
     )
-    clean.commit()
-    assert _gaps(clean, "white")["gaps"][0]["puzzle"] == {"id": pid, "playable": False}
-    # The other reason Practice hides a gap puzzle: the repertoire prescribes a different move inside it.
-    clean.execute("DELETE FROM dismissed_blunder_fens")
-    assert custom.remove(clean, pid)
-    pid2 = custom.create(
-        clean, fen=gap, solution_line=["c3", "Nf6", "d3"], color="w", context_tags=["gap"], title=None, description=None
-    )
-    clean.commit()
-    assert _gaps(clean, "white")["gaps"][0]["puzzle"] == {"id": pid2, "playable": True}  # c3 … agrees so far
-    h.line(clean, 9, 1, "After d6", ITALIAN[:5] + ["d6", "c3", "Nf6", "d4"])  # the book answers Nf6 with d4, not d3
-    clean.commit()
-    assert _gaps(clean, "white")["gaps"][0]["puzzle"] == {"id": pid2, "playable": False}
+    _match(clean)
+    (book,) = _lines(clean)["books"]
+    (chapter,) = book["chapters"]
+    rows = chapter["lines"]
+    assert [
+        (r["title"], r["games"], r["origin"], r["book"], r["chapter"], r["colour"], r["book_id"]) for r in rows
+    ] == [
+        ("Main", 1, "course", "Italian", "Giuoco", "white", 1),
+        ("Never played", 0, "manual", "Italian", "Giuoco", "white", 1),
+    ]
+    assert rows[1]["practice"] == {"loads": 1, "first_right": 0, "first_wrong": 1} and rows[1]["shared"] is False
+    assert rows[1]["score"] is None and rows[1]["faithful"] == 0 and rows[1]["depth_total"] == 2
+    assert rows[0]["practice"] == {"loads": 0, "first_right": 0, "first_wrong": 0}
+    assert chapter["practice"] == book["practice"] == {"loads": 1, "first_right": 0, "first_wrong": 1}
+    assert chapter["book"] == "Italian" and chapter["colour"] == book["colour"] == "white"

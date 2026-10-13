@@ -172,8 +172,93 @@ def test_the_line_report_routes(client: TestClient) -> None:
     assert client.get("/repertoire/report/lines").json()["books"][0]["games"] == 2  # focus: rapid games count
     assert client.get("/repertoire/report/lines", params={"time_class": "nope"}).status_code == 422
     gaps = client.get("/repertoire/report/gaps", params={"colour": "white", "time_class": "all"}).json()
-    assert gaps == {"colour": "white", "no_book": False, "prepared": [], "gaps": [], "prefill_plies": 10}
+    assert gaps == {
+        "colour": "white",
+        "no_book": False,
+        "prepared": [],
+        "gaps": [],
+        "prefill_plies": 10,
+        "max_plies": 60,
+    }
     black = client.get("/repertoire/report/gaps", params={"colour": "black"}).json()
-    assert black == {"colour": "black", "no_book": False, "prepared": [], "gaps": [], "prefill_plies": 10}
+    assert black == {
+        "colour": "black",
+        "no_book": False,
+        "prepared": [],
+        "gaps": [],
+        "prefill_plies": 10,
+        "max_plies": 60,
+    }
     assert client.get("/repertoire/report/gaps").status_code == 422  # colour is required
     assert client.get("/repertoire/report/gaps", params={"colour": "red"}).status_code == 422
+
+
+def test_the_manual_line_routes(client: TestClient) -> None:
+    """POST /repertoire/lines: 201 into a chapter and into the catch-all, 409 for a duplicate and
+    for a conflict, 404 for a chapter that is not a destination, 422 for a line that does not
+    play or no destination; DELETE /repertoire/lines/{id}: 200 then 404."""
+    scandi = ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qa5", "d4"]
+    # The fixture's line has an explicit id; the serial must not collide with it.
+    from core import db as _db
+
+    with _db.transaction() as conn:
+        for seq in ("repertoire_lines_id_seq", "books_id_seq", "chapters_id_seq"):
+            conn.execute(f"SELECT setval('{seq}', 1000)")  # type: ignore[arg-type]  # test literals
+    made = client.post("/repertoire/lines", json={"moves": scandi, "line_name": "Scandi", "chapter_id": 1})
+    assert made.status_code == 201
+    assert made.json()["chapter_id"] == 1 and made.json()["book_id"] == 1 and "rematch" in made.json()
+    dup = client.post("/repertoire/lines", json={"moves": scandi, "line_name": "again", "chapter_id": 1})
+    assert dup.status_code == 409 and dup.json()["detail"] == "duplicate"
+    winawer = ["e4", "e6", "d4", "d5", "Nc3", "Bb4", "e5", "c5", "a3", "Bxc3+", "bxc3"]
+    assert (
+        client.post("/repertoire/lines", json={"moves": winawer, "line_name": "check", "chapter_id": 1}).status_code
+        == 201
+    )
+    twice = client.post(
+        "/repertoire/lines", json={"moves": winawer[:9] + ["Bxc3", "bxc3"], "line_name": "x", "chapter_id": 1}
+    )
+    assert twice.status_code == 409 and twice.json()["duplicate"]["kind"] == "identical"
+    assert dup.json()["duplicate"]["kind"] == "identical" and dup.json()["duplicate"]["line_id"] == made.json()["id"]
+    conflict = client.post(
+        "/repertoire/lines", json={"moves": ["e4", "e5", "Nf3", "Nc6", "Bb5"], "line_name": "Spanish", "chapter_id": 1}
+    )
+    assert conflict.status_code == 409 and conflict.json()["detail"] == "activation_conflict"
+    assert conflict.json()["refusal"]["reason"] == "anchor" and conflict.json()["refusal"]["rivals"][0]["line_id"] == 1
+    catch = client.post(
+        "/repertoire/lines",
+        json={
+            "moves": ["d4", "d5", "c4", "e6"],
+            "line_name": "QGD",
+            "catch_all": {"colour": "black", "family": "Queen's Gambit"},
+        },
+    )
+    assert catch.status_code == 201 and catch.json()["book_id"] != 1
+    books = client.get("/repertoire").json()["books"]
+    assert [(b["title"], b["color"]) for b in books if b["title"] == "Catch-all"] == [("Catch-all", "black")]
+    sections = client.get(f"/repertoire/{catch.json()['book_id']}/sections").json()["sections"]
+    assert sections[0]["title"] == "Queen's Gambit" and sections[0]["lines"][0]["origin"] == "manual"
+    assert (
+        client.post("/repertoire/lines", json={"moves": scandi, "line_name": "x", "chapter_id": 99}).status_code == 404
+    )
+    assert (
+        client.post(
+            "/repertoire/lines",
+            json={"moves": ["e4", "e5", "Nf3", "Nc6", "Bc4", "Nxe4"], "line_name": "x", "chapter_id": 1},
+        ).status_code
+        == 422
+    )
+    assert client.post("/repertoire/lines", json={"moves": scandi, "line_name": "x"}).status_code == 422
+    assert (
+        client.post(
+            "/repertoire/lines",
+            json={"moves": scandi, "line_name": "x", "chapter_id": 1, "catch_all": {"colour": "white", "family": None}},
+        ).status_code
+        == 422
+    )
+    gone = client.delete(f"/repertoire/lines/{made.json()['id']}")
+    assert gone.status_code == 200 and gone.json()["detail"] == "deleted" and gone.json()["loads"] == 0
+    assert client.delete(f"/repertoire/lines/{made.json()['id']}").status_code == 404
+    report = client.get("/repertoire/report/lines", params={"time_class": "all"}).json()
+    assert report["drill_max_lines"] == 50
+    titles = [ln["title"] for b in report["books"] for ch in b["chapters"] for ln in ch["lines"]]
+    assert "Scandi" not in titles and "QGD" in titles

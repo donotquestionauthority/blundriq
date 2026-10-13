@@ -84,6 +84,16 @@ export function isRotationPuzzle(p: Pick<Puzzle, "source_types">): boolean {
   return (p.source_types ?? []).includes(CC0_SOURCE_TYPE);
 }
 
+/** GET /practice/drill: the chosen lines' puzzles, whole, in the order asked. */
+export interface DrillResponse {
+  batch_id: number;
+  puzzles: Puzzle[];
+  /** Lines that could not be served (not yours, switched off, malformed). */
+  skipped: number[];
+  advance_threshold: number;
+  max_lines: number;
+}
+
 export interface PuzzlesResponse {
   puzzles: Puzzle[];
   total: number;
@@ -164,6 +174,11 @@ export async function getPuzzles(params: { srs?: SrsFilter; ptype?: PracticeType
   return { ...data, puzzles: data.puzzles.map(withThemes) };
 }
 
+export async function getDrill(lineIds: number[]): Promise<DrillResponse> {
+  const data = await api.get<DrillResponse>(`/practice/drill?lines=${lineIds.join(",")}`);
+  return { ...data, puzzles: data.puzzles.map(withThemes) };
+}
+
 export interface AttemptBody {
   solved: boolean;
   moves_played?: string;
@@ -174,6 +189,10 @@ export interface AttemptBody {
    *  solver that stays mounted across a change in the truncation can all show different
    *  segments of one repertoire puzzle, and only the solver knows which one it showed. */
   presentation_ply: number | null;
+  /** The attempt's order within its load, from 1: Try Again and Replay count up, a new load
+   *  starts again. The server keeps it so the first attempt of a load is known whatever order
+   *  the requests arrive in (the line report's practice numbers). */
+  attempt_seq?: number;
 }
 
 /**

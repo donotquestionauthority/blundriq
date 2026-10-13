@@ -23,7 +23,7 @@ from core.constants import PLAYER_ID
 from core.puzzles.generate import _write
 
 MAX_PLIES = 30
-CONTEXT_TAGS = ("blunder", "deviation", "scout", "gap")  # the page the position was taken from (gap: the line report)
+CONTEXT_TAGS = ("blunder", "deviation", "scout")  # the page the position was taken from
 CUSTOM = "custom"
 
 

@@ -11,11 +11,13 @@ different move at one of the puzzle's interior positions, for the puzzle's colou
 teaches, colour-matched — a separate rule from conflict, and neither implies the other),
 and has not been dismissed on the Blunders page.
 
-A repertoire puzzle is visible when its line, chapter and book are all active and the
+A repertoire puzzle is visible when its line, chapter and book are all active and either the
 player has deviated from that line in at least REPERTOIRE_PUZZLE_MIN_EVENTS distinct games,
-all time. It is presented from the furthest deviation the player has made plus the
-configured lookahead, snapped so that the truncated line still ends on the player's move,
-and one puzzle per presented position is served (the most-deviated line wins, among the
+all time, or a drill has served it (`puzzles.drilled_at`, set once, never cleared: a line the
+player asked to drill is a puzzle of theirs from then on, whatever the deviation count). It is
+presented from the furthest deviation the player has made plus the configured lookahead,
+snapped so that the truncated line still ends on the player's move — the whole line when there
+is no deviation to start from — and one puzzle per presented position is served (the most-deviated line wins, among the
 lines of the book, chapter or line the reader asked for). Dismissal
 does not apply to repertoire puzzles: their gate is the repertoire itself.
 
@@ -148,9 +150,18 @@ def standard_rows_sql(*, windowed: bool, extra_where: str = "") -> LiteralString
 
 # The presented ply: furthest deviation plus lookahead, capped at the line's end snapped to
 # the player's parity so the truncated line still ends on their move.
-_PRESENTATION_PLY = """LEAST(ls.furthest_ply + {n},
+# The index of the player's last move in the line: the last index whose parity is the first
+# player ply's (0 when the line opens on the player's move, else 1).
+_LAST_PLAYER_PLY = """(CASE WHEN jsonb_array_length(p.solution_line) - 1
+             < CASE WHEN split_part(p.fen, ' ', 2) = p.color THEN 0 ELSE 1 END THEN -1
+        ELSE (jsonb_array_length(p.solution_line) - 1)
+          - ((jsonb_array_length(p.solution_line) - 1
+              - CASE WHEN split_part(p.fen, ' ', 2) = p.color THEN 0 ELSE 1 END) %% 2) END)"""
+_PRESENTATION_PLY = f"""(CASE WHEN ls.furthest_ply IS NULL THEN {_LAST_PLAYER_PLY}
+        ELSE LEAST(ls.furthest_ply + {{n}},
         (jsonb_array_length(p.solution_line) - 1)
-          - ((jsonb_array_length(p.solution_line) - 1 - ls.furthest_ply) %% 2))::int"""
+          - ((jsonb_array_length(p.solution_line) - 1 - ls.furthest_ply) %% 2)) END)::int"""
+_REP_GATE = f"(ls.event_count >= {REPERTOIRE_PUZZLE_MIN_EVENTS} OR p.drilled_at IS NOT NULL)"
 
 
 RepKind = Literal["book", "chapter", "line"]
@@ -197,7 +208,6 @@ def repertoire_rows_sql(
     line_stats AS (
         SELECT line_id, count(DISTINCT chess_game_id) AS event_count, max(event_ply) AS furthest_ply
         FROM line_events GROUP BY line_id
-        HAVING count(DISTINCT chess_game_id) >= {REPERTOIRE_PUZZLE_MIN_EVENTS}
     ),
     candidates AS (
         SELECT p.id, p.fen, p.solution_line, p.source_types, p.color, p.title, p.description, p.created_at,
@@ -205,17 +215,19 @@ def repertoire_rows_sql(
                {ply} AS presentation_ply,
                p.solution_fen_sequence->>{ply} AS presentation_fen,
                p.repertoire_line_id, rl.chapter_id, ch.book_id,
-               ls.event_count::int AS occurrence_count,
-               jsonb_build_object('deviation', ls.event_count) AS source_breakdown,
+               COALESCE(ls.event_count, 0)::int AS occurrence_count,
+               jsonb_build_object('deviation', COALESCE(ls.event_count, 0)) AS source_breakdown,
                (SELECT count(*) FROM puzzle_attempts pa WHERE pa.puzzle_id = p.id AND pa.player_id = %(pid)s)::int
-                   AS attempt_count
+                   AS attempt_count,
+               p.drilled_at
         FROM puzzles p
-        JOIN line_stats ls ON ls.line_id = p.repertoire_line_id
+        LEFT JOIN line_stats ls ON ls.line_id = p.repertoire_line_id
         JOIN repertoire_lines rl ON rl.id = p.repertoire_line_id
         JOIN chapters ch ON ch.id = rl.chapter_id
         JOIN books bk ON bk.id = ch.book_id
         WHERE p.player_id = %(pid)s AND p.active = TRUE AND p.is_repertoire = TRUE
           AND bk.player_id = %(pid)s AND rl.active = TRUE AND ch.active = TRUE AND bk.active = TRUE
+          AND {_REP_GATE}
           {narrow}
     )
     SELECT {distinct} * FROM candidates {order}""",
@@ -409,11 +421,12 @@ def attemptable(conn: Connection[Any], puzzle_id: int) -> dict[str, Any] | None:
 
 def presentation_ply(conn: Connection[Any], puzzle_id: int, *, lookahead_plies: int) -> int | None:
     """The truncation point the player was shown for a repertoire puzzle; None for a
-    standard puzzle or a line without enough deviations. Serve and grading derive it the
-    same way, so the player is graded against the line they saw."""
+    standard puzzle or a line without enough deviations that no drill has served. Serve and
+    grading derive it the same way, so the player is graded against the line they saw."""
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT is_repertoire, repertoire_line_id, jsonb_array_length(solution_line) AS sol_len"
+            "SELECT is_repertoire, repertoire_line_id, jsonb_array_length(solution_line) AS sol_len, drilled_at,"
+            " (split_part(fen, ' ', 2) = color) AS opens_on_player"
             " FROM puzzles WHERE id = %(id)s AND player_id = %(pid)s",
             {"id": puzzle_id, "pid": PLAYER_ID},
         )
@@ -431,8 +444,21 @@ def presentation_ply(conn: Connection[Any], puzzle_id: int, *, lookahead_plies: 
             {"pid": PLAYER_ID, "line": p["repertoire_line_id"]},
         )
         s = cur.fetchone()
-    if not s or s["event_count"] < REPERTOIRE_PUZZLE_MIN_EVENTS or s["furthest_ply"] is None:
+    gated = bool(s) and (int(s["event_count"]) >= REPERTOIRE_PUZZLE_MIN_EVENTS or p["drilled_at"] is not None)
+    if not s or not gated:
         return None
+    if s["furthest_ply"] is None:
+        return last_player_ply(int(p["sol_len"]), opens_on_player=bool(p["opens_on_player"]))
     furthest = int(s["furthest_ply"])
     cap = (int(p["sol_len"]) - 1) - ((int(p["sol_len"]) - 1 - furthest) % 2)
     return min(furthest + int(lookahead_plies), cap)
+
+
+def last_player_ply(line_length: int, *, opens_on_player: bool) -> int:
+    """The index of the player's last move in a line of `line_length` plies: the whole line as
+    a segment (the drill's presentation, and a drilled line's before it has any deviation). -1
+    for a line with no player ply at all (one opponent move), which nothing can present."""
+    first = 0 if opens_on_player else 1
+    if line_length - 1 < first:
+        return -1
+    return (line_length - 1) - ((line_length - 1 - first) % 2)

@@ -13,7 +13,13 @@ source is a new row; the old row is switched off (only when the file says the bo
 extracted completely — an extraction that dropped a note must not read as the author
 removing it). Deleting a line would cascade its puzzle away with the spaced-repetition
 state on it; rebuilding it in place would reset that state on the next generator run. Kept
-immutable, the puzzle survives every re-import.
+immutable, the puzzle survives every re-import. That is the import's rule, not the player's:
+the player may delete any line from the Repertoire page (`core.repertoire.lines.delete`), and
+the confirm says what goes with it. A line the player added by hand from a gap card
+(`origin = 'manual'`, `core.repertoire.lines.add_manual`; from the start position, into a
+start-rooted chapter or the colour's catch-all book, which has no source id and so is invisible
+to the import) is never retired by a replacement, nor is the chapter holding it; a course line
+that later arrives with the same moves is found, not duplicated.
 
 Everything that reads the repertoire to publish results, or changes it — the hourly
 matcher, a rematch, a toggle on the Repertoire page, an import, the puzzle generators —

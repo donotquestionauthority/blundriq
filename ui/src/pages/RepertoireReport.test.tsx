@@ -1,20 +1,18 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import RepertoireReport from "./RepertoireReport";
-import type { GapCard, GapsResponse, ReportBook, ReportLine, ReportTally } from "../repertoire";
+import { filterRows, flatten, sortRows } from "./reportRows";
+import type { GapCard, GapsResponse, PracticeNumbers, ReportBook, ReportLine, ReportTally } from "../repertoire";
 
 vi.mock("react-chessboard", () => ({
   Chessboard: ({ options }: { options: { id?: string; position?: string } }) => <div data-testid="board" data-id={options.id} data-position={options.position} />,
 }));
-vi.mock("../components/CreatePuzzleModal", () => ({
-  CreatePuzzleModal: ({ source, onClose, onCreated }: { source: { title?: string | null; engineLine?: string[] | null; prefillPlies?: number | null }; onClose: () => void; onCreated: (r: { id: number; visible: boolean }) => void }) => (
-    <div role="dialog" aria-label="Create puzzle" data-title={source.title} data-line={(source.engineLine ?? []).join(" ")} data-prefill={source.prefillPlies}>
-      <button type="button" onClick={() => onCreated({ id: 42, visible: true })}>
-        fake-save-visible
-      </button>
-      <button type="button" onClick={() => onCreated({ id: 43, visible: false })}>
-        fake-save-hidden
+vi.mock("../components/AddLineModal", () => ({
+  AddLineModal: ({ card, prefillPlies, maxPlies, onClose, onAdded }: { card: GapCard; prefillPlies: number; maxPlies: number; onClose: () => void; onAdded: (r: { id: number }) => void }) => (
+    <div role="dialog" aria-label="Add to repertoire" data-fen={card.fen} data-prefill={prefillPlies} data-max={maxPlies}>
+      <button type="button" onClick={() => onAdded({ id: 42 })}>
+        fake-save
       </button>
       <button type="button" onClick={onClose}>
         fake-close
@@ -41,6 +39,7 @@ function stubFetch(routes: Record<string, (query: URLSearchParams) => Reply>) {
   return calls;
 }
 
+const practice = (over: Partial<PracticeNumbers> = {}): PracticeNumbers => ({ loads: 0, first_right: 0, first_wrong: 0, ...over });
 const tally = (over: Partial<ReportTally> = {}): ReportTally => ({
   games: 3,
   wins: 2,
@@ -58,14 +57,65 @@ const tally = (over: Partial<ReportTally> = {}): ReportTally => ({
   puzzles: 0,
   ...over,
 });
-const line = (over: Partial<ReportLine> = {}): ReportLine => ({ ...tally(), id: 1, title: "Main", is_alternative: false, depth_total: 3, shared: false, ...over });
+const line = (over: Partial<ReportLine> = {}): ReportLine => ({
+  ...tally(),
+  id: 1,
+  title: "Main",
+  is_alternative: false,
+  origin: "course",
+  depth_total: 3,
+  shared: false,
+  book_id: 1,
+  book: "Italian",
+  chapter_id: 1,
+  chapter: "Giuoco",
+  colour: "white",
+  practice: practice(),
+  ...over,
+});
 const books = (): ReportBook[] => [
   {
-    ...tally({ games: 4, puzzles: 2 }),
+    ...tally({ games: 4 }),
     id: 1,
     title: "Italian",
     color: "white",
-    chapters: [{ ...tally({ puzzles: 2, ended: 1 }), id: 1, title: "Giuoco", lines: [line({ puzzles: 2 }), line({ id: 2, title: "Evans", shared: true, slip: null, left_by_me: 0, faithful: 3 })] }],
+    colour: "white",
+    practice: practice({ loads: 5, first_right: 3, first_wrong: 2 }),
+    chapters: [
+      {
+        ...tally({ ended: 1 }),
+        id: 1,
+        title: "Giuoco",
+        book_id: 1,
+        book: "Italian",
+        colour: "white",
+        practice: practice({ loads: 5, first_right: 3, first_wrong: 2 }),
+        lines: [
+          line({ practice: practice({ loads: 5, first_right: 3, first_wrong: 2 }) }),
+          line({ id: 2, title: "Evans", shared: true, slip: null, left_by_me: 0, faithful: 3, games: 1, score: 1, origin: "manual", last_played: "2026-10-11T10:00:00+00:00" }),
+        ],
+      },
+    ],
+  },
+  {
+    ...tally({ games: 9, score: 0.4 }),
+    id: 2,
+    title: "Scandi",
+    color: "black",
+    colour: "black",
+    practice: practice(),
+    chapters: [
+      {
+        ...tally({ games: 9, score: 0.4 }),
+        id: 2,
+        title: "Qa5",
+        book_id: 2,
+        book: "Scandi",
+        colour: "black",
+        practice: practice(),
+        lines: [line({ id: 3, title: "Line C", games: 9, score: 0.4, faithful: 4, book_id: 2, book: "Scandi", chapter_id: 2, chapter: "Qa5", colour: "black", slip: null, left_by_me: 5 })],
+      },
+    ],
   },
 ];
 
@@ -84,48 +134,181 @@ const card = (over: Partial<GapCard> = {}): GapCard => ({
   continuations: [{ moves: ["c3", "Be7", "d4", "exd4"], games: 3, score: 0.667 }],
   engine: { best_move: "c3", line: ["c3", "Be7", "d4", "exd4", "cxd4"], eval: 40, mate_in: null },
   last_played: "2026-10-10T10:00:00+00:00",
-  puzzle: null,
+  stem: ["e4", "e5", "Nf3", "Nc6", "Bc4", "d6"],
+  chapters: [{ id: 1, title: "Giuoco", book_id: 1, book: "Italian" }],
+  catch_all: { book: "Catch-all (white)", chapter: "Italian Game" },
   ...over,
 });
-const gaps = (colour: "white" | "black", over: Partial<GapsResponse> = {}): GapsResponse => ({ colour, no_book: false, prepared: [], gaps: [], prefill_plies: 10, ...over });
+const gaps = (colour: "white" | "black", over: Partial<GapsResponse> = {}): GapsResponse => ({ colour, no_book: false, prepared: [], gaps: [], prefill_plies: 10, max_plies: 60, ...over });
 
-const renderPage = () =>
+function Location() {
+  const loc = useLocation();
+  return <div data-testid="location">{loc.pathname + loc.search}</div>;
+}
+const renderPage = (initial = "/repertoire/report") =>
   render(
-    <MemoryRouter>
-      <RepertoireReport />
+    <MemoryRouter initialEntries={[initial]}>
+      <Routes>
+        <Route path="/repertoire/report" element={<RepertoireReport />} />
+        <Route path="/practice" element={<p>practice page</p>} />
+      </Routes>
+      <Location />
     </MemoryRouter>,
   );
+const firstCells = (col: number) => screen.getAllByTestId(/^report-row-/).map((r) => within(r).getAllByRole("cell")[col].textContent);
 
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
-describe("the line report", () => {
-  it("renders the tree collapsed, with the numbers, the slip, Drill only where puzzles are served, and re-reads on the time class", async () => {
+describe("the rows", () => {
+  it("flatten, sort and filter: a flat line view across books, games first, nulls last, filters by colour, book, chapter and origin", () => {
+    const flat = flatten(books());
+    expect(flat.lines.map((r) => r.line?.title)).toEqual(["Main", "Evans", "Line C"]);
+    expect(sortRows(flat.lines, "games", "desc").map((r) => r.line?.title)).toEqual(["Line C", "Main", "Evans"]);
+    expect(sortRows(flat.lines, "score", "asc").map((r) => r.line?.title)).toEqual(["Line C", "Main", "Evans"]);
+    expect(sortRows(flat.lines, "faithful", "desc").map((r) => r.line?.title)).toEqual(["Evans", "Main", "Line C"]);
+    expect(sortRows(flat.lines, "loads", "desc").map((r) => r.line?.title)).toEqual(["Main", "Evans", "Line C"]);
+    expect(sortRows(flat.lines, "book", "asc").map((r) => r.line?.title)).toEqual(["Evans", "Main", "Line C"]); // ties by chapter, then line name
+    const zero = [...flat.lines, { ...flat.lines[0], key: "line:9", id: 9, games: 0, score: null, faithful: 0 }];
+    expect(sortRows(zero, "score", "asc").map((r) => r.id)).toEqual([3, 1, 2, 9]);
+    expect(sortRows(zero, "faithful", "desc").map((r) => r.id)).toEqual([2, 1, 3, 9]);
+    expect(filterRows(flat.lines, { colour: "black", book: null, chapter: null, origin: null }).map((r) => r.id)).toEqual([3]);
+    expect(filterRows(flat.lines, { colour: null, book: 1, chapter: null, origin: "manual" }).map((r) => r.id)).toEqual([2]);
+    expect(filterRows(flat.chapters, { colour: null, book: null, chapter: 2, origin: null }).map((r) => r.id)).toEqual([2]);
+    expect(filterRows(flat.books, { colour: null, book: 2, chapter: 2, origin: "manual" }).map((r) => r.id)).toEqual([2]);
+    expect(flat.chapters[0].lineIds).toEqual([1, 2]);
+    expect(flat.books[0].lineIds).toEqual([1, 2]);
+  });
+});
+
+describe("the line report page", () => {
+  it("shows one flat table ordered by games with the book and chapter on each row, the practice numbers, the custom chip, and sorts on a header", async () => {
     const calls = stubFetch({
-      "/repertoire/report/lines": () => ({ status: 200, body: { books: books() } }),
+      "/repertoire/report/lines": () => ({ status: 200, body: { books: books(), drill_max_lines: 50 } }),
       "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
     });
     renderPage();
-    await screen.findByText(/^Italian/);
-    expect(screen.getByText("Giuoco", { exact: false })).toBeInTheDocument();
-    expect(screen.queryByTestId("report-line")).toBeNull();
-    expect(screen.getByText("opponent left 2 · you left 1 · ended in book 1")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Giuoco/ }));
-    const rows = screen.getAllByTestId("report-line");
-    expect(rows).toHaveLength(2);
-    expect(within(rows[0]).getByText(/You left at your move 3 in 1 of 1/)).toBeInTheDocument();
-    expect(within(rows[0]).getByText("3 of 3 of your moves")).toBeInTheDocument();
-    expect(within(rows[0]).getByRole("link", { name: "Drill (2)" })).toHaveAttribute("href", "/practice?type=repertoire&subtype=line:1");
-    expect(within(rows[1]).getByText("no puzzles yet")).toBeInTheDocument();
-    expect(within(rows[1]).queryByRole("link")).toBeNull();
-    expect(within(rows[1]).getByText("shared")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Drill the gaps →" })).toHaveAttribute("href", "/practice?type=custom&subtype=gap");
+    const table = await screen.findByTestId("report-table");
+    expect(table).toHaveAttribute("data-view", "lines");
+    const rows = screen.getAllByTestId("report-row-lines");
+    expect(rows).toHaveLength(3);
+    const cells = (i: number) => within(rows[i]).getAllByRole("cell").map((c) => c.textContent);
+    expect(cells(0).slice(1, 5)).toEqual(["Black", "Scandi", "Qa5", expect.stringContaining("Line C")]);
+    expect(cells(1).slice(1, 5)).toEqual(["White", "Italian", "Giuoco", expect.stringContaining("Main")]);
+    expect(cells(1)[5]).toBe("32–0–1");
+    expect(cells(1).slice(6, 12)).toEqual(["67%", "67%", "3 of 3", "5", "3", "2"]);
+    expect(within(rows[1]).getByText(/You left at your move 3 in 1 of 1/)).toBeInTheDocument();
+    expect(within(rows[2]).getByText("custom")).toBeInTheDocument();
+    expect(within(rows[2]).getByText("shared")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: /Games/ })).toHaveAttribute("aria-sort", "descending");
+    fireEvent.click(screen.getByRole("button", { name: /Games/ }));
+    expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?dir=asc");
+    expect(screen.getAllByTestId("report-row-lines").map((r) => within(r).getAllByRole("cell")[2].textContent)).toEqual(["Italian", "Italian", "Scandi"]);
+    fireEvent.click(screen.getByRole("button", { name: /Score/ }));
+    expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?dir=desc&sort=score");
+    expect(firstCells(4).map((t) => /^(Evans|Main|Line C)/.exec(t ?? "")?.[1])).toEqual(["Evans", "Main", "Line C"]);
+    expect(screen.queryByRole("link", { name: /Drill/ })).toBeNull();
     expect(calls.filter((c) => c.path === "/repertoire/report/lines").map((c) => c.query.get("time_class"))).toEqual(["focus"]);
     fireEvent.change(screen.getByLabelText("Time class"), { target: { value: "all" } });
     await waitFor(() => expect(calls.filter((c) => c.path === "/repertoire/report/lines").map((c) => c.query.get("time_class"))).toEqual(["focus", "all"]));
-    expect(calls.filter((c) => c.path === "/repertoire/report/gaps").map((c) => c.query.get("time_class"))).toEqual(["focus", "focus", "all", "all"]);
+    expect(screen.getByTestId("location").textContent).toContain("time_class=all");
+  });
+
+  it("the chapter and book views, the filters, select all shown, and Drill in the table's order", async () => {
+    stubFetch({
+      "/repertoire/report/lines": () => ({ status: 200, body: { books: books(), drill_max_lines: 50 } }),
+      "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
+    });
+    renderPage();
+    await screen.findByTestId("report-table");
+    fireEvent.click(screen.getByRole("tab", { name: "By chapter" }));
+    expect(screen.getByTestId("report-table")).toHaveAttribute("data-view", "chapters");
+    let rows = screen.getAllByTestId("report-row-chapters");
+    expect(rows.map((r) => within(r).getAllByRole("cell")[3].textContent)).toEqual(["Qa5(1 lines)", "Giuoco(2 lines)"]);
+    expect(within(rows[1]).getAllByRole("cell").slice(7, 10).map((c) => c.textContent)).toEqual(["5", "3", "2"]);
+    expect(screen.queryByLabelText("Origin")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "By book" }));
+    rows = screen.getAllByTestId("report-row-books");
+    expect(rows.map((r) => within(r).getAllByRole("cell")[2].textContent)).toEqual(["Scandi(1 ch.)", "Italian(1 ch.)"]);
+    expect(screen.queryByLabelText("Chapter")).toBeNull();
+    // Back to lines; filter by colour, then select all shown: only the shown lines are checked.
+    fireEvent.click(screen.getByRole("tab", { name: "By line" }));
+    fireEvent.change(screen.getByLabelText("Colour"), { target: { value: "white" } });
+    expect(screen.getAllByTestId("report-row-lines")).toHaveLength(2);
+    expect(screen.getByText("2 lines shown")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Select all shown"));
+    expect(screen.getByRole("button", { name: "Drill 2 lines" })).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("Colour"), { target: { value: "" } });
+    expect(screen.getAllByTestId("report-row-lines")).toHaveLength(3);
+    expect(screen.getByLabelText("Select Line C")).not.toBeChecked();
+    expect(screen.getByLabelText("Select all shown")).not.toBeChecked();
+    // Sort by score ascending puts Main before Evans; the drill follows the table.
+    fireEvent.click(screen.getByRole("button", { name: /Score/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Score/ }));
+    expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?sort=score&dir=asc");
+    fireEvent.click(screen.getByRole("button", { name: "Drill 2 lines" }));
+    expect(screen.getByTestId("location").textContent).toBe("/practice?drill=1,2");
+    expect(screen.getByText("practice page")).toBeInTheDocument();
+  });
+
+  it("the book filter narrows the chapter filter; the origin filter; the state round-trips through the URL", async () => {
+    stubFetch({
+      "/repertoire/report/lines": () => ({ status: 200, body: { books: books(), drill_max_lines: 50 } }),
+      "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
+    });
+    renderPage("/repertoire/report?view=chapters&sort=book&dir=asc&book=1&colour=white");
+    await screen.findByTestId("report-table");
+    expect(screen.getByTestId("report-table")).toHaveAttribute("data-view", "chapters");
+    expect(screen.getAllByTestId("report-row-chapters")).toHaveLength(1);
+    expect(screen.getByRole("columnheader", { name: /Book/ })).toHaveAttribute("aria-sort", "ascending");
+    expect(within(screen.getByLabelText("Chapter")).getAllByRole("option").map((o) => o.textContent)).toEqual(["All chapters", "Giuoco"]);
+    fireEvent.click(screen.getByRole("tab", { name: "By line" }));
+    fireEvent.change(screen.getByLabelText("Origin"), { target: { value: "manual" } });
+    expect(screen.getAllByTestId("report-row-lines")).toHaveLength(1);
+    expect(screen.getByTestId("location").textContent).toContain("origin=manual");
+    fireEvent.change(screen.getByLabelText("Book"), { target: { value: "" } });
+    expect(screen.getByTestId("location").textContent).not.toContain("book=");
+    expect(within(screen.getByLabelText("Chapter")).getAllByRole("option").map((o) => o.textContent)).toEqual(["All chapters", "Italian › Giuoco", "Scandi › Qa5"]);
+  });
+
+  it("a container row and Select all shown reach only the lines the filters leave", async () => {
+    stubFetch({
+      "/repertoire/report/lines": () => ({ status: 200, body: { books: books(), drill_max_lines: 50 } }),
+      "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
+    });
+    renderPage("/repertoire/report?view=chapters&origin=manual");
+    await screen.findByTestId("report-table");
+    // Origin applies to lines: the Giuoco chapter row stands for Evans alone.
+    fireEvent.click(screen.getByLabelText("Select Giuoco"));
+    expect(screen.getByRole("button", { name: "Drill 1 line" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("tab", { name: "By line" }));
+    expect(screen.getAllByTestId("report-row-lines")).toHaveLength(1);
+    expect(screen.getByLabelText("Select Evans")).toBeChecked();
+    fireEvent.change(screen.getByLabelText("Origin"), { target: { value: "" } });
+    expect(screen.getByLabelText("Select Main")).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Drill 1 line" })).toBeEnabled();
+    // Hiding a checked line takes it out of the drill; showing it again brings it back.
+    fireEvent.change(screen.getByLabelText("Colour"), { target: { value: "black" } });
+    expect(screen.getByRole("button", { name: "Drill 0 lines" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Colour"), { target: { value: "" } });
+    expect(screen.getByRole("button", { name: "Drill 1 line" })).toBeEnabled();
+  });
+
+  it("a drill over the cap is refused on the page", async () => {
+    const many: ReportBook[] = [{ ...books()[0], chapters: [{ ...books()[0].chapters[0], lines: Array.from({ length: 51 }, (_, i) => line({ id: 100 + i, title: `L${i}` })) }] }];
+    stubFetch({
+      "/repertoire/report/lines": () => ({ status: 200, body: { books: many, drill_max_lines: 50 } }),
+      "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
+    });
+    renderPage();
+    await screen.findByTestId("report-table");
+    fireEvent.click(screen.getByLabelText("Select all shown"));
+    expect(screen.getByRole("button", { name: "Drill 51 lines" })).toBeDisabled();
+    expect(screen.getByText("50 at most")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Select L0"));
+    expect(screen.getByRole("button", { name: "Drill 50 lines" })).toBeEnabled();
   });
 
   it("drops a late answer for the previous time class", async () => {
@@ -139,21 +322,21 @@ describe("the line report", () => {
         const [path, q] = url.replace(/^.*\/api/, "").split("?");
         const tc = new URLSearchParams(q).get("time_class");
         if (path === "/repertoire/report/lines" && tc === "focus") await slow;
-        const body = path === "/repertoire/report/lines" ? { books: tc === "focus" ? books() : [] } : gaps(new URLSearchParams(q).get("colour") as "white");
+        const body = path === "/repertoire/report/lines" ? { books: tc === "focus" ? books() : [], drill_max_lines: 50 } : gaps(new URLSearchParams(q).get("colour") as "white");
         return { ok: true, status: 200, statusText: "200", json: async () => body };
       }),
     );
     renderPage();
     fireEvent.change(screen.getByLabelText("Time class"), { target: { value: "all" } });
-    await screen.findByText("No games in the window go through an active line.");
+    await screen.findByText("No active line in your repertoire.");
     release!();
     await new Promise((r) => setTimeout(r, 0));
-    expect(screen.queryByText(/^Italian/)).toBeNull();
+    expect(screen.queryByTestId("report-table")).toBeNull();
   });
 
-  it("shows the gaps for the colour with more of them, the three card states, Prepared but not played, and the no-book notice", async () => {
+  it("shows the gaps for the colour with more of them, Add to repertoire only with a stem, Prepared but not played, and the no-book notice", async () => {
     stubFetch({
-      "/repertoire/report/lines": () => ({ status: 200, body: { books: [] } }),
+      "/repertoire/report/lines": () => ({ status: 200, body: { books: [], drill_max_lines: 50 } }),
       "/repertoire/report/gaps": (q) =>
         q.get("colour") === "white"
           ? { status: 200, body: gaps("white", { no_book: true }) }
@@ -161,55 +344,44 @@ describe("the line report", () => {
               status: 200,
               body: gaps("black", {
                 prepared: [{ fen: "x", book_move: "d5", played: "c5", games: 9, wins: 4, draws: 1, losses: 4, line_id: 5, line_name: "Main", book: "Scandi", chapter: "Main", puzzles: 1, last_played: null }],
-                gaps: [
-                  card({ colour: "black", fen: "a", family: "Queen's Pawn", context: null, arrived_by: "d4", engine: null }),
-                  card({ colour: "black", fen: "b", puzzle: { id: 9, playable: true } }),
-                  card({ colour: "black", fen: "c", puzzle: { id: 10, playable: false } }),
-                ],
+                gaps: [card({ colour: "black", fen: "a", family: "Queen's Pawn", context: null, arrived_by: "d4", engine: null, stem: ["d4"] }), card({ colour: "black", fen: "b", stem: null })],
               }),
             },
     });
     renderPage();
     const black = await screen.findByRole("tab", { name: "Black" });
     expect(black).toHaveAttribute("aria-selected", "true");
-    expect(screen.getAllByTestId("gap-card")).toHaveLength(3);
-    const row = screen.getByTestId("prepared-row");
-    expect(row.textContent).toContain("Your book plays d5; you played c5 in 9 games (4–1–4)");
-    expect(within(row).getByRole("link", { name: "Drill (1)" })).toHaveAttribute("href", "/practice?type=repertoire&subtype=line:5");
     const cards = screen.getAllByTestId("gap-card");
+    expect(cards).toHaveLength(2);
+    expect(screen.getByTestId("prepared-row").textContent).toContain("Your book plays d5; you played c5 in 9 games (4–1–4)");
     expect(within(cards[0]).getByText("No book reaches this board.")).toBeInTheDocument();
-    expect(within(cards[0]).getByText("No stored engine line yet for this board.")).toBeInTheDocument();
-    expect(within(cards[0]).getByRole("button", { name: "Add as custom puzzle" })).toBeInTheDocument();
-    expect(within(cards[1]).getByRole("link", { name: "Drill" })).toHaveAttribute("href", "/practice?puzzle=9");
-    expect(within(cards[2]).getByText(/Practice hides it/)).toBeInTheDocument();
-    expect(within(cards[2]).queryByRole("link")).toBeNull();
-    expect(within(cards[2]).queryByRole("button")).toBeNull();
+    expect(within(cards[0]).getByRole("button", { name: "Add to repertoire" })).toBeInTheDocument();
+    expect(within(cards[1]).queryByRole("button")).toBeNull();
+    expect(within(cards[1]).getByText(/No replayable prefix/)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Drill/ })).toBeNull();
     fireEvent.click(screen.getByRole("tab", { name: "White" }));
     expect(screen.getByText("No active White line: every White game opens outside your repertoire.")).toBeInTheDocument();
+    expect(screen.getByTestId("location").textContent).toContain("gaps=white");
   });
 
-  it("opens the modal with the engine line and the title, and honours the save's visibility", async () => {
+  it("opens the modal with the card and the server's constants; a save marks the card and re-reads the lines", async () => {
     const calls = stubFetch({
-      "/repertoire/report/lines": () => ({ status: 200, body: { books: [] } }),
-      "/repertoire/report/gaps": (q) => ({ status: 200, body: q.get("colour") === "white" ? gaps("white", { gaps: [card(), card({ fen: "z", family: null, context: null, arrived_by: "d4" })] }) : gaps("black") }),
+      "/repertoire/report/lines": () => ({ status: 200, body: { books: [], drill_max_lines: 50 } }),
+      "/repertoire/report/gaps": (q) => ({ status: 200, body: q.get("colour") === "white" ? gaps("white", { gaps: [card()] }) : gaps("black") }),
     });
     renderPage();
     const cards = await screen.findAllByTestId("gap-card");
-    fireEvent.click(within(cards[0]).getByRole("button", { name: "Add as custom puzzle" }));
-    const dialog = screen.getByRole("dialog", { name: "Create puzzle" });
-    expect(dialog).toHaveAttribute("data-title", "Italian Game: after d6");
-    expect(dialog).toHaveAttribute("data-line", "c3 Be7 d4 exd4 cxd4");
-    expect(dialog).toHaveAttribute("data-prefill", "10"); // the server's constant, not a copy
-    fireEvent.click(screen.getByText("fake-save-visible"));
+    fireEvent.click(within(cards[0]).getByRole("button", { name: "Add to repertoire" }));
+    const dialog = screen.getByRole("dialog", { name: "Add to repertoire" });
+    expect(dialog).toHaveAttribute("data-fen", GAP);
+    expect(dialog).toHaveAttribute("data-prefill", "10");
+    expect(dialog).toHaveAttribute("data-max", "60");
+    const linesBefore = calls.filter((c) => c.path === "/repertoire/report/lines").length;
+    fireEvent.click(screen.getByText("fake-save"));
     fireEvent.click(screen.getByText("fake-close"));
-    expect(within(screen.getAllByTestId("gap-card")[0]).getByRole("link", { name: "Drill" })).toHaveAttribute("href", "/practice?puzzle=42");
-    // Closing the modal re-reads the gaps, so a board taken behind the page's back (a 409 in the
-    // modal, which the modal's own test covers) shows its real owner afterwards.
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(within(screen.getAllByTestId("gap-card")[0]).getByText(/Added to your repertoire/)).toBeInTheDocument();
+    await waitFor(() => expect(calls.filter((c) => c.path === "/repertoire/report/lines").length).toBe(linesBefore + 1));
     await waitFor(() => expect(calls.filter((c) => c.path === "/repertoire/report/gaps")).toHaveLength(4));
-    fireEvent.click(within(screen.getAllByTestId("gap-card")[1]).getByRole("button", { name: "Add as custom puzzle" }));
-    expect(screen.getByRole("dialog")).toHaveAttribute("data-title", "(unnamed opening): 1.d4");
-    fireEvent.click(screen.getByText("fake-save-hidden"));
-    fireEvent.click(screen.getByText("fake-close"));
-    expect(within(screen.getAllByTestId("gap-card")[1]).getByText(/^Saved\. Practice will not serve it/)).toBeInTheDocument();
   });
 });

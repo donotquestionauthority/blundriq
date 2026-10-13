@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { useSearchParams } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { ApiError } from "../api";
 import { removePuzzle } from "../blunders";
 import { beginRemoval, confirmGone, getUnplayable, isGone, removalFailed, subscribeRemovals } from "../utils/puzzleRemoval";
 import { useApi } from "../hooks/useApi";
 import { disownUnsavedAttempt, getUnsavedAttempt, holdUnsavedAttempt, isUnsavedAttemptOwned, releaseUnsavedAttempt, subscribeUnsavedAttempt, type UnsavedAttempt } from "../utils/unsavedAttempt";
 import { PuzzleEngine } from "../components/PuzzleEngine";
-import { getPuzzleById, getPuzzles, getRepertoireScopes, isRotationPuzzle, LAST_N_OPTIONS, recordAttempt, skipPuzzle } from "../practice";
+import { getDrill, getPuzzleById, getPuzzles, getRepertoireScopes, isRotationPuzzle, LAST_N_OPTIONS, recordAttempt, skipPuzzle } from "../practice";
+import { reportPath } from "../repertoire";
 import type { PlayablePuzzlePayload, PracticeType, Puzzle, RepertoireScopeBook, PuzzleGameLink, PuzzleSrs, SrsFilter, SrsLevel } from "../practice";
 import { enqueue as enqueueAttempt, hasPendingAttempt, hasPendingAttemptForPuzzle, initQueueTriggers, isQueueModeAvailable, markCompleted as markAttemptCompleted, type PendingAttempt } from "../utils/attemptQueue";
 import { RepertoireScopeFilter } from "../components/RepertoireScopeFilter";
@@ -27,8 +28,8 @@ const noop = () => {};
 const PLAY_TYPES: PracticeType[] = ["all", "motif", "repertoire", "blunder", "custom"];
 const TYPE_LABEL: Record<PracticeType, string> = { all: "All", motif: "Motif", repertoire: "Repertoire", blunder: "Blunder", custom: "Custom" };
 // A custom puzzle's subtype is the page it was made from (core/puzzles/custom.py CONTEXT_TAGS).
-const CUSTOM_SUBTYPES = ["blunder", "deviation", "scout", "gap"] as const;
-const CUSTOM_SUBTYPE_LABEL: Record<(typeof CUSTOM_SUBTYPES)[number], string> = { blunder: "From Blunders", deviation: "From Deviations", scout: "From Scout", gap: "From the line report" };
+const CUSTOM_SUBTYPES = ["blunder", "deviation", "scout"] as const;
+const CUSTOM_SUBTYPE_LABEL: Record<(typeof CUSTOM_SUBTYPES)[number], string> = { blunder: "From Blunders", deviation: "From Deviations", scout: "From Scout" };
 
 function isPracticeType(v: unknown): v is PracticeType {
   return PLAY_TYPES.includes(v as PracticeType);
@@ -134,16 +135,19 @@ const ATTEMPT_RESOLVED_EVENT = "blundriq:attempt-resolved";
  * One session_id per play-through (the caller calls `reset()` when it moves to another
  * puzzle, or remounts), stable across wrong-answer retries; one attempt_id per submission.
  * Every attempt carries `presentationPly`, the segment the solver it was made on displays,
- * on every path (foreground, queued retry, blocking retry, the held-attempt banner).
+ * on every path (foreground, queued retry, blocking retry, the held-attempt banner), and
+ * `attempt_seq`, its order within the play-through from 1, so the server knows which attempt
+ * of a load was the first whatever order the requests arrive in. `onVerdict` hears every
+ * verdict the solver produces with that sequence, before anything is sent.
  */
-function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentationPly: number | null) {
+function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentationPly: number | null, onVerdict?: (seq: number, solved: boolean) => void) {
   const [lastResult, setLastResult] = useState<"solved" | "wrong" | null>(null);
   const [serverDowngraded, setServerDowngraded] = useState(false);
   const [attemptStatus, setAttemptStatus] = useState<"in_flight" | "pending_retry" | null>(null);
   const [submitting, setSubmitting] = useState(false);
   // The failed attempt keeps the puzzle it was made on: a retry must go there, whatever the
   // hook is showing by the time it is clicked.
-  const [blockingError, setBlockingError] = useState<{ attemptId: string; solved: boolean; movesPlayed: string[]; puzzleId: number; sessionId: string; presentationPly: number | null } | null>(null);
+  const [blockingError, setBlockingError] = useState<{ attemptId: string; solved: boolean; movesPlayed: string[]; puzzleId: number; sessionId: string; presentationPly: number | null; seq: number } | null>(null);
   const inFlightRef = useRef<Set<string>>(new Set());
   // The attempt the server is still owed in blocking mode: in flight, or failed and waiting
   // for Retry. Only one may exist; handleComplete refuses to open another while it stands.
@@ -164,6 +168,11 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
   }, [presentationPly]);
   const pendingRetryUuidRef = useRef<string | null>(null);
   const sessionIdRef = useRef<string>(crypto.randomUUID());
+  const seqRef = useRef(0);
+  const onVerdictRef = useRef(onVerdict);
+  useEffect(() => {
+    onVerdictRef.current = onVerdict;
+  }, [onVerdict]);
 
   useEffect(() => {
     const onResolved = (e: Event) => {
@@ -185,30 +194,31 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
     pendingRetryUuidRef.current = null;
     outstandingRef.current = null;
     sessionIdRef.current = crypto.randomUUID();
+    seqRef.current = 0;
   }, []);
 
   // The attempt names its puzzle, its session and the segment it was made on: a retry, or a
   // slow response, never posts to whatever the hook is showing by then, nor under a session
   // started since, nor against a segment the solver was not displaying.
   const post = useCallback(
-    (attemptPuzzleId: number, sessionId: string, attemptId: string, solved: boolean, movesPlayed: string[], shownPly: number | null) =>
-      recordAttempt(attemptPuzzleId, { solved, moves_played: movesPlayed.join(","), attempt_id: attemptId, session_id: sessionId, presentation_ply: shownPly }),
+    (attemptPuzzleId: number, sessionId: string, attemptId: string, solved: boolean, movesPlayed: string[], shownPly: number | null, seq: number) =>
+      recordAttempt(attemptPuzzleId, { solved, moves_played: movesPlayed.join(","), attempt_id: attemptId, session_id: sessionId, presentation_ply: shownPly, attempt_seq: seq }),
     [],
   );
 
   const runBlockingMode = useCallback(
-    async (attemptId: string, solved: boolean, movesPlayed: string[], attemptPuzzleId: number, sessionId: string, shownPly: number | null) => {
+    async (attemptId: string, solved: boolean, movesPlayed: string[], attemptPuzzleId: number, sessionId: string, shownPly: number | null, seq: number) => {
       outstandingRef.current = attemptId;
       // Held from before the request goes out, not from its failure: the whole app treats the
       // attempt as unsaved until its id is acknowledged, so leaving and returning mid-request
       // cannot open a second one.
-      const payload = { puzzle_id: attemptPuzzleId, attempt_id: attemptId, session_id: sessionId, solved, moves_played: movesPlayed.join(","), presentation_ply: shownPly };
+      const payload = { puzzle_id: attemptPuzzleId, attempt_id: attemptId, session_id: sessionId, solved, moves_played: movesPlayed.join(","), presentation_ply: shownPly, attempt_seq: seq };
       holdUnsavedAttempt(payload, ownerRef.current);
       setSubmitting(true);
       setBlockingError(null);
       setServerDowngraded(false);
       try {
-        const response = await post(attemptPuzzleId, sessionId, attemptId, solved, movesPlayed, shownPly);
+        const response = await post(attemptPuzzleId, sessionId, attemptId, solved, movesPlayed, shownPly, seq);
         releaseUnsavedAttempt(attemptId);
         outstandingRef.current = null;
         if (activePuzzleIdRef.current === attemptPuzzleId) {
@@ -221,7 +231,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
         // Still held (since before the request) unless a retry from elsewhere — the recovery
         // banner, after this solver was left — landed it meanwhile.
         if (getUnsavedAttempt()?.attempt_id === attemptId) {
-          if (activePuzzleIdRef.current === attemptPuzzleId) setBlockingError({ attemptId, solved, movesPlayed, puzzleId: attemptPuzzleId, sessionId, presentationPly: shownPly });
+          if (activePuzzleIdRef.current === attemptPuzzleId) setBlockingError({ attemptId, solved, movesPlayed, puzzleId: attemptPuzzleId, sessionId, presentationPly: shownPly, seq });
         } else {
           outstandingRef.current = null;
           onRecorded();
@@ -246,17 +256,19 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
       const attemptPuzzleId = puzzleId;
       const sessionId = sessionIdRef.current;
       const shownPly = presentationPlyRef.current;
+      const seq = ++seqRef.current;
+      onVerdictRef.current?.(seq, solved);
 
       if (!isQueueModeAvailable()) {
-        await runBlockingMode(attemptId, solved, movesPlayed, attemptPuzzleId, sessionId, shownPly);
+        await runBlockingMode(attemptId, solved, movesPlayed, attemptPuzzleId, sessionId, shownPly, seq);
         return;
       }
       try {
-        await enqueueAttempt({ attempt_id: attemptId, puzzle_id: attemptPuzzleId, solved, moves_played: movesPlayed.join(","), session_id: sessionId, presentation_ply: shownPly });
+        await enqueueAttempt({ attempt_id: attemptId, puzzle_id: attemptPuzzleId, solved, moves_played: movesPlayed.join(","), session_id: sessionId, presentation_ply: shownPly, attempt_seq: seq });
       } catch (err) {
         console.warn("Queue enqueue failed, falling back to blocking mode:", errorLabel(err));
         inFlightRef.current.delete(attemptId);
-        await runBlockingMode(attemptId, solved, movesPlayed, attemptPuzzleId, sessionId, shownPly);
+        await runBlockingMode(attemptId, solved, movesPlayed, attemptPuzzleId, sessionId, shownPly, seq);
         return;
       }
 
@@ -265,7 +277,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
       setServerDowngraded(false);
       setAttemptStatus("in_flight");
       try {
-        const response = await post(attemptPuzzleId, sessionId, attemptId, solved, movesPlayed, shownPly);
+        const response = await post(attemptPuzzleId, sessionId, attemptId, solved, movesPlayed, shownPly, seq);
         await markAttemptCompleted(attemptId);
         if (activePuzzleIdRef.current === attemptPuzzleId) {
           setAttemptStatus(null);
@@ -295,9 +307,9 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
 
   const retry = useCallback(() => {
     if (!blockingError) return;
-    const { attemptId, solved, movesPlayed, puzzleId: attemptPuzzleId, sessionId, presentationPly: shownPly } = blockingError;
+    const { attemptId, solved, movesPlayed, puzzleId: attemptPuzzleId, sessionId, presentationPly: shownPly, seq } = blockingError;
     inFlightRef.current.delete(attemptId);
-    void runBlockingMode(attemptId, solved, movesPlayed, attemptPuzzleId, sessionId, shownPly);
+    void runBlockingMode(attemptId, solved, movesPlayed, attemptPuzzleId, sessionId, shownPly, seq);
   }, [blockingError, runBlockingMode]);
 
   return { lastResult, serverDowngraded, attemptStatus, submitting, blockingError, handleComplete, retry, reset, navigationBlocked: submitting || blockingError !== null };
@@ -310,7 +322,7 @@ function HeldAttemptBanner({ attempt, onSaved }: { attempt: UnsavedAttempt; onSa
   const retry = async () => {
     setSubmitting(true);
     try {
-      await recordAttempt(attempt.puzzle_id, { solved: attempt.solved, moves_played: attempt.moves_played, attempt_id: attempt.attempt_id, session_id: attempt.session_id, presentation_ply: attempt.presentation_ply });
+      await recordAttempt(attempt.puzzle_id, { solved: attempt.solved, moves_played: attempt.moves_played, attempt_id: attempt.attempt_id, session_id: attempt.session_id, presentation_ply: attempt.presentation_ply, ...(attempt.attempt_seq != null ? { attempt_seq: attempt.attempt_seq } : {}) });
       releaseUnsavedAttempt(attempt.attempt_id);
       onSaved();
     } catch (err) {
@@ -552,6 +564,132 @@ function PlayMode({
       <BlockingBanner error={attempt.blockingError} submitting={attempt.submitting} onRetry={attempt.retry} />
       {((showNext && isLastQueued) || awaitingNext) && !allCaughtUp && <p className="mt-4 text-center text-xs text-zinc-500">Loading more puzzles…</p>}
       {exhausted && <p className="mt-4 text-center text-sm text-zinc-500">You're all caught up</p>}
+      <GameLinks puzzle={puzzle} />
+    </div>
+  );
+}
+
+// ─── Drill: the chosen lines, whole, in order ───────────────────────────────
+
+/**
+ * A drill of the lines the report sent (`/practice?drill=1,2,3`): one serve, each line played
+ * whole from its first board, in the order given, until the list is done. Not the queue: no
+ * batch, nothing due, no Skip, no Previous — Next is offered once a verdict is in, and every
+ * position in the list is one load (the solver's key is the position and the round), so the
+ * tally — the first verdict of each load, as the hook reported it — is the server's count too.
+ * Stop and Done tell the server nothing (a drill has no server-side lifetime to end); Stop waits
+ * for a verdict still posting, as every way of leaving a solver does.
+ */
+function DrillMode({ lineIds, onAttemptRecorded, onNavigationLock }: { lineIds: number[]; onAttemptRecorded: () => void; onNavigationLock: (locked: boolean) => void }) {
+  const key = lineIds.join(",");
+  const { data, isLoading, error } = useApi(() => getDrill(lineIds), [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [cursor, setCursor] = useState(0);
+  const [round, setRound] = useState(1);
+  // The first verdict of each load this round, by position; Replay and Try Again add later
+  // sequences that do not count.
+  const [firsts, setFirsts] = useState<Record<number, boolean>>({});
+  const puzzles = useMemo(() => data?.puzzles ?? [], [data]);
+  const puzzle: Puzzle | undefined = puzzles[cursor];
+  const onVerdict = useCallback(
+    (seq: number, solved: boolean) => {
+      if (seq === 1) setFirsts((f) => (cursor in f ? f : { ...f, [cursor]: solved }));
+    },
+    [cursor],
+  );
+  const attempt = useAttemptSubmit(puzzle?.id ?? -1, onAttemptRecorded, puzzle?.presentation_ply ?? null, onVerdict);
+  const navigationBlocked = attempt.navigationBlocked;
+  useEffect(() => {
+    onNavigationLock(navigationBlocked);
+    return () => onNavigationLock(false);
+  }, [navigationBlocked, onNavigationLock]);
+
+  const done = data !== null && data !== undefined && cursor >= puzzles.length;
+  const right = Object.values(firsts).filter(Boolean).length;
+  const wrong = Object.values(firsts).filter((v) => !v).length;
+  const stop = (
+    <Link to={reportPath()} aria-disabled={navigationBlocked} onClick={(e) => navigationBlocked && e.preventDefault()} title={navigationBlocked ? "Saving your attempt first" : undefined} className={`rounded border border-zinc-300 px-2.5 py-1 text-xs font-medium dark:border-zinc-700 ${navigationBlocked ? "pointer-events-none opacity-40" : "hover:bg-zinc-50 dark:hover:bg-zinc-800"}`}>
+      {done ? "Back to the report" : "Stop"}
+    </Link>
+  );
+
+  if (isLoading && !data) return <p className="px-6 py-12 text-center text-sm text-zinc-500">Loading the drill…</p>;
+  if (error && !data) return <p className="text-sm text-rose-600">{error}</p>;
+  if (!data) return null;
+  if (puzzles.length === 0) {
+    return (
+      <div className="rounded border border-zinc-200 px-6 py-12 text-center dark:border-zinc-800" data-testid="drill-empty">
+        <p className="text-lg text-zinc-500">Nothing to drill</p>
+        <p className="mt-2 text-sm text-zinc-500">{data.skipped.length > 0 ? "None of the chosen lines is active." : "No lines were named."}</p>
+        <div className="mt-4">{stop}</div>
+      </div>
+    );
+  }
+
+  const advance = () => {
+    attempt.reset();
+    setCursor((c) => c + 1);
+  };
+  const again = () => {
+    attempt.reset();
+    setFirsts({});
+    setRound((r) => r + 1);
+    setCursor(0);
+  };
+  const header = (
+    <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-sm" data-testid="drill-header">
+      <span>
+        <span className="font-medium">Drill</span> · {Math.min(cursor + 1, puzzles.length)} of {puzzles.length} · {right} first-try
+        {data.skipped.length > 0 && <span className="text-xs text-zinc-500"> · {data.skipped.length} skipped</span>}
+      </span>
+      {stop}
+    </div>
+  );
+
+  if (!puzzle) {
+    return (
+      <div className="mx-auto max-w-xl">
+        {header}
+        <div className="rounded border border-zinc-200 px-6 py-12 text-center dark:border-zinc-800" data-testid="drill-done">
+          <p className="text-lg">Done</p>
+          <p className="mt-2 text-sm text-zinc-500">
+            {puzzles.length} {puzzles.length === 1 ? "line" : "lines"} drilled · first try right {right} · wrong {wrong}
+          </p>
+          <div className="mt-4 flex justify-center gap-3">
+            <button type="button" onClick={again} className="rounded bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white dark:bg-zinc-100 dark:text-zinc-900">
+              Drill again
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const showNext = attempt.lastResult !== null;
+  return (
+    <div className="mx-auto max-w-xl">
+      {header}
+      <PuzzleHeader puzzle={puzzle} note={puzzle.attempt_summary.solved > 0 && !attempt.lastResult ? "previously solved" : null} />
+      <PuzzleEngine
+        key={`drill|${data.batch_id}|${round}|${cursor}`}
+        fen={puzzle.fen}
+        solutionLine={puzzle.solution_line}
+        color={puzzle.color}
+        onComplete={attempt.handleComplete}
+        presentationPly={puzzle.presentation_ply}
+        acceptanceMap={puzzle.acceptance_map}
+        onNext={showNext ? advance : null}
+        prevDisabled
+        nextDisabled={navigationBlocked}
+        nextLabel={cursor + 1 < puzzles.length ? "Next line →" : "Finish →"}
+        nextHighlighted={attempt.lastResult === "solved"}
+        showNextButton={showNext}
+        isRepertoire={puzzle.is_repertoire}
+        repertoireLineId={puzzle.repertoire_line_id}
+        serverDowngraded={attempt.serverDowngraded}
+        attemptStatus={attempt.attemptStatus}
+        submissionLocked={navigationBlocked}
+      />
+      <BlockingBanner error={attempt.blockingError} submitting={attempt.submitting} onRetry={attempt.retry} />
       <GameLinks puzzle={puzzle} />
     </div>
   );
@@ -874,6 +1012,13 @@ export default function Practice() {
     const n = Number(searchParams.get("puzzle"));
     return Number.isInteger(n) && n > 0 ? n : null;
   });
+  // The lines a drill was asked for, kept in the URL so a reload serves the drill again.
+  const drillIds = useMemo(() => {
+    const raw = searchParams.get("drill");
+    if (!raw) return null;
+    const ids = raw.split(",").map((x) => Number(x)).filter((n) => Number.isInteger(n) && n > 0);
+    return ids.length > 0 ? ids : null; // the server holds the cap
+  }, [searchParams]);
   const [openPuzzle, setOpenPuzzle] = useState<Puzzle | null>(null);
   const [inPageLock, setInPageLock] = useState(false);
   // An attempt held from an earlier visit (the page was left, or reloaded into blocking
@@ -900,7 +1045,8 @@ export default function Practice() {
   }, []);
 
   // Every dep is a primitive, so `isStale` compares exactly.
-  const { data, isLoading, error, refetch, isStale } = useApi(() => getPuzzles({ srs: srsFilter, ptype: type, subtype, last_n_games: lastNGames }), [type, subtype, lastNGames, srsFilter]);
+  const drilling = drillIds !== null;
+  const { data, isLoading, error, refetch, isStale } = useApi(() => (drilling ? Promise.resolve(null) : getPuzzles({ srs: srsFilter, ptype: type, subtype, last_n_games: lastNGames })), [type, subtype, lastNGames, srsFilter, drilling]);
 
   const { data: deepLinkData, isLoading: deepLinkLoading, error: deepLinkError } = useApi(() => (deepLinkId != null ? getPuzzleById(deepLinkId) : Promise.resolve(null)), [deepLinkId]);
   useEffect(() => {
@@ -918,6 +1064,7 @@ export default function Practice() {
         attempt_id: record.attempt_id,
         ...(record.session_id != null ? { session_id: record.session_id } : {}),
         presentation_ply: record.presentation_ply ?? null,
+        ...(record.attempt_seq != null ? { attempt_seq: record.attempt_seq } : {}),
       });
       refetch();
     };
@@ -952,6 +1099,7 @@ export default function Practice() {
       <div className="relative flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-xl font-semibold tracking-tight">Practice</h1>
+          {!drilling && (
           <div className="flex flex-wrap gap-1" role="tablist" aria-label="Practice type">
             {PLAY_TYPES.map((t) => (
               <button
@@ -971,18 +1119,24 @@ export default function Practice() {
               </button>
             ))}
           </div>
+          )}
         </div>
         <div className="flex items-center gap-3">
           <TodayCount variant="toolbar" quiet={dialogOpen} />
           {data && srsFilter === "due" && <span className="text-xs text-zinc-500">{data.mastered_count} mastered</span>}
-          <FiltersPopover disabled={navLocked} subtype={subtype} onSubtypeChange={setSubtype} subtypeOptions={subtypeOptions} repertoireScopes={repertoireScopes} repertoireScopesError={type === "repertoire" ? scopeError : null} srsFilter={srsFilter} onSrsChange={setSrsFilter} lastNGames={lastNGames} onPeriodChange={setLastNGames} />
+          {!drilling && <FiltersPopover disabled={navLocked} subtype={subtype} onSubtypeChange={setSubtype} subtypeOptions={subtypeOptions} repertoireScopes={repertoireScopes} repertoireScopesError={type === "repertoire" ? scopeError : null} srsFilter={srsFilter} onSrsChange={setSrsFilter} lastNGames={lastNGames} onPeriodChange={setLastNGames} />}
         </div>
       </div>
 
       {/* An attempt held from an earlier visit is the only thing on the page until it is
           saved: no board, no Skip, no list, no overlay — a second attempt must not be possible. */}
       {orphaned && held && <HeldAttemptBanner attempt={held} onSaved={refetch} />}
-      {!orphaned && (
+      {!orphaned && drilling && drillIds && (
+        <div className="mt-4">
+          <DrillMode key={drillIds.join(",")} lineIds={drillIds} onAttemptRecorded={noop} onNavigationLock={setInPageLock} />
+        </div>
+      )}
+      {!orphaned && !drilling && (
       <div className="mt-4">
         {/* `isStale` is checked as well as `isLoading`: on the first render after a filter change the
             effect has not run yet, so isLoading still reads false from the previous fetch. */}

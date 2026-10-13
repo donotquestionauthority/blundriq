@@ -497,6 +497,13 @@ export default function GameReview() {
               <input type="checkbox" checked={mode === storedMode} disabled={mode === storedMode} onChange={makeDefault} />
               <span title={mode === storedMode ? LEARN_COPY.alreadyDefault : undefined}>{LEARN_COPY.alwaysStartHere}</span>
             </label>
+            {/* With the mode controls: the stepper row below holds Back / Next and nothing else clickable. */}
+            {blunderPlies.length > 0 && (
+              <label className="flex cursor-pointer items-center gap-2" data-testid="inacc-only">
+                <input type="checkbox" checked={inaccOnly} onChange={(e) => setInaccOnly(e.target.checked)} />
+                Step only through inaccuracies+
+              </label>
+            )}
             {/* Kept in the row invisible outside Learn so switching mode never moves the board. */}
             <label className={`flex items-center gap-2 ${learnActive ? "cursor-pointer" : "invisible pointer-events-none"}`} aria-hidden={!learnActive}>
               <input type="checkbox" checked={showTimer} disabled={!learnActive} onChange={(e) => toggleTimer(e.target.checked)} />
@@ -551,7 +558,6 @@ export default function GameReview() {
             blunderPrev={blundersByPly[curPly - 1] ?? null}
             stepPly={stepPly}
             inaccOnly={inaccOnly}
-            setInaccOnly={setInaccOnly}
             blunderPlies={blunderPlies}
             learnActive={learnActive}
             promptPlies={promptPlies}
@@ -584,7 +590,6 @@ function ReviewBody(p: {
   blunderPrev: ReviewBlunder | null;
   stepPly: (dir: 1 | -1) => void;
   inaccOnly: boolean;
-  setInaccOnly: (v: boolean) => void;
   blunderPlies: number[];
   learnActive: boolean;
   promptPlies: number[];
@@ -593,7 +598,7 @@ function ReviewBody(p: {
   exploring: boolean;
   setExploring: (v: boolean) => void;
 }) {
-  const { fenSeq, moves, curPly, maxPly, setPly, orientation, boardSize, wrapRef, gameId, analysisDepth, plyAnalysis, blunderHere, blunderPrev, stepPly, inaccOnly, setInaccOnly, blunderPlies, learnActive, promptPlies, repertoire, showTimer, exploring, setExploring } = p;
+  const { fenSeq, moves, curPly, maxPly, setPly, orientation, boardSize, wrapRef, gameId, analysisDepth, plyAnalysis, blunderHere, blunderPrev, stepPly, inaccOnly, blunderPlies, learnActive, promptPlies, repertoire, showTimer, exploring, setExploring } = p;
   const boardId = "review" + useId().replace(/[^a-zA-Z0-9-]/g, "");
 
   const hasBlunderPlies = blunderPlies.length > 0;
@@ -738,32 +743,23 @@ function ReviewBody(p: {
             controls below never jump as the arrows change. */}
         <div className="mt-2 min-h-[20px]">{!learnHere && <ArrowLegend arrows={arrows} ply={!cardBlunder ? "ordinary" : onDecision ? "mistake-before" : "mistake-after"} />}</div>
 
-        <div className="mt-2 flex min-h-[36px] flex-wrap items-center justify-center gap-2 sm:gap-3">
-          <button type="button" className={btn} onClick={() => setPly(0)} disabled={curPly === 0} aria-label="First move">
+        <div className="mt-2 flex min-h-[44px] flex-wrap items-center justify-center gap-2 sm:gap-3" data-testid="stepper">
+          <button type="button" className={`${btn} min-h-11`} onClick={() => setPly(0)} disabled={curPly === 0} aria-label="First move">
             ⏮
           </button>
-          <button type="button" className={btn} onClick={() => stepPly(-1)} disabled={!canStepBack}>
+          <button type="button" className={`${btn} min-h-11 px-5`} onClick={() => stepPly(-1)} disabled={!canStepBack}>
             ← Back
           </button>
           <span className="text-xs tabular-nums text-zinc-500">
             move {curPly} / {maxPly}
           </span>
-          <button type="button" className={btn} onClick={() => stepPly(1)} disabled={!canStepNext}>
+          <button type="button" className={`${btn} min-h-11 px-5`} onClick={() => stepPly(1)} disabled={!canStepNext}>
             Next →
           </button>
-          <button type="button" className={btn} onClick={() => setPly(maxPly)} disabled={curPly === maxPly} aria-label="Last move">
+          <button type="button" className={`${btn} min-h-11`} onClick={() => setPly(maxPly)} disabled={curPly === maxPly} aria-label="Last move">
             ⏭
           </button>
         </div>
-
-        {hasBlunderPlies && (
-          <div className="mt-2 flex items-center justify-center">
-            <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400">
-              <input type="checkbox" checked={inaccOnly} onChange={(e) => setInaccOnly(e.target.checked)} />
-              Step only through inaccuracies+
-            </label>
-          </div>
-        )}
 
         {/* Not while a rep is open: the layer's engine would answer the question being asked. */}
         <div className="mt-2 flex min-h-[32px] items-center justify-center">

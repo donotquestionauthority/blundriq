@@ -24,6 +24,9 @@ Chess.com / Lichess APIs
         │                            │
         │                            ▼
         │                 Practice (api) ──► puzzle_attempts, player_puzzle_state (SRS), exposure, skip
+        │                 a drill (core/puzzles/drill.py) serves chosen lines whole: it mints a missing line
+        │                 puzzle, stamps puzzles.drilled_at and writes exposures under the drill scope as proof
+        │                 of service only (never queue state; attempts.py grades against them for a week)
         │                 pipeline srs-maintain un-retires mastered puzzles whose pattern recurs
         │
         └─► pipeline review ──► review_events (the whole window retagged hourly, per-game replace, under the
@@ -49,7 +52,11 @@ Chess.com / Lichess APIs
            also serves the Conflicts page (positions where two lines disagree, identical lines in different
            chapters, the contested count on the Repertoire page); notes on positions and the line walk-through ──► repertoire_annotations
            (core/repertoire/annotations.py). `pipeline import-repertoire FILE` loads a neutral repertoire file
-           (core/repertoire/importing.py; docs/decisions/007) and rematches the window. Two compare surfaces
+           (core/repertoire/importing.py; docs/decisions/007) and rematches the window. A line the player adds
+           from a gap card on the line report (core/repertoire/lines.py: from the start position, into a
+           start-rooted chapter or the colour's catch-all book, the import's gate, origin = 'manual', never
+           retired by an import) and a line the player deletes (any origin; the schema cascades its puzzle and
+           history) go through the same lock and rematch. Two compare surfaces
            read the same lines: Similar positions on every card and in the solver (core/repertoire/neighbourhood.py:
            the boards of the active repertoire within a placement distance of the queried board, same material
            exactly; the solver asks about the board at its latest player decision) and Compare similar
@@ -132,6 +139,10 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `core/blunders.py` | The Blunders page: boards ranked by distinct games and severity, their games, dismissal. |
 | `core/ai.py`, `core/prompts.py` | AI explanations — a blunder, a move in a repertoire line, a question about the position on show (Review, Explore): context read from the database or parsed from browser-sent chess, sandboxed prompt templates, provider call over HTTP, cache, hourly and daily caps. |
 | `core/puzzles/custom.py` | Creating and retiring a hand-made puzzle. |
+| `core/puzzles/drill.py` | A drill of chosen lines: mint, `drilled_at`, the proof-of-service exposures, whole-line presentation. |
+| `core/puzzles/stats.py` | Loads and first-attempt verdicts per repertoire line (`session_id`, `attempt_seq`): the line report's practice numbers. |
+| `core/repertoire/lines.py` | A line added by hand (the catch-all books, the gate, duplicates) and a line deleted, each with its rematch. |
+| `core/repertoire/report.py` | The line report: every active line's games, results, depth, faithfulness and practice numbers; the gap boards with their stem and destinations. |
 | `core/home.py` | The Home page: due count, today's puzzles and games against their targets, streaks, blunders and deviation patterns their lists have never shown, the pipeline's latest run. Reads only. |
 | `api/auth.py` | One password, one signed cookie. |
 | `api/routes/*` | Thin routes. |

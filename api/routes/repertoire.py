@@ -1,8 +1,12 @@
-"""The repertoire read side, and its one write.
+"""The repertoire read side, and its writes: the toggles, a line added by hand, a line deleted.
 
 GET /repertoire, GET /repertoire/{book_id}/sections, PATCH /repertoire/{books|chapters|lines}/{id} — the
 Repertoire page; a PATCH switching a line on that the gate refuses is 409 `activation_conflict` with the
-refusal, and one switching a chapter or book on reports the lines it `held_back`. GET /repertoire/conflicts —
+refusal, and one switching a chapter or book on reports the lines it `held_back`. POST /repertoire/lines —
+a manual line from a gap card, from the start position, into a start-rooted chapter or the colour's
+catch-all (core/repertoire/lines.py; 409 `duplicate` or `activation_conflict`, 422 for a line that does
+not play). DELETE /repertoire/lines/{id} — the player deleting a line of any origin, with its puzzle and
+practice history. GET /repertoire/conflicts —
 the Conflicts page. GET|PUT|DELETE /repertoire/annotation, GET /repertoire/lines/{id}/annotated — the note
 editor and the line walk-through, on every card and in Practice. GET /repertoire/coverage — whether a
 card's board is in the repertoire, and the line to walk through. POST /repertoire/lines/{id}/explain —
@@ -29,7 +33,7 @@ from pydantic import BaseModel, Field
 from api import auth
 from core import ai, db, settings
 from core.chess.eligibility import TIME_CLASSES
-from core.repertoire import annotations, books, branch_compare, conflicts, neighbourhood, read, report
+from core.repertoire import annotations, books, branch_compare, conflicts, lines, neighbourhood, read, report
 
 router = APIRouter(prefix="/repertoire", tags=["repertoire"], dependencies=[auth.Authed])
 
@@ -170,6 +174,57 @@ def list_books() -> dict[str, Any]:
 
 class ActiveBody(BaseModel):
     active: bool
+
+
+class CatchAll(BaseModel):
+    colour: Literal["white", "black"]
+    family: str | None = Field(None, max_length=200)
+
+
+class NewLineBody(BaseModel):
+    moves: list[str] = Field(min_length=2, max_length=lines.REPERTOIRE_LINE_MAX_PLIES)
+    line_name: str = Field(min_length=1, max_length=lines.MAX_LINE_NAME)
+    chapter_id: int | None = Field(None, ge=1)
+    catch_all: CatchAll | None = None
+
+
+@router.post("/lines")
+def add_line(body: NewLineBody) -> Any:
+    """201 `{id, chapter_id, book_id, rematch}`; 409 `{detail: "duplicate", duplicate}` or
+    `{detail: "activation_conflict", refusal}`; 404 for a chapter that is not a destination;
+    422 for moves that do not play or a missing destination."""
+    if (body.chapter_id is None) == (body.catch_all is None):
+        raise HTTPException(422, "one destination: chapter_id or catch_all")
+    try:
+        with db.transaction() as conn:
+            window = settings.load(conn).analysis_game_limit
+            result = lines.add_manual(
+                conn,
+                moves=[m.strip() for m in body.moves],
+                line_name=body.line_name,
+                window=window,
+                chapter_id=body.chapter_id,
+                catch_all=(body.catch_all.colour, body.catch_all.family) if body.catch_all else None,
+            )
+    except lines.InvalidLine as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except lines.NoChapter as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except lines.Duplicate as exc:
+        return JSONResponse({"detail": "duplicate", "duplicate": exc.as_row()}, status_code=409)
+    except lines.Refused as exc:
+        return JSONResponse({"detail": "activation_conflict", "refusal": exc.refusal.as_row()}, status_code=409)
+    return JSONResponse(result, status_code=201)
+
+
+@router.delete("/lines/{line_id}")
+def delete_line(line_id: int) -> dict[str, Any]:
+    """200 `{detail: "deleted", loads, rematch}`; 404 when the line is not the player's."""
+    with db.transaction() as conn:
+        result = lines.delete(conn, line_id)
+    if result is None:
+        raise HTTPException(404, "Not found")
+    return {"detail": "deleted", **result}
 
 
 @router.patch("/{kind}/{id}")
