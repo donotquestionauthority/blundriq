@@ -42,8 +42,7 @@ def test_everything_needs_login(app_env: None) -> None:
     assert c.get("/repertoire/annotation", params={"fen": h.START}).status_code == 401
     assert c.get("/repertoire/conflicts").status_code == 401
     assert c.get("/repertoire/coverage", params={"fen": h.START}).status_code == 401
-    assert c.get("/repertoire/report/lines").status_code == 401
-    assert c.get("/repertoire/report/gaps", params={"colour": "white"}).status_code == 401
+    assert c.get("/repertoire/report").status_code == 401
 
 
 def test_deviations_list_and_seen(client: TestClient) -> None:
@@ -162,35 +161,25 @@ def test_coverage_route(client: TestClient) -> None:
         assert client.get("/repertoire/coverage", params={"fen": fens[4], "move": bad_move}).status_code == 400
 
 
-def test_the_line_report_routes(client: TestClient) -> None:
-    """The fixture's two games both leave the Italian at Bc4 (the player played d4)."""
-    lines = client.get("/repertoire/report/lines", params={"time_class": "all"}).json()["books"]
+def test_the_line_report_route(client: TestClient) -> None:
+    """The fixture's two games both leave the Italian at Bc4 (the player played d4). One read
+    carries the lines table and both colours' gaps."""
+    out = client.get("/repertoire/report", params={"time_class": "all"}).json()
+    lines = out["lines"]["books"]
     assert lines[0]["title"] == "Italian" and lines[0]["games"] == 2 and lines[0]["left_by_me"] == 2
     line = lines[0]["chapters"][0]["lines"][0]
     assert line["title"] == "Main" and line["slip"] == {"own_move": 3, "expected": "Bc4", "played": "d4", "count": 2}
-    assert line["depth_total"] == 3 and line["depth_reached"] == {"2": 2} and line["puzzles"] == 0
-    assert client.get("/repertoire/report/lines").json()["books"][0]["games"] == 2  # focus: rapid games count
-    assert client.get("/repertoire/report/lines", params={"time_class": "nope"}).status_code == 422
-    gaps = client.get("/repertoire/report/gaps", params={"colour": "white", "time_class": "all"}).json()
-    assert gaps == {
+    assert line["depth_total"] == 3 and line["depth_reached"] == {"2": 2} and "puzzles" not in line
+    assert out["lines"]["drill_max_lines"] == 50
+    assert client.get("/repertoire/report").json()["lines"]["books"][0]["games"] == 2  # focus: rapid games count
+    assert client.get("/repertoire/report", params={"time_class": "nope"}).status_code == 422
+    empty = {"no_book": False, "prepared": [], "gaps": [], "prefill_plies": 10, "max_plies": 60}
+    assert out["gaps"]["white"] == {
         "colour": "white",
-        "no_book": False,
-        "prepared": [],
-        "gaps": [],
-        "prefill_plies": 10,
-        "max_plies": 60,
+        "destinations": [{"id": 1, "title": "Giuoco", "book_id": 1, "book": "Italian"}],
+        **empty,
     }
-    black = client.get("/repertoire/report/gaps", params={"colour": "black"}).json()
-    assert black == {
-        "colour": "black",
-        "no_book": False,
-        "prepared": [],
-        "gaps": [],
-        "prefill_plies": 10,
-        "max_plies": 60,
-    }
-    assert client.get("/repertoire/report/gaps").status_code == 422  # colour is required
-    assert client.get("/repertoire/report/gaps", params={"colour": "red"}).status_code == 422
+    assert out["gaps"]["black"] == {"colour": "black", "destinations": [], **empty}
 
 
 def test_the_manual_line_routes(client: TestClient) -> None:
@@ -258,7 +247,7 @@ def test_the_manual_line_routes(client: TestClient) -> None:
     gone = client.delete(f"/repertoire/lines/{made.json()['id']}")
     assert gone.status_code == 200 and gone.json()["detail"] == "deleted" and gone.json()["loads"] == 0
     assert client.delete(f"/repertoire/lines/{made.json()['id']}").status_code == 404
-    report = client.get("/repertoire/report/lines", params={"time_class": "all"}).json()
+    report = client.get("/repertoire/report", params={"time_class": "all"}).json()["lines"]
     assert report["drill_max_lines"] == 50
     titles = [ln["title"] for b in report["books"] for ch in b["chapters"] for ln in ch["lines"]]
     assert "Scandi" not in titles and "QGD" in titles

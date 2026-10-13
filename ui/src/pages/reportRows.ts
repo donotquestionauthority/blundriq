@@ -35,9 +35,9 @@ export function flatten(books: ReportBook[]): { lines: Row[]; chapters: Row[]; b
       const ids = ch.lines.map((l) => l.id);
       bookLines.push(...ids);
       for (const l of ch.lines) {
-        lines.push({ ...l, key: `line:${l.id}`, kind: "lines", id: l.id, colour: l.colour, book: l.book, book_id: l.book_id, chapter: l.chapter, chapter_id: l.chapter_id, line: l, lineIds: [l.id], count: 1, practice: l.practice });
+        lines.push({ ...l, key: `line:${l.id}`, kind: "lines", id: l.id, colour: b.colour, book: b.title, book_id: b.id, chapter: ch.title, chapter_id: ch.id, line: l, lineIds: [l.id], count: 1, practice: l.practice });
       }
-      chapters.push({ ...ch, key: `chapter:${ch.id}`, kind: "chapters", id: ch.id, colour: ch.colour, book: ch.book, book_id: ch.book_id, chapter: ch.title, chapter_id: ch.id, line: null, lineIds: ids, count: ch.lines.length, practice: ch.practice });
+      chapters.push({ ...ch, key: `chapter:${ch.id}`, kind: "chapters", id: ch.id, colour: b.colour, book: b.title, book_id: b.id, chapter: ch.title, chapter_id: ch.id, line: null, lineIds: ids, count: ch.lines.length, practice: ch.practice });
     }
     out.push({ ...b, key: `book:${b.id}`, kind: "books", id: b.id, colour: b.colour, book: b.title, book_id: b.id, chapter: null, chapter_id: null, line: null, lineIds: bookLines, count: b.chapters.length, practice: b.practice });
   }

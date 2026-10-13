@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import { DEFAULT_DEPTH, useStockfish } from "../engine/useStockfish";
 import { addLine, duplicateOf, refusalOf } from "../repertoire";
-import type { GapCard, NewLineBody, NewLineResponse, Refusal } from "../repertoire";
+import type { Destination, GapCard, NewLineBody, NewLineResponse, Refusal } from "../repertoire";
 import { played, seedFor, START, turnAfter } from "./lineSeed";
 import { MoveBuilder } from "./MoveBuilder";
 import type { MoveBuilderState } from "./MoveBuilder";
@@ -30,7 +30,7 @@ function refusalText(r: Refusal): string {
  * a name. Save is enabled only while the line ends on the player's move and has at least one own
  * move past the gap; the server's rule is the same rule. Mount it only while open, keyed per card.
  */
-export function AddLineModal({ card, prefillPlies, maxPlies, onClose, onAdded }: { card: GapCard; prefillPlies: number; maxPlies: number; onClose: () => void; onAdded: (made: NewLineResponse) => void }) {
+export function AddLineModal({ card, destinations, prefillPlies, maxPlies, onClose, onAdded }: { card: GapCard; destinations: Destination[]; prefillPlies: number; maxPlies: number; onClose: () => void; onAdded: (made: NewLineResponse) => void }) {
   const colour = card.colour === "white" ? "w" : "b";
   const stemLength = useMemo(() => played(card.stem ?? []).length, [card.stem]);
   const seed = useMemo(() => seedFor(card, prefillPlies, maxPlies), [card, prefillPlies, maxPlies]);
@@ -39,7 +39,7 @@ export function AddLineModal({ card, prefillPlies, maxPlies, onClose, onAdded }:
   // never some other chapter of the colour, which would file the line under an unrelated book.
   const [destination, setDestination] = useState<string>(() => {
     const ctx = card.context?.chapter_id;
-    return ctx !== undefined && card.chapters.some((ch) => ch.id === ctx) ? String(ctx) : CATCH_ALL;
+    return ctx !== undefined && destinations.some((ch) => ch.id === ctx) ? String(ctx) : CATCH_ALL;
   });
   const [name, setName] = useState(() => defaultName(card));
   const [submitting, setSubmitting] = useState(false);
@@ -120,7 +120,7 @@ export function AddLineModal({ card, prefillPlies, maxPlies, onClose, onAdded }:
             <label className="block text-xs uppercase tracking-wide text-zinc-500">
               Book › Chapter
               <select aria-label="Book and chapter" value={destination} disabled={submitting} onChange={(e) => setDestination(e.target.value)} className={`${input} normal-case tracking-normal text-zinc-900 dark:text-zinc-100`}>
-                {card.chapters.map((ch) => (
+                {destinations.map((ch) => (
                   <option key={ch.id} value={String(ch.id)}>
                     {ch.book} › {ch.title}
                   </option>

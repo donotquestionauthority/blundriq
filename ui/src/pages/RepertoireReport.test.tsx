@@ -54,7 +54,6 @@ const tally = (over: Partial<ReportTally> = {}): ReportTally => ({
   depth_reached: { "2": 1, "3": 2 },
   slip: { own_move: 3, expected: "Bc4", played: "d4", count: 1 },
   last_played: "2026-10-10T10:00:00+00:00",
-  puzzles: 0,
   ...over,
 });
 const line = (over: Partial<ReportLine> = {}): ReportLine => ({
@@ -66,10 +65,7 @@ const line = (over: Partial<ReportLine> = {}): ReportLine => ({
   depth_total: 3,
   shared: false,
   book_id: 1,
-  book: "Italian",
   chapter_id: 1,
-  chapter: "Giuoco",
-  colour: "white",
   practice: practice(),
   ...over,
 });
@@ -87,8 +83,6 @@ const books = (): ReportBook[] => [
         id: 1,
         title: "Giuoco",
         book_id: 1,
-        book: "Italian",
-        colour: "white",
         practice: practice({ loads: 5, first_right: 3, first_wrong: 2 }),
         lines: [
           line({ practice: practice({ loads: 5, first_right: 3, first_wrong: 2 }) }),
@@ -110,10 +104,8 @@ const books = (): ReportBook[] => [
         id: 2,
         title: "Qa5",
         book_id: 2,
-        book: "Scandi",
-        colour: "black",
         practice: practice(),
-        lines: [line({ id: 3, title: "Line C", games: 9, score: 0.4, faithful: 4, book_id: 2, book: "Scandi", chapter_id: 2, chapter: "Qa5", colour: "black", slip: null, left_by_me: 5 })],
+        lines: [line({ id: 3, title: "Line C", games: 9, score: 0.4, faithful: 4, book_id: 2, chapter_id: 2, slip: null, left_by_me: 5 })],
       },
     ],
   },
@@ -135,11 +127,12 @@ const card = (over: Partial<GapCard> = {}): GapCard => ({
   engine: { best_move: "c3", line: ["c3", "Be7", "d4", "exd4", "cxd4"], eval: 40, mate_in: null },
   last_played: "2026-10-10T10:00:00+00:00",
   stem: ["e4", "e5", "Nf3", "Nc6", "Bc4", "d6"],
-  chapters: [{ id: 1, title: "Giuoco", book_id: 1, book: "Italian" }],
   catch_all: { book: "Catch-all (white)", chapter: "Italian Game" },
   ...over,
 });
-const gaps = (colour: "white" | "black", over: Partial<GapsResponse> = {}): GapsResponse => ({ colour, no_book: false, prepared: [], gaps: [], prefill_plies: 10, max_plies: 60, ...over });
+const gaps = (colour: "white" | "black", over: Partial<GapsResponse> = {}): GapsResponse => ({ colour, no_book: false, prepared: [], gaps: [], destinations: colour === "white" ? [{ id: 1, title: "Giuoco", book_id: 1, book: "Italian" }] : [], prefill_plies: 10, max_plies: 60, ...over });
+/** The one read: the lines and both colours' gaps. */
+const reportBody = (b: ReportBook[] = books(), white: Partial<GapsResponse> = {}, black: Partial<GapsResponse> = {}, drillMax = 50) => ({ lines: { books: b, drill_max_lines: drillMax }, gaps: { white: gaps("white", white), black: gaps("black", black) } });
 
 function Location() {
   const loc = useLocation();
@@ -186,8 +179,7 @@ describe("the rows", () => {
 describe("the line report page", () => {
   it("shows one flat table ordered by games with the book and chapter on each row, the practice numbers, the custom chip, and sorts on a header", async () => {
     const calls = stubFetch({
-      "/repertoire/report/lines": () => ({ status: 200, body: { books: books(), drill_max_lines: 50 } }),
-      "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
+      "/repertoire/report": () => ({ status: 200, body: reportBody() }),
     });
     renderPage();
     const table = await screen.findByTestId("report-table");
@@ -195,33 +187,31 @@ describe("the line report page", () => {
     const rows = screen.getAllByTestId("report-row-lines");
     expect(rows).toHaveLength(3);
     const cells = (i: number) => within(rows[i]).getAllByRole("cell").map((c) => c.textContent);
-    expect(cells(0).slice(1, 3)).toEqual(["Black", expect.stringContaining("Line C")]);
-    expect(cells(1).slice(1, 3)).toEqual(["White", expect.stringContaining("Main")]);
-    expect(cells(1)[2]).toContain("Italian › Giuoco");
-    expect(cells(1)[3]).toBe("32–0–1");
-    expect(cells(1).slice(4, 9)).toEqual(["67%", "67%", "3 of 3", "5", "3 ✓ · 2 ✗"]);
-    expect(cells(1)).toHaveLength(10);
+    expect(cells(0).slice(1, 5)).toEqual(["Black", "Scandi", "Qa5", expect.stringContaining("Line C")]);
+    expect(cells(1).slice(1, 5)).toEqual(["White", "Italian", "Giuoco", expect.stringContaining("Main")]);
+    expect(cells(1)[5]).toBe("32–0–1");
+    expect(cells(1).slice(6, 11)).toEqual(["67%", "67%", "3 of 3", "5", "3 ✓ · 2 ✗"]);
+    expect(cells(1)).toHaveLength(12);
     expect(within(rows[1]).getByText(/You left at your move 3 in 1 of 1/)).toBeInTheDocument();
     expect(within(rows[2]).getByText("custom")).toBeInTheDocument();
     expect(within(rows[2]).getByText("shared")).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: /Games/ })).toHaveAttribute("aria-sort", "descending");
     fireEvent.click(screen.getByRole("button", { name: /Games/ }));
     expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?dir=asc");
-    expect(firstCells(2).map((t) => /^(Evans|Main|Line C)/.exec(t ?? "")?.[1])).toEqual(["Evans", "Main", "Line C"]); // 1, 3, 9 games
+    expect(firstCells(4).map((t) => /^(Evans|Main|Line C)/.exec(t ?? "")?.[1])).toEqual(["Evans", "Main", "Line C"]); // 1, 3, 9 games
     fireEvent.click(screen.getByRole("button", { name: /Score/ }));
     expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?dir=desc&sort=score");
-    expect(firstCells(2).map((t) => /^(Evans|Main|Line C)/.exec(t ?? "")?.[1])).toEqual(["Evans", "Main", "Line C"]);
+    expect(firstCells(4).map((t) => /^(Evans|Main|Line C)/.exec(t ?? "")?.[1])).toEqual(["Evans", "Main", "Line C"]);
     expect(screen.queryByRole("link", { name: /Drill/ })).toBeNull();
-    expect(calls.filter((c) => c.path === "/repertoire/report/lines").map((c) => c.query.get("time_class"))).toEqual(["focus"]);
+    expect(calls.filter((c) => c.path === "/repertoire/report").map((c) => c.query.get("time_class"))).toEqual(["focus"]);
     fireEvent.change(screen.getByLabelText("Time class"), { target: { value: "all" } });
-    await waitFor(() => expect(calls.filter((c) => c.path === "/repertoire/report/lines").map((c) => c.query.get("time_class"))).toEqual(["focus", "all"]));
+    await waitFor(() => expect(calls.filter((c) => c.path === "/repertoire/report").map((c) => c.query.get("time_class"))).toEqual(["focus", "all"]));
     expect(screen.getByTestId("location").textContent).toContain("time_class=all");
   });
 
   it("the chapter and book views, the filters, select all shown, and Drill in the table's order", async () => {
     stubFetch({
-      "/repertoire/report/lines": () => ({ status: 200, body: { books: books(), drill_max_lines: 50 } }),
-      "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
+      "/repertoire/report": () => ({ status: 200, body: reportBody() }),
     });
     renderPage();
     await screen.findByTestId("report-table");
@@ -257,8 +247,7 @@ describe("the line report page", () => {
 
   it("the book filter narrows the chapter filter; the origin filter; the state round-trips through the URL", async () => {
     stubFetch({
-      "/repertoire/report/lines": () => ({ status: 200, body: { books: books(), drill_max_lines: 50 } }),
-      "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
+      "/repertoire/report": () => ({ status: 200, body: reportBody() }),
     });
     renderPage("/repertoire/report?view=chapters&sort=book&dir=asc&book=1&colour=white");
     await screen.findByTestId("report-table");
@@ -267,8 +256,7 @@ describe("the line report page", () => {
     expect(screen.getByRole("columnheader", { name: /Book/ })).toHaveAttribute("aria-sort", "ascending");
     expect(within(screen.getByLabelText("Chapter")).getAllByRole("option").map((o) => o.textContent)).toEqual(["All chapters", "Giuoco"]);
     fireEvent.click(screen.getByRole("tab", { name: "By line" }));
-    // No Book or Chapter column on a line row (they sit under the title), but both still sort.
-    expect(screen.queryByRole("columnheader", { name: /Book/ })).toBeNull();
+    expect(screen.getByRole("columnheader", { name: /Book/ })).toHaveAttribute("aria-sort", "ascending");
     expect(screen.getByLabelText("Sort")).toHaveValue("book");
     fireEvent.change(screen.getByLabelText("Origin"), { target: { value: "manual" } });
     expect(screen.getAllByTestId("report-row-lines")).toHaveLength(1);
@@ -280,8 +268,7 @@ describe("the line report page", () => {
 
   it("a container row and Select all shown reach only the lines the filters leave", async () => {
     stubFetch({
-      "/repertoire/report/lines": () => ({ status: 200, body: { books: books(), drill_max_lines: 50 } }),
-      "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
+      "/repertoire/report": () => ({ status: 200, body: reportBody() }),
     });
     renderPage("/repertoire/report?view=chapters&origin=manual");
     await screen.findByTestId("report-table");
@@ -304,8 +291,7 @@ describe("the line report page", () => {
   it("a drill over the cap is refused on the page", async () => {
     const many: ReportBook[] = [{ ...books()[0], chapters: [{ ...books()[0].chapters[0], lines: Array.from({ length: 51 }, (_, i) => line({ id: 100 + i, title: `L${i}` })) }] }];
     stubFetch({
-      "/repertoire/report/lines": () => ({ status: 200, body: { books: many, drill_max_lines: 50 } }),
-      "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
+      "/repertoire/report": () => ({ status: 200, body: reportBody(many) }),
     });
     renderPage();
     await screen.findByTestId("report-table");
@@ -324,10 +310,10 @@ describe("the line report page", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) => {
-        const [path, q] = url.replace(/^.*\/api/, "").split("?");
+        const [, q] = url.replace(/^.*\/api/, "").split("?");
         const tc = new URLSearchParams(q).get("time_class");
-        if (path === "/repertoire/report/lines" && tc === "focus") await slow;
-        const body = path === "/repertoire/report/lines" ? { books: tc === "focus" ? books() : [], drill_max_lines: 50 } : gaps(new URLSearchParams(q).get("colour") as "white");
+        if (tc === "focus") await slow;
+        const body = reportBody(tc === "focus" ? books() : []);
         return { ok: true, status: 200, statusText: "200", json: async () => body };
       }),
     );
@@ -342,15 +328,14 @@ describe("the line report page", () => {
 
   it("the Sort control sorts like a header: text ascending, numbers descending, the arrow flips", async () => {
     stubFetch({
-      "/repertoire/report/lines": () => ({ status: 200, body: { books: books(), drill_max_lines: 50 } }),
-      "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
+      "/repertoire/report": () => ({ status: 200, body: reportBody() }),
     });
     renderPage();
     await screen.findByTestId("report-table");
     expect(within(screen.getByLabelText("Sort")).getAllByRole("option").map((o) => o.textContent)).toEqual(["Colour", "Book", "Chapter", "Line", "Games", "Score", "Faithful", "Depth", "Loads", "First try", "Last played"]);
     fireEvent.change(screen.getByLabelText("Sort"), { target: { value: "line" } });
     expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?sort=line&dir=asc");
-    expect(firstCells(2).map((c) => /^(Evans|Main|Line C)/.exec(c ?? "")?.[1])).toEqual(["Evans", "Line C", "Main"]);
+    expect(firstCells(4).map((c) => /^(Evans|Main|Line C)/.exec(c ?? "")?.[1])).toEqual(["Evans", "Line C", "Main"]);
     fireEvent.click(screen.getByRole("button", { name: /Ascending; sort descending/ }));
     expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?sort=line&dir=desc");
     fireEvent.change(screen.getByLabelText("Sort"), { target: { value: "first_right" } });
@@ -363,8 +348,7 @@ describe("the line report page", () => {
   it("lists the first page and reveals more; a control change starts the listing over; the drill and Select all shown see every shown line", async () => {
     const many: ReportBook[] = [{ ...books()[0], chapters: [{ ...books()[0].chapters[0], lines: Array.from({ length: 205 }, (_, i) => line({ id: 100 + i, title: `L${i}`, games: 300 - i })) }] }];
     stubFetch({
-      "/repertoire/report/lines": () => ({ status: 200, body: { books: many, drill_max_lines: 500 } }),
-      "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
+      "/repertoire/report": () => ({ status: 200, body: reportBody(many, {}, {}, 500) }),
     });
     renderPage();
     await screen.findByTestId("report-table");
@@ -380,7 +364,7 @@ describe("the line report page", () => {
     fireEvent.click(screen.getByRole("button", { name: /Games/ }));
     expect(screen.getAllByTestId("report-row-lines")).toHaveLength(200);
     expect(screen.getByLabelText("Select L204")).toBeChecked(); // ascending now: the last line is listed first
-    expect(firstCells(2)[0]).toContain("L204");
+    expect(firstCells(4)[0]).toContain("L204");
     // A view change starts over too; the Gaps tabs leave the listing alone.
     fireEvent.click(screen.getByRole("button", { name: "Show 5 more (5 left)" }));
     fireEvent.click(screen.getByRole("tab", { name: "Black" }));
@@ -388,12 +372,11 @@ describe("the line report page", () => {
     fireEvent.click(screen.getByRole("tab", { name: "By chapter" }));
     fireEvent.click(screen.getByRole("tab", { name: "By line" }));
     expect(screen.getAllByTestId("report-row-lines")).toHaveLength(200);
-  });
+  }, 20_000); // 200 rows rendered several times in jsdom: slow, not a race
 
   it("a sort the view does not offer falls back to games, and a view change drops it from the URL", async () => {
     stubFetch({
-      "/repertoire/report/lines": () => ({ status: 200, body: { books: books(), drill_max_lines: 50 } }),
-      "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
+      "/repertoire/report": () => ({ status: 200, body: reportBody() }),
     });
     renderPage("/repertoire/report?view=books&sort=depth&dir=asc");
     await screen.findByTestId("report-table");
@@ -410,8 +393,7 @@ describe("the line report page", () => {
   it("on a phone the rows are cards with the same selection, the numbers in one strip and no table", async () => {
     vi.stubGlobal("matchMedia", (q: string) => ({ matches: false, media: q, addEventListener: () => {}, removeEventListener: () => {} }));
     stubFetch({
-      "/repertoire/report/lines": () => ({ status: 200, body: { books: books(), drill_max_lines: 50 } }),
-      "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
+      "/repertoire/report": () => ({ status: 200, body: reportBody() }),
     });
     renderPage();
     const cards = await screen.findByTestId("report-cards");
@@ -444,17 +426,17 @@ describe("the line report page", () => {
 
   it("shows the gaps for the colour with more of them, Add to repertoire only with a stem, Prepared but not played, and the no-book notice", async () => {
     stubFetch({
-      "/repertoire/report/lines": () => ({ status: 200, body: { books: [], drill_max_lines: 50 } }),
-      "/repertoire/report/gaps": (q) =>
-        q.get("colour") === "white"
-          ? { status: 200, body: gaps("white", { no_book: true }) }
-          : {
-              status: 200,
-              body: gaps("black", {
-                prepared: [{ fen: "x", book_move: "d5", played: "c5", games: 9, wins: 4, draws: 1, losses: 4, line_id: 5, line_name: "Main", book: "Scandi", chapter: "Main", puzzles: 1, last_played: null }],
-                gaps: [card({ colour: "black", fen: "a", family: "Queen's Pawn", context: null, arrived_by: "d4", engine: null, stem: ["d4"] }), card({ colour: "black", fen: "b", stem: null })],
-              }),
-            },
+      "/repertoire/report": () => ({
+        status: 200,
+        body: reportBody(
+          [],
+          { no_book: true, destinations: [] },
+          {
+            prepared: [{ fen: "x", book_move: "d5", played: "c5", games: 9, wins: 4, draws: 1, losses: 4, line_id: 5, line_name: "Main", book: "Scandi", chapter: "Main", puzzles: 1, last_played: null }],
+            gaps: [card({ colour: "black", fen: "a", family: "Queen's Pawn", context: null, arrived_by: "d4", engine: null, stem: ["d4"] }), card({ colour: "black", fen: "b", stem: null })],
+          },
+        ),
+      }),
     });
     renderPage();
     const black = await screen.findByRole("tab", { name: "Black" });
@@ -474,8 +456,7 @@ describe("the line report page", () => {
 
   it("opens the modal with the card and the server's constants; a save marks the card and re-reads the lines", async () => {
     const calls = stubFetch({
-      "/repertoire/report/lines": () => ({ status: 200, body: { books: [], drill_max_lines: 50 } }),
-      "/repertoire/report/gaps": (q) => ({ status: 200, body: q.get("colour") === "white" ? gaps("white", { gaps: [card()] }) : gaps("black") }),
+      "/repertoire/report": () => ({ status: 200, body: reportBody([], { gaps: [card()] }) }),
     });
     renderPage();
     const cards = await screen.findAllByTestId("gap-card");
@@ -484,12 +465,12 @@ describe("the line report page", () => {
     expect(dialog).toHaveAttribute("data-fen", GAP);
     expect(dialog).toHaveAttribute("data-prefill", "10");
     expect(dialog).toHaveAttribute("data-max", "60");
-    const linesBefore = calls.filter((c) => c.path === "/repertoire/report/lines").length;
+    const before = calls.filter((c) => c.path === "/repertoire/report").length;
     fireEvent.click(screen.getByText("fake-save"));
+    expect(calls.filter((c) => c.path === "/repertoire/report")).toHaveLength(before); // the card is marked at once; the read waits for the close
     fireEvent.click(screen.getByText("fake-close"));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(within(screen.getAllByTestId("gap-card")[0]).getByText(/Added to your repertoire/)).toBeInTheDocument();
-    await waitFor(() => expect(calls.filter((c) => c.path === "/repertoire/report/lines").length).toBe(linesBefore + 1));
-    await waitFor(() => expect(calls.filter((c) => c.path === "/repertoire/report/gaps")).toHaveLength(4));
+    await waitFor(() => expect(calls.filter((c) => c.path === "/repertoire/report").length).toBe(before + 1));
   });
 });

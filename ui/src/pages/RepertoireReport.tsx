@@ -8,7 +8,7 @@ import { AddLineModal } from "../components/AddLineModal";
 import { fmtCp } from "../engine/eval";
 import { useApi } from "../hooks/useApi";
 import { useMediaQuery } from "../hooks/useMediaQuery";
-import { getReportGaps, getReportLines } from "../repertoire";
+import { getReport } from "../repertoire";
 import type { GapCard, GapsResponse, PreparedRow, ReportTally } from "../repertoire";
 import { filterRows, flatten, medianDepth, SORT_KEYS, sortRows, VIEWS } from "./reportRows";
 import type { Dir, Filters, Row, SortKey, View } from "./reportRows";
@@ -43,12 +43,11 @@ function slipText(t: ReportTally): string | null {
  *  them one card at a time. The filters, Select all shown and the drill see every shown row. */
 export const PAGE = 200;
 
-/** `views`: where the column is; `sortViews`: where its sort is offered (a line row carries its
- *  book and chapter under the title rather than in columns of their own, but still sorts by them). */
+/** `views`: where the column is; `sortViews`: where its sort is offered, when that is wider. */
 const COLUMNS: { key: SortKey; label: string; views: View[]; sortViews?: View[]; numeric?: boolean; title?: string }[] = [
   { key: "colour", label: "Colour", views: VIEWS },
-  { key: "book", label: "Book", views: ["chapters", "books"], sortViews: VIEWS },
-  { key: "chapter", label: "Chapter", views: ["chapters"], sortViews: ["lines", "chapters"] },
+  { key: "book", label: "Book", views: VIEWS },
+  { key: "chapter", label: "Chapter", views: ["lines", "chapters"] },
   { key: "line", label: "Line", views: ["lines"] },
   { key: "games", label: "Games", views: VIEWS, numeric: true, title: "Games through it, then wins–draws–losses" },
   { key: "score", label: "Score", views: VIEWS, numeric: true, title: "Wins and half the draws, over the decided games" },
@@ -98,21 +97,23 @@ function Title({ r }: { r: Row }) {
 /** The book and chapter a row sits in, the book left out when the Book filter names it already. */
 const where = (r: Row, bookFiltered: boolean) => (bookFiltered ? r.chapter : `${r.book} › ${r.chapter}`);
 
-function Cell({ r, col, bookFiltered }: { r: Row; col: SortKey; bookFiltered: boolean }) {
+function Cell({ r, col }: { r: Row; col: SortKey }) {
   switch (col) {
     case "colour":
       return <>{r.colour === "white" ? "White" : "Black"}</>;
     case "book":
-      return r.kind === "books" ? <Title r={r} /> : <div className="min-w-[12rem] text-xs text-zinc-600 dark:text-zinc-300">{r.book}</div>;
+      // A line's or chapter's book, and a line's chapter, wrap in a column of their own (the
+      // player's choice over folding them under the title); the table scrolls sideways when the
+      // titles are long.
+      return r.kind === "books" ? <Title r={r} /> : <div className="min-w-[8rem] max-w-[12rem] text-xs text-zinc-600 dark:text-zinc-300">{r.book}</div>;
     case "chapter":
-      return <Title r={r} />;
+      return r.kind === "chapters" ? <Title r={r} /> : <div className="min-w-[8rem] max-w-[12rem] text-xs text-zinc-600 dark:text-zinc-300">{r.chapter}</div>;
     case "line": {
       if (!r.line) return null;
       const slip = slipText(r);
       return (
-        <div className="min-w-[16rem]">
+        <div className="min-w-[12rem]">
           <Title r={r} />
-          <p className="text-xs text-zinc-500">{where(r, bookFiltered)}</p>
           <p className="text-xs text-zinc-500">{[whoLeft(r), slip].filter(Boolean).join(" · ")}</p>
         </div>
       );
@@ -308,14 +309,15 @@ export default function RepertoireReport() {
     [params, setParams],
   );
 
-  const lines = useApi(() => getReportLines(timeClass), [timeClass]);
-  const gapsRead = useApi(() => Promise.all([getReportGaps("white", timeClass), getReportGaps("black", timeClass)]), [timeClass]);
+  // One read for the whole page: the lines table and both colours' gaps.
+  const report = useApi(() => getReport(timeClass), [timeClass]);
+  const lines = report.data?.lines ?? null;
   const [source, setSource] = useState<GapCard | null>(null);
   const [added, setAdded] = useState<Record<string, true>>({});
   const [checkedRaw, setChecked] = useState<Set<number>>(() => new Set());
 
-  const flat = useMemo(() => (lines.data ? flatten(lines.data.books) : null), [lines.data]);
-  const drillMax = lines.data?.drill_max_lines ?? 50;
+  const flat = useMemo(() => (lines ? flatten(lines.books) : null), [lines]);
+  const drillMax = lines?.drill_max_lines ?? 50;
   // The lines the filters leave, in the table's order: what "shown" means for every view. A
   // chapter or book row stands for its shown lines only, so Select all shown and a container's
   // checkbox never reach a line the filters hide.
@@ -366,19 +368,19 @@ export default function RepertoireReport() {
     else sortBy(key);
   };
 
-  const both = gapsRead.data;
-  const shown: GapsResponse | null = both ? (gapColour ?? (both[1].gaps.length > both[0].gaps.length ? "black" : "white")) === "white" ? both[0] : both[1] : null;
+  const both = report.data?.gaps ?? null;
+  const shown: GapsResponse | null = both ? (gapColour ?? (both.black.gaps.length > both.white.gaps.length ? "black" : "white")) === "white" ? both.white : both.black : null;
   const activeColour = shown?.colour ?? gapColour ?? "white";
-  const refetchLines = lines.refetch;
-  const refetchGaps = gapsRead.refetch;
+  const refetch = report.refetch;
+  // A saved line marks its card at once; the lines and the gaps are re-read together when the
+  // modal closes (the one read serves both).
   const onAdded = useCallback(() => {
     if (source) setAdded((a) => ({ ...a, [source.fen]: true }));
-    refetchLines();
-  }, [source, refetchLines]);
+  }, [source]);
   const closeModal = useCallback(() => {
     setSource(null);
-    refetchGaps();
-  }, [refetchGaps]);
+    refetch();
+  }, [refetch]);
 
   const columns = COLUMNS.filter((c) => c.views.includes(view));
   const sortable = COLUMNS.filter((c) => (c.sortViews ?? c.views).includes(view));
@@ -459,12 +461,12 @@ export default function RepertoireReport() {
           </span>
         </div>
       </div>
-      {lines.error && (
+      {report.error && (
         <p role="alert" className="text-sm text-red-600 dark:text-red-400">
-          {lines.error}
+          {report.error}
         </p>
       )}
-      {lines.isLoading && !lines.data && <p className="text-sm text-zinc-500">Loading…</p>}
+      {report.isLoading && !report.data && <p className="text-sm text-zinc-500">Loading…</p>}
       {flat && flat.lines.length === 0 && <p className="text-sm text-zinc-500">No active line in your repertoire.</p>}
       {flat && flat.lines.length > 0 && (
         <>
@@ -488,7 +490,7 @@ export default function RepertoireReport() {
             </span>
           </div>
           {wide ? (
-            <div className={`overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800 ${lines.isStale ? "opacity-60" : ""}`}>
+            <div className={`overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800 ${report.isStale ? "opacity-60" : ""}`}>
               <table className="w-full text-sm" data-testid="report-table" data-view={view}>
                 <thead className="border-b border-zinc-200 dark:border-zinc-800">
                   <tr>
@@ -511,7 +513,7 @@ export default function RepertoireReport() {
                       </td>
                       {columns.map((c) => (
                         <td key={c.key} className={`px-1.5 py-1.5 ${c.numeric ? "text-right tabular-nums" : ""} ${c.key === "line" || c.key === "book" || c.key === "chapter" ? "" : "whitespace-nowrap"}`}>
-                          <Cell r={r} col={c.key} bookFiltered={filters.book !== null} />
+                          <Cell r={r} col={c.key} />
                         </td>
                       ))}
                     </tr>
@@ -520,7 +522,7 @@ export default function RepertoireReport() {
               </table>
             </div>
           ) : (
-            <ul className={`rounded-lg border border-zinc-200 dark:border-zinc-800 ${lines.isStale ? "opacity-60" : ""}`} data-testid="report-cards" data-view={view}>
+            <ul className={`rounded-lg border border-zinc-200 dark:border-zinc-800 ${report.isStale ? "opacity-60" : ""}`} data-testid="report-cards" data-view={view}>
               {listedRows.map((r) => (
                 <RowCard key={r.key} r={r} checked={isChecked(r)} bookFiltered={filters.book !== null} onToggle={() => toggleRow(r)} />
               ))}
@@ -544,14 +546,9 @@ export default function RepertoireReport() {
           ))}
         </div>
       </div>
-      {gapsRead.error && (
-        <p role="alert" className="text-sm text-red-600 dark:text-red-400">
-          {gapsRead.error}
-        </p>
-      )}
-      {gapsRead.isLoading && !both && <p className="text-sm text-zinc-500">Loading…</p>}
+      {report.isLoading && !both && <p className="text-sm text-zinc-500">Loading…</p>}
       {shown && (
-        <div className={`space-y-3 ${gapsRead.isStale ? "opacity-60" : ""}`}>
+        <div className={`space-y-3 ${report.isStale ? "opacity-60" : ""}`}>
           {shown.no_book ? (
             <p className="text-sm text-zinc-500">No active White line: every White game opens outside your repertoire.</p>
           ) : (
@@ -567,7 +564,7 @@ export default function RepertoireReport() {
           )}
         </div>
       )}
-      {source && shown && <AddLineModal key={source.fen} card={source} prefillPlies={shown.prefill_plies} maxPlies={shown.max_plies} onClose={closeModal} onAdded={onAdded} />}
+      {source && shown && <AddLineModal key={source.fen} card={source} destinations={shown.destinations} prefillPlies={shown.prefill_plies} maxPlies={shown.max_plies} onClose={closeModal} onAdded={onAdded} />}
     </div>
   );
 }

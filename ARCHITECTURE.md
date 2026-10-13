@@ -142,7 +142,7 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `core/puzzles/drill.py` | A drill of chosen lines: mint, `drilled_at`, the proof-of-service exposures, whole-line presentation. |
 | `core/puzzles/stats.py` | Loads and first-attempt verdicts per repertoire line (`session_id`, `attempt_seq`): the line report's practice numbers. |
 | `core/repertoire/lines.py` | A line added by hand (the catch-all books, the gate, duplicates) and a line deleted, each with its rematch. |
-| `core/repertoire/report.py` | The line report: every active line's games, results, depth, faithfulness and practice numbers; the gap boards with their stem and destinations. |
+| `core/repertoire/report.py` | The line report in one read (`full`): every active line's games, results, depth, faithfulness and practice numbers, and both colours' gap boards with their stem; the per-(game, line) rows are reduced in SQL to a few rows per scope (`_REPORT_SQL`, text tie-breaks under `COLLATE "C"`), the destinations once per colour. |
 | `core/home.py` | The Home page: due count, today's puzzles and games against their targets, streaks, blunders and deviation patterns their lists have never shown, the pipeline's latest run. Reads only. |
 | `api/auth.py` | One password, one signed cookie. |
 | `api/routes/*` | Thin routes. |
