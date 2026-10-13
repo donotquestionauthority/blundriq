@@ -372,15 +372,15 @@ export default function RepertoireReport() {
   const shown: GapsResponse | null = both ? (gapColour ?? (both.black.gaps.length > both.white.gaps.length ? "black" : "white")) === "white" ? both.white : both.black : null;
   const activeColour = shown?.colour ?? gapColour ?? "white";
   const refetch = report.refetch;
-  // A saved line marks its card at once; the lines and the gaps are re-read together when the
-  // modal closes after a save (the one read serves both). A cancelled modal re-reads nothing.
+  // A confirmed save marks its card and re-reads the report at once (the one read serves the
+  // lines and the gaps); closing only clears the modal, so a cancelled modal re-reads nothing.
+  // The modal calls onAdded and onClose in the same turn, so nothing here may depend on state
+  // set by the other.
   const onAdded = useCallback(() => {
     if (source) setAdded((a) => ({ ...a, [source.fen]: true }));
-  }, [source]);
-  const closeModal = useCallback(() => {
-    if (source && added[source.fen]) refetch();
-    setSource(null);
-  }, [source, added, refetch]);
+    refetch();
+  }, [source, refetch]);
+  const closeModal = useCallback(() => setSource(null), []);
 
   const columns = COLUMNS.filter((c) => c.views.includes(view));
   const sortable = COLUMNS.filter((c) => (c.sortViews ?? c.views).includes(view));

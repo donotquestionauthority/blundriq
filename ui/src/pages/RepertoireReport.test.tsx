@@ -11,7 +11,14 @@ vi.mock("react-chessboard", () => ({
 vi.mock("../components/AddLineModal", () => ({
   AddLineModal: ({ card, destinations, prefillPlies, maxPlies, onClose, onAdded }: { card: GapCard; destinations: { id: number }[]; prefillPlies: number; maxPlies: number; onClose: () => void; onAdded: (r: { id: number }) => void }) => (
     <div role="dialog" aria-label="Add to repertoire" data-fen={card.fen} data-destinations={destinations.map((d) => d.id).join(",")} data-prefill={prefillPlies} data-max={maxPlies}>
-      <button type="button" onClick={() => onAdded({ id: 42 })}>
+      <button
+        type="button"
+        onClick={() => {
+          // The real modal's sequence after a confirmed save: onAdded, then onClose, same turn.
+          onAdded({ id: 42 });
+          onClose();
+        }}
+      >
         fake-save
       </button>
       <button type="button" onClick={onClose}>
@@ -454,9 +461,10 @@ describe("the line report page", () => {
     expect(screen.getByTestId("location").textContent).toContain("gaps=white");
   });
 
-  it("opens the modal with the card and the server's constants; a save marks the card and re-reads the lines", async () => {
+  it("opens the modal with the card and the server's constants; a save marks the card and re-reads the report in the same turn; a cancel reads nothing", async () => {
+    let saved = false;
     const calls = stubFetch({
-      "/repertoire/report": () => ({ status: 200, body: reportBody([], { gaps: [card()] }) }),
+      "/repertoire/report": () => ({ status: 200, body: reportBody(saved ? [{ ...books()[0], chapters: [{ ...books()[0].chapters[0], lines: [line({ id: 42, title: "Added line", games: 0, origin: "manual" })] }] }] : [], { gaps: [card()] }) }),
     });
     renderPage();
     const cards = await screen.findAllByTestId("gap-card");
@@ -471,12 +479,16 @@ describe("the line report page", () => {
     fireEvent.click(screen.getByText("fake-close"));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(calls.filter((c) => c.path === "/repertoire/report")).toHaveLength(before);
+    // A confirmed save: the card is marked, the modal is gone, and the report is read again —
+    // the new line is in the table, ready to drill.
     fireEvent.click(within(screen.getAllByTestId("gap-card")[0]).getByRole("button", { name: "Add to repertoire" }));
+    saved = true;
     fireEvent.click(screen.getByText("fake-save"));
-    expect(calls.filter((c) => c.path === "/repertoire/report")).toHaveLength(before); // the card is marked at once; the read waits for the close
-    fireEvent.click(screen.getByText("fake-close"));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(within(screen.getAllByTestId("gap-card")[0]).getByText(/Added to your repertoire/)).toBeInTheDocument();
     await waitFor(() => expect(calls.filter((c) => c.path === "/repertoire/report").length).toBe(before + 1));
+    await screen.findByLabelText("Select Added line");
+    fireEvent.click(screen.getByLabelText("Select Added line"));
+    expect(screen.getByRole("button", { name: "Drill 1 line" })).toBeEnabled();
   });
 });
