@@ -65,13 +65,13 @@ const card = (over: Partial<GapCard> = {}): GapCard => ({
   engine: { best_move: "c3", line: ["c3", "Be7", "d4", "exd4", "cxd4", "Nf6", "Nc3", "O-O", "O-O", "Bg4"], eval: 40, mate_in: null },
   last_played: null,
   stem: ["e4", "e5", "Nf3", "Nc6", "Bc4", "d6"],
-  chapters: [
-    { id: 1, title: "Giuoco", book_id: 1, book: "Italian" },
-    { id: 9, title: "Other", book_id: 1, book: "Italian" },
-  ],
   catch_all: { book: "Catch-all (white)", chapter: "Italian Game" },
   ...over,
 });
+const DESTINATIONS = [
+  { id: 1, title: "Giuoco", book_id: 1, book: "Italian" },
+  { id: 9, title: "Other", book_id: 1, book: "Italian" },
+];
 
 const shownPly = () => Number(screen.getByTestId("solution-line").getAttribute("data-shown"));
 
@@ -101,7 +101,7 @@ describe("AddLineModal", () => {
     });
     const onAdded = vi.fn();
     const onClose = vi.fn();
-    render(<AddLineModal card={card()} prefillPlies={10} maxPlies={60} onClose={onClose} onAdded={onAdded} />);
+    render(<AddLineModal card={card()} destinations={DESTINATIONS} prefillPlies={10} maxPlies={60} onClose={onClose} onAdded={onAdded} />);
     expect(shownPly()).toBe(6);
     expect(screen.getByTestId("board")).toHaveAttribute("data-position", GAP);
     expect(screen.getByTestId("solution-line").textContent).toContain("7. Nc3 O-O 8. O-O");
@@ -122,8 +122,8 @@ describe("AddLineModal", () => {
       "/settings": () => ({ status: 200, body: {} }),
       "/repertoire/lines": () => ({ status: 201, body: { id: 78, chapter_id: 5, book_id: 4, rematch: { candidates: 0, matched: 0, no_match: 0, lines: 0 } } }),
     });
-    const c = card({ colour: "black", stem: ["d4"], engine: null, context: null, chapters: [], family: "Queen's Pawn", arrived_by: "d4", fen: "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1", catch_all: { book: "Catch-all (black)", chapter: "Queen's Pawn" } });
-    render(<AddLineModal card={c} prefillPlies={10} maxPlies={60} onClose={vi.fn()} onAdded={vi.fn()} />);
+    const c = card({ colour: "black", stem: ["d4"], engine: null, context: null, family: "Queen's Pawn", arrived_by: "d4", fen: "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1", catch_all: { book: "Catch-all (black)", chapter: "Queen's Pawn" } });
+    render(<AddLineModal card={c} destinations={DESTINATIONS} prefillPlies={10} maxPlies={60} onClose={vi.fn()} onAdded={vi.fn()} />);
     expect(screen.getByLabelText("Book and chapter")).toHaveValue("catch-all");
     expect(screen.getByRole("option", { name: "Catch-all (black) › Queen's Pawn (catch-all)" })).toBeInTheDocument();
     expect(screen.getByLabelText("Line name")).toHaveValue("Queen's Pawn — 1.d4");
@@ -151,16 +151,16 @@ describe("AddLineModal", () => {
       { id: 7, title: "Unrelated", book_id: 3, book: "Another course" },
       { id: 9, title: "Other", book_id: 1, book: "Italian" },
     ];
-    const { unmount } = render(<AddLineModal card={card({ context: null, chapters: others })} prefillPlies={10} maxPlies={60} onClose={vi.fn()} onAdded={vi.fn()} />);
+    const { unmount } = render(<AddLineModal card={card({ context: null })} destinations={others} prefillPlies={10} maxPlies={60} onClose={vi.fn()} onAdded={vi.fn()} />);
     expect(screen.getByLabelText("Book and chapter")).toHaveValue("catch-all");
     unmount();
     // The context chapter is tabiya-rooted (not among the destinations): the catch-all again.
-    const tabiya = card({ context: { ...card().context!, chapter_id: 42, chapter: "Tabiya" }, chapters: others });
-    const second = render(<AddLineModal card={tabiya} prefillPlies={10} maxPlies={60} onClose={vi.fn()} onAdded={vi.fn()} />);
+    const tabiya = card({ context: { ...card().context!, chapter_id: 42, chapter: "Tabiya" } });
+    const second = render(<AddLineModal card={tabiya} destinations={others} prefillPlies={10} maxPlies={60} onClose={vi.fn()} onAdded={vi.fn()} />);
     expect(screen.getByLabelText("Book and chapter")).toHaveValue("catch-all");
     second.unmount();
     // The context chapter is a destination: preselected, wherever it sits in the list.
-    render(<AddLineModal card={card({ chapters: [...others, { id: 1, title: "Giuoco", book_id: 1, book: "Italian" }] })} prefillPlies={10} maxPlies={60} onClose={vi.fn()} onAdded={vi.fn()} />);
+    render(<AddLineModal card={card()} destinations={[...others, { id: 1, title: "Giuoco", book_id: 1, book: "Italian" }]} prefillPlies={10} maxPlies={60} onClose={vi.fn()} onAdded={vi.fn()} />);
     expect(screen.getByLabelText("Book and chapter")).toHaveValue("1");
   });
 
@@ -168,7 +168,7 @@ describe("AddLineModal", () => {
     let reply: Reply = { status: 409, body: { detail: "duplicate", duplicate: { line_id: 3, line_name: "Main", active: true, kind: "prefix" } } };
     stubFetch({ "/settings": () => ({ status: 200, body: {} }), "/repertoire/lines": () => reply });
     const onClose = vi.fn();
-    render(<AddLineModal card={card()} prefillPlies={10} maxPlies={60} onClose={onClose} onAdded={vi.fn()} />);
+    render(<AddLineModal card={card()} destinations={DESTINATIONS} prefillPlies={10} maxPlies={60} onClose={onClose} onAdded={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Save line" }));
     await screen.findByText("“Main” already teaches this and goes further.");
     reply = {

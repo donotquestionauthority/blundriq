@@ -300,7 +300,7 @@ export function provenanceLabel(b: RepertoireBook): string | null {
   return b.source_url;
 }
 
-// --- the line report (GET /repertoire/report/lines, /gaps) --------------------------------
+// --- the line report (GET /repertoire/report) -----------------------------------------------
 
 /** One scope's games: a line, a chapter or a book. `slip` is the most common whole departure. */
 export interface ReportTally {
@@ -318,8 +318,6 @@ export interface ReportTally {
   depth_reached: Record<string, number>;
   slip: { own_move: number; expected: string; played: string; count: number } | null;
   last_played: string | null;
-  /** The positions Practice serves for this scope; 0 means nothing to drill. */
-  puzzles: number;
 }
 /** Loads of a line's puzzle, and how the first attempt of each load went (core/puzzles/stats.py). */
 export interface PracticeNumbers {
@@ -334,19 +332,15 @@ export interface ReportLine extends ReportTally {
   origin: "course" | "manual";
   depth_total: number;
   shared: boolean;
+  /** The holders by id; their titles and the colour are on the holders, once. */
   book_id: number;
-  book: string;
   chapter_id: number;
-  chapter: string;
-  colour: "white" | "black";
   practice: PracticeNumbers;
 }
 export interface ReportChapter extends ReportTally {
   id: number;
   title: string;
   book_id: number;
-  book: string;
-  colour: "white" | "black";
   lines: ReportLine[];
   practice: PracticeNumbers;
 }
@@ -379,10 +373,15 @@ export interface GapCard {
   /** The representative game's moves from the start to this board, re-rendered by the server;
    *  null when they do not replay there (no line can be added from the card then). */
   stem: string[] | null;
-  /** Start-rooted active chapters of this colour's books, the context chapter first. */
-  chapters: { id: number; title: string; book_id: number; book: string }[];
   /** The titles the catch-all option would use, whether or not the rows exist yet. */
   catch_all: { book: string; chapter: string };
+}
+/** A chapter a line added from a gap card may go into: start-rooted, in an active book of the colour. */
+export interface Destination {
+  id: number;
+  title: string;
+  book_id: number;
+  book: string;
 }
 export interface PreparedRow {
   fen: string;
@@ -404,6 +403,8 @@ export interface GapsResponse {
   no_book: boolean;
   prepared: PreparedRow[];
   gaps: GapCard[];
+  /** The colour's destinations, once, in the Repertoire page's order. */
+  destinations: Destination[];
   /** How much of a card's engine line a new line opens with, and the most plies a line may have (core/constants.py). */
   prefill_plies: number;
   max_plies: number;
@@ -437,6 +438,10 @@ export function duplicateOf(err: unknown): DuplicateLine | null {
 }
 
 /** `drill_max_lines`: how many lines one drill takes (core/constants.py; the server refuses more). */
-export const getReportLines = (timeClass: string) => api.get<{ books: ReportBook[]; drill_max_lines: number }>(`/repertoire/report/lines?time_class=${encodeURIComponent(timeClass)}`);
-export const getReportGaps = (colour: "white" | "black", timeClass: string) => api.get<GapsResponse>(`/repertoire/report/gaps?colour=${colour}&time_class=${encodeURIComponent(timeClass)}`);
+export interface ReportResponse {
+  lines: { books: ReportBook[]; drill_max_lines: number };
+  gaps: { white: GapsResponse; black: GapsResponse };
+}
+/** The whole report in one read: the lines table and both colours' gaps. */
+export const getReport = (timeClass: string) => api.get<ReportResponse>(`/repertoire/report?time_class=${encodeURIComponent(timeClass)}`);
 export const reportPath = () => "/repertoire/report";

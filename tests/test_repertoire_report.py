@@ -276,27 +276,23 @@ def test_lines_are_ordered_most_games_first(clean: psycopg.Connection[DictRow]) 
     assert [ln["title"] for ln in out["books"][0]["chapters"][0]["lines"]] == ["Beta", "Alpha"]
 
 
-def test_puzzle_counts_are_what_practice_serves_for_the_scope(clean: psycopg.Connection[DictRow]) -> None:
+def test_the_lines_rows_carry_no_puzzle_count(clean: psycopg.Connection[DictRow]) -> None:
+    """The positions Practice serves per scope are not on the lines rows (the page never shows
+    them); a prepared row still says whether its line's board has a puzzle."""
     _seed(clean)
     h.line(clean, 1, 1, "Main", ITALIAN)
     for gid in range(1, REPERTOIRE_PUZZLE_MIN_EVENTS + 1):
         h.game(clean, gid, ITALIAN[:4] + ["d4", "exd4"])  # the player leaves at Bc4 every time
-    _match(clean)
-    assert _line_rows(_lines(clean))["Main"]["puzzles"] == 0  # a line without a puzzle row
     clean.execute(
         "INSERT INTO puzzles (fen, solution_line, solution_fen_sequence, source_types, color, player_id,"
         " is_repertoire, repertoire_line_id, active) VALUES (%s, %s::jsonb, %s::jsonb, ARRAY['deviation'], 'w', %s,"
         " TRUE, 1, TRUE)",
         (h.START, json.dumps(ITALIAN), json.dumps(fen_sequence(h.START, ITALIAN)), PLAYER_ID),
     )
-    clean.commit()
+    _match(clean)
     out = _lines(clean)
-    assert _line_rows(out)["Main"]["puzzles"] == 1
-    assert out["books"][0]["chapters"][0]["puzzles"] == 1 and out["books"][0]["puzzles"] == 1
-    # Below the serving threshold the active row counts for nothing.
-    clean.execute("DELETE FROM game_repertoire_results WHERE chess_game_id = 1")
-    clean.commit()
-    assert _line_rows(_lines(clean))["Main"]["puzzles"] == 0
+    assert "puzzles" not in _line_rows(out)["Main"]
+    assert "puzzles" not in out["books"][0]["chapters"][0] and "puzzles" not in out["books"][0]
 
 
 # --- gaps, kind A --------------------------------------------------------------------
@@ -380,6 +376,20 @@ def test_a_gap_groups_by_canonical_board_with_one_context_tuple_and_one_engine_r
         {"moves": ["c3", "Be7", "d4", "exd4"], "games": 2, "score": 0.5},
         {"moves": ["d4"], "games": 1, "score": 0.5},
     ]
+    # A newer game whose analysis stops before the board (the analyser stops at a move it cannot
+    # read) does not hide the older game's entry: the card's engine line, board and stem are the
+    # older game's. A newer game with no analysis at all never did.
+    clean.execute(
+        "UPDATE chess_games SET ply_analysis = %s::jsonb WHERE id = 3", (json.dumps([{"ply": 0}, {"ply": 1}]),)
+    )
+    clean.execute("UPDATE player_games SET analyzed_at_depth = 18 WHERE chess_game_id = 3")
+    clean.commit()
+    card = _gaps(clean, "white")["gaps"][0]
+    assert card["engine"]["best_move"] == "O-O" and card["fen"] == fens[6] and card["stem"] == base
+    clean.execute("UPDATE chess_games SET ply_analysis = %s::jsonb WHERE id = 2", (json.dumps([{"ply": 0}]),))
+    clean.commit()
+    card = _gaps(clean, "white")["gaps"][0]
+    assert card["engine"] == {"best_move": "c3", "line": ["c3", "Nf6", "d4"], "eval": 0, "mate_in": None}
 
 
 def test_a_black_gap_board_is_the_board_after_whites_move(clean: psycopg.Connection[DictRow]) -> None:
@@ -488,6 +498,7 @@ def test_white_without_an_effectively_active_line_gets_the_notice_and_black_gets
         "no_book": True,
         "prepared": [],
         "gaps": [],
+        "destinations": [],
         "prefill_plies": 10,
         "max_plies": 60,
     }
@@ -539,21 +550,24 @@ def test_a_gap_card_carries_the_games_own_stem_to_the_board_and_the_chapters_a_l
     h.chapter(clean, 8, 1, "Off", active=False)
     h.chapter(clean, 9, 1, "Also start-rooted")
     _match(clean)
-    (card,) = _gaps(clean, "white")["gaps"]
+    white = _gaps(clean, "white")
+    (card,) = white["gaps"]
     assert card["stem"] == ["e4", "e5", "Nf3", "Nc6", "Bc4", "d6"] and card["fen"] == spine(None, card["stem"])[-1]
-    assert "puzzle" not in card
-    # Start-rooted active chapters of White's books only, the context chapter first.
-    assert [(c["id"], c["title"], c["book"]) for c in card["chapters"]] == [
-        (1, "Giuoco", "Italian"),
+    assert "puzzle" not in card and "chapters" not in card
+    # Start-rooted active chapters of White's books only, once per colour, in the Repertoire
+    # page's order; the card names its context chapter and the modal preselects it from the list.
+    assert [(c["id"], c["title"], c["book"]) for c in white["destinations"]] == [
         (9, "Also start-rooted", "Italian"),
+        (1, "Giuoco", "Italian"),
     ]
+    assert card["context"]["chapter_id"] == 1
     assert card["catch_all"] == {"book": "Catch-all (White)", "chapter": card["family"] or "Unnamed opening"}
-    # Kind B as Black: the stem is the one opponent move; no Black book means no chapters.
+    # Kind B as Black: the stem is the one opponent move; no Black book means no destinations.
     h.game(clean, 2, ["d4", "d5", "c4"], color="black")
     _match(clean)
     out = _gaps(clean, "black")
     (b,) = out["gaps"]
-    assert b["stem"] == ["d4"] and b["chapters"] == [] and b["catch_all"]["book"] == "Catch-all (Black)"
+    assert b["stem"] == ["d4"] and out["destinations"] == [] and b["catch_all"]["book"] == "Catch-all (Black)"
     assert out["max_plies"] == 60 and out["prefill_plies"] == 10
 
 
@@ -592,14 +606,15 @@ def test_every_active_line_is_a_row_with_its_origin_and_practice_numbers(clean: 
     (book,) = _lines(clean)["books"]
     (chapter,) = book["chapters"]
     rows = chapter["lines"]
-    assert [
-        (r["title"], r["games"], r["origin"], r["book"], r["chapter"], r["colour"], r["book_id"]) for r in rows
-    ] == [
-        ("Main", 1, "course", "Italian", "Giuoco", "white", 1),
-        ("Never played", 0, "manual", "Italian", "Giuoco", "white", 1),
+    # A line carries the ids of its chapter and book; their titles are on the holders, once.
+    assert [(r["title"], r["games"], r["origin"], r["chapter_id"], r["book_id"]) for r in rows] == [
+        ("Main", 1, "course", 1, 1),
+        ("Never played", 0, "manual", 1, 1),
     ]
+    assert "book" not in rows[0] and "chapter" not in rows[0] and "colour" not in rows[0]
     assert rows[1]["practice"] == {"loads": 1, "first_right": 0, "first_wrong": 1} and rows[1]["shared"] is False
     assert rows[1]["score"] is None and rows[1]["faithful"] == 0 and rows[1]["depth_total"] == 2
     assert rows[0]["practice"] == {"loads": 0, "first_right": 0, "first_wrong": 0}
     assert chapter["practice"] == book["practice"] == {"loads": 1, "first_right": 0, "first_wrong": 1}
-    assert chapter["book"] == "Italian" and chapter["colour"] == book["colour"] == "white"
+    assert chapter["title"] == "Giuoco" and chapter["book_id"] == 1 and "book" not in chapter
+    assert book["title"] == "Italian" and book["colour"] == "white"
