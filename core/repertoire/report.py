@@ -96,6 +96,21 @@ _PRECEDENCE = {ME: 0, OPPONENT: 1, ENDED: 2, RAN_OUT: 3}
 # compares strings by code point and the database's default collation does not.
 _PRECEDENCE_SQL = "CASE status WHEN 'me' THEN 0 WHEN 'opponent' THEN 1 WHEN 'ended' THEN 2 ELSE 3 END"
 
+# What a (game `g`, line `n`) pair derives: the status in `who_deviated`'s order of stops, the
+# player's moves up to the boundary, and the two moves at it when someone left (the slip's, or
+# the gap's). Used for every pair and again for a scope's representative pair.
+_DERIVED_SQL = """
+    CASE WHEN n.color = 'white' THEN (g.m + 1) / 2 ELSE g.m / 2 END AS own,
+    CASE WHEN s.status IN ('me', 'opponent') THEN n.moves->>g.m END AS expected,
+    CASE WHEN s.status IN ('me', 'opponent') THEN g.played END AS played"""
+_STATUS_SQL = """
+    CROSS JOIN LATERAL (
+        SELECT CASE WHEN g.m >= n.len THEN 'ran_out'
+                    WHEN g.m >= g.glen THEN 'ended'
+                    WHEN (g.m %% 2 = 0) = (n.color = 'white') THEN 'me'
+                    ELSE 'opponent' END AS status
+    ) s"""
+
 # A scope's compact rows: one per (scope id, own moves, status, the slip's two moves), with the
 # count, the results, the latest game and — for a line — whether every game in the group sits
 # under another line of the chapter too. `_summary` adds them up; a line has a few such rows.
@@ -134,42 +149,53 @@ n AS MATERIALIZED (
     JOIN books bk ON bk.id = ch.book_id AND bk.active AND bk.player_id = %(pid)s
     WHERE rl.active
 ),
-c AS (
+c AS MATERIALIZED (
     -- How many lines of each chapter a game is attached to: a line is shared when no game is alone.
     SELECT grl.game_repertoire_result_id AS rid, n.chapter_id, count(*) AS siblings
     FROM game_result_lines grl JOIN n ON n.line_id = grl.line_id
     WHERE grl.game_repertoire_result_id IN (SELECT rid FROM g)
     GROUP BY 1, 2
 ),
-r AS MATERIALIZED (
-    -- One row per (game, attached line): its status in `who_deviated`'s order of stops, its
-    -- precedence for the reduction, the player's moves up to the boundary, the two moves at it
-    -- when someone left (the slip's, or the gap's), and how many lines of the chapter the game
-    -- is attached to.
+r AS NOT MATERIALIZED (
+    -- One row per (game, attached line), with its precedence for the reduction and how many
+    -- lines of the chapter the game is attached to. Never written out: each of its two readers
+    -- below is a hash aggregate over this join, whose hash tables are the games and the lines
+    -- (thousands of rows), so nothing grows with the (game, line) pairs or spills past a small
+    -- work_mem — the fact the read's speed rests on.
     SELECT g.gid, g.result, g.played_at, g.m, n.line_id, n.chapter_id, n.book_id, n.rank,
            s.status, """
     + _PRECEDENCE_SQL
-    + """ AS prec,
-           CASE WHEN n.color = 'white' THEN (g.m + 1) / 2 ELSE g.m / 2 END AS own,
-           CASE WHEN s.status IN ('me', 'opponent') THEN n.moves->>g.m END AS expected,
-           CASE WHEN s.status IN ('me', 'opponent') THEN g.played END AS played,
+    + """ AS prec,"""
+    + _DERIVED_SQL
+    + """,
            c.siblings
     FROM g
     JOIN game_result_lines grl ON grl.game_repertoire_result_id = g.rid
     JOIN n ON n.line_id = grl.line_id
-    JOIN c ON c.rid = g.rid AND c.chapter_id = n.chapter_id
-    CROSS JOIN LATERAL (
-        SELECT CASE WHEN g.m >= n.len THEN 'ran_out'
-                    WHEN g.m >= g.glen THEN 'ended'
-                    WHEN (g.m %% 2 = 0) = (n.color = 'white') THEN 'me'
-                    ELSE 'opponent' END AS status
-    ) s
+    JOIN c ON c.rid = g.rid AND c.chapter_id = n.chapter_id"""
+    + _STATUS_SQL
+    + """
 ),
--- A game is one game per chapter and per book: its representative row by precedence then rank.
--- The book's representative is the first of its chapter representatives, and the game's over
--- every attached line (the gap game, when it is `opponent`) the first of those.
+-- A game is one game per chapter and per book: its representative pair is the first by
+-- precedence then rank — the least (precedence, rank) key per (chapter, game), one hash
+-- aggregate into a few thousand groups — and that pair is rebuilt from the game and the line
+-- the key names, since every attached line shares the game's fields. The book's representative
+-- is the first of its chapter representatives, and the game's over every attached line (the gap
+-- game, when it is `opponent`) the first of those.
+best AS MATERIALIZED (
+    SELECT chapter_id, gid, min(prec * 1000000 + rank) AS key FROM r GROUP BY chapter_id, gid
+),
 rep_ch AS MATERIALIZED (
-    SELECT DISTINCT ON (chapter_id, gid) * FROM r ORDER BY chapter_id, gid, prec, rank
+    SELECT g.gid, g.result, g.played_at, g.m, n.line_id, n.chapter_id, n.book_id, n.rank,
+           n.line_name, n.chapter_title, n.book_title, n.color,
+           s.status, best.key / 1000000 AS prec,"""
+    + _DERIVED_SQL
+    + """
+    FROM best
+    JOIN g ON g.gid = best.gid
+    JOIN n ON n.rank = best.key %% 1000000"""
+    + _STATUS_SQL
+    + """
 ),
 rep_bk AS (SELECT DISTINCT ON (book_id, gid) * FROM rep_ch ORDER BY book_id, gid, prec, rank),
 gap AS (SELECT DISTINCT ON (gid) * FROM rep_ch ORDER BY gid, prec, rank)
@@ -181,11 +207,11 @@ gap AS (SELECT DISTINCT ON (gid) * FROM rep_ch ORDER BY gid, prec, rank)
     + _COMPACT.format(scope="book", key="book_id", src="rep_bk", shared="NULL::boolean")
     + """
 UNION ALL
-SELECT 'gap', gap.gid, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-       jsonb_build_object('m', gap.m, 'expected', gap.expected, 'played', gap.played, 'color', n.color,
-                          'book_id', n.book_id, 'book_title', n.book_title, 'chapter_id', n.chapter_id,
-                          'chapter_title', n.chapter_title, 'line_id', n.line_id, 'line_name', n.line_name)
-FROM gap JOIN n USING (line_id) WHERE gap.status = 'opponent'
+SELECT 'gap', gid, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+       jsonb_build_object('m', m, 'expected', expected, 'played', played, 'color', color,
+                          'book_id', book_id, 'book_title', book_title, 'chapter_id', chapter_id,
+                          'chapter_title', chapter_title, 'line_id', line_id, 'line_name', line_name)
+FROM gap WHERE status = 'opponent'
 """
 )
 
@@ -263,6 +289,9 @@ def _reduced(conn: Connection[Any], config: Settings, time_class: str) -> tuple[
     game whose representative over every attached line is `opponent`, with that line as context)."""
     params, tc = _window_params(config, time_class)
     sql = _REPORT_SQL.format(window=window_cte(), analysable=analysable_sql("cg"), time_class=tc)
+    # The statement's two hundred expressions would be compiled by the server's JIT on every
+    # run, which costs more than they save on a small instance; for this transaction only.
+    conn.execute("SET LOCAL jit = off")
     compact: dict[tuple[str, int], list[Row]] = defaultdict(list)
     gap_games: list[Row] = []
     for r in conn.execute(cast(LiteralString, sql), params).fetchall():
