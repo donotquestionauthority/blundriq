@@ -6,7 +6,7 @@
  * bar, the Explore layer, the AI panel, the API) are mocked; everything between the route and the
  * DOM is the shipped code, the line walk-through included.
  */
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { Chess } from "chess.js";
 import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1217,6 +1217,16 @@ describe("stepping, Explore and the exits", () => {
     expect(bodyText()).toContain("move 2 / 4");
     expect(screen.getByTestId("blunder-card")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Next →" })).toBeDisabled();
+  });
+  it("the inaccuracies+ checkbox sits with the mode controls, not under Back / Next, whose row holds only the stepper", async () => {
+    await renderReview(1);
+    const stepper = screen.getByTestId("stepper");
+    expect(within(stepper).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["First move", "← Back", "Next →", "Last move"]);
+    expect(within(stepper).queryByRole("checkbox")).toBeNull();
+    for (const name of ["← Back", "Next →"]) expect(screen.getByRole("button", { name })).toHaveClass("min-h-11");
+    const box = screen.getByTestId("inacc-only");
+    expect(box.parentElement).toContainElement(screen.getByLabelText("Mode")); // the mode row
+    expect(box.compareDocumentPosition(stepper) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy(); // above the board
   });
   it("Explore opens with the current board and the player's orientation, and closes on a ply change", async () => {
     const p = reviewPayload();

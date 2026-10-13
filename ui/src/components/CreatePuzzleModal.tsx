@@ -1,15 +1,13 @@
-import { useEffect, useRef, useState } from "react";
-import { api, ApiError } from "../api";
+import { useEffect, useState } from "react";
+import { ApiError } from "../api";
 import { createPuzzle } from "../blunders";
-import { DEFAULT_DEPTH, useStockfish } from "../engine/useStockfish";
 import { buildPgn } from "../utils/chess";
 import { MoveBuilder } from "./MoveBuilder";
 import type { MoveBuilderState } from "./MoveBuilder";
 
-/** The position a puzzle is being made from, and what the page knows about it. A `gap` source
- *  (the line report) seeds the builder with the engine's line and the title it suggests. */
+/** The position a puzzle is being made from, and what the page knows about it. */
 export interface CreatePuzzleSource {
-  source: "blunder" | "deviation" | "scout" | "gap";
+  source: "blunder" | "deviation" | "scout";
   fen: string;
   color: "w" | "b";
   movePlayed?: string | null;
@@ -18,10 +16,6 @@ export interface CreatePuzzleSource {
   lineNames?: string[] | null;
   moves?: string[] | null;
   ply?: number | null;
-  /** The stored engine line from `fen` (SAN); the prefill, and what +2 plies consumes first. */
-  engineLine?: string[] | null;
-  /** How much of `engineLine` is played out on open. */
-  prefillPlies?: number | null;
   title?: string | null;
   description?: string | null;
 }
@@ -79,34 +73,9 @@ export function CreatePuzzleModal({ source, onClose, onCreated }: { source: Crea
   const [color, setColor] = useState<"w" | "b">(source.color);
   const [title, setTitle] = useState(source.title ?? "");
   const [description, setDescription] = useState(source.description ?? "");
-  const [line, setLine] = useState<MoveBuilderState>({ solutionLine: [], isValid: false });
+  const [line, setLine] = useState<MoveBuilderState>({ solutionLine: [], isValid: false, endTurn: source.color });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const seeded = source.source === "gap";
-  const engineLine = source.engineLine ?? [];
-  const initialMoves = seeded ? engineLine.slice(0, source.prefillPlies ?? engineLine.length) : undefined;
-
-  // The browser engine, only for a seeded puzzle, at the saved Explore depth (read once; the
-  // hook's default until it lands, and a late answer only sets the depth of the next search).
-  const engine = useStockfish({ enabled: seeded, depth: undefined });
-  const [depth, setDepth] = useState(DEFAULT_DEPTH);
-  const alive = useRef(true);
-  useEffect(() => {
-    alive.current = true;
-    if (!seeded) return;
-    api
-      .get<{ explore_engine_depth?: unknown }>("/settings")
-      .then((s) => {
-        const v = s.explore_engine_depth;
-        if (alive.current && typeof v === "number" && Number.isFinite(v)) setDepth(v);
-      })
-      .catch(() => {
-        /* the hook's own default stands */
-      });
-    return () => {
-      alive.current = false;
-    };
-  }, [seeded]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -136,7 +105,7 @@ export function CreatePuzzleModal({ source, onClose, onCreated }: { source: Crea
         <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-4 dark:border-zinc-800">
           <div>
             <h2 className="text-lg font-semibold">Create puzzle</h2>
-            <p className="mt-0.5 text-xs text-zinc-500">{seeded ? "The line is the engine's: step through it, play a different move anywhere to replace what follows, add what you want. It is served in Practice under Custom." : "Play the solution on the board, both sides. It is served in Practice under Custom."}</p>
+            <p className="mt-0.5 text-xs text-zinc-500">Play the solution on the board, both sides. It is served in Practice under Custom.</p>
           </div>
           <button type="button" aria-label="Close" disabled={submitting} onClick={onClose} className="text-zinc-500 hover:text-zinc-900 disabled:opacity-50 dark:hover:text-zinc-100">
             ✕
@@ -144,7 +113,7 @@ export function CreatePuzzleModal({ source, onClose, onCreated }: { source: Crea
         </div>
         <div className="grid gap-5 p-5 lg:grid-cols-2">
           <div className="lg:order-2">
-            <MoveBuilder fen={source.fen} color={color} onChange={setLine} initialMoves={initialMoves} extend={seeded ? { line: engineLine, engine, depth } : undefined} disabled={submitting} />
+            <MoveBuilder fen={source.fen} color={color} onChange={setLine} disabled={submitting} />
           </div>
           <div className="space-y-3 lg:order-1">
             <Context ctx={source} />

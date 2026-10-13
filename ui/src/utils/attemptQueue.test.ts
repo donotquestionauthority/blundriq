@@ -81,6 +81,25 @@ describe("attemptQueue", () => {
     expect(typeof stored[0].last_attempted_at).toBe("number");
   });
 
+  it("keeps the attempt's sequence and segment with the record, and a record without them is still valid", async () => {
+    await enqueue({ attempt_id: "a1", puzzle_id: 7, solved: false, moves_played: "Nf3", session_id: "s1", presentation_ply: 4, attempt_seq: 1 });
+    await enqueue({ attempt_id: "a2", puzzle_id: 7, solved: true, moves_played: "Nf3,Bc4", session_id: "s1", presentation_ply: 4, attempt_seq: 2 });
+    window.localStorage.setItem(QUEUE_STORE, JSON.stringify([...JSON.parse(window.localStorage.getItem(QUEUE_STORE)!), { attempt_id: "old", puzzle_id: 7, solved: true, moves_played: "", enqueued_at: 1, last_attempted_at: null, attempt_count: 0 }]));
+    await enqueue({ attempt_id: "a3", puzzle_id: 8, solved: true, moves_played: "" });
+    const stored = JSON.parse(window.localStorage.getItem(QUEUE_STORE)!) as { attempt_id: string; attempt_seq?: number; presentation_ply?: number }[];
+    expect(stored.map((r) => [r.attempt_id, r.attempt_seq ?? null, r.presentation_ply ?? null])).toEqual([
+      ["a1", 1, 4],
+      ["a2", 2, 4],
+      ["old", null, null],
+      ["a3", null, null],
+    ]);
+    window.localStorage.setItem(QUEUE_STORE, JSON.stringify([{ ...stored[0], attempt_seq: "one" }]));
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    await enqueue({ attempt_id: "a4", puzzle_id: 8, solved: true, moves_played: "" });
+    expect(err).toHaveBeenCalledTimes(1); // a sequence that is not a number is a malformed record
+    expect((JSON.parse(window.localStorage.getItem(QUEUE_STORE)!) as { attempt_id: string }[]).map((r) => r.attempt_id)).toEqual(["a4"]);
+  });
+
   it("dead-letters a malformed record instead of wedging the queue", async () => {
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
     window.localStorage.setItem(QUEUE_STORE, JSON.stringify([{ attempt_id: "a1", puzzle_id: "not a number" }]));

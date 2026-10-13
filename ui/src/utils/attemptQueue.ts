@@ -45,6 +45,7 @@ export interface PendingAttempt {
   attempt_count: number;
   session_id?: string | null; // per play-through; null on older records
   presentation_ply?: number | null; // the segment the solver displayed; absent on older records
+  attempt_seq?: number | null; // the attempt's order within its load; absent on older records
 }
 
 export interface DropLogPayload {
@@ -186,7 +187,8 @@ function isValidPendingAttempt(r: unknown): r is PendingAttempt {
     (rec.last_attempted_at === null || typeof rec.last_attempted_at === "number") &&
     typeof rec.attempt_count === "number" &&
     (rec.session_id === undefined || rec.session_id === null || typeof rec.session_id === "string") &&
-    (rec.presentation_ply === undefined || rec.presentation_ply === null || typeof rec.presentation_ply === "number")
+    (rec.presentation_ply === undefined || rec.presentation_ply === null || typeof rec.presentation_ply === "number") &&
+    (rec.attempt_seq === undefined || rec.attempt_seq === null || typeof rec.attempt_seq === "number")
   );
 }
 

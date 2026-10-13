@@ -16,8 +16,8 @@ const AFTER_NF3 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 
 
 const book = (over: Partial<RepertoireBook> = {}): RepertoireBook => ({ book_id: 1, title: "Course: The Italian", color: "white", active: true, source_url: null, source_author: null, source_title: null, total_lines: 2, active_lines: 2, ...over });
 const sections = (): RepertoireSection[] => [
-  { chapter_id: 1, title: "1) Giuoco", active: true, root_fen: null, lines: [{ id: 1, name: "Main", moves: ["e4", "e5", "Nf3"], active: true, is_alternative: false }] },
-  { chapter_id: 2, title: "2) Sidelines", active: true, root_fen: AFTER_E5, lines: [{ id: 2, name: "Alt", moves: ["Bc4"], active: false, is_alternative: true }] },
+  { chapter_id: 1, title: "1) Giuoco", active: true, root_fen: null, lines: [{ id: 1, name: "Main", moves: ["e4", "e5", "Nf3"], active: true, is_alternative: false, origin: "course", loads: 3 }] },
+  { chapter_id: 2, title: "2) Sidelines", active: true, root_fen: AFTER_E5, lines: [{ id: 2, name: "Alt", moves: ["Bc4"], active: false, is_alternative: true, origin: "manual", loads: 0 }] },
 ];
 const line = (): LineReaderLine => ({
   line_id: 1,
@@ -86,6 +86,7 @@ describe("Repertoire page", () => {
     expect(screen.getByText("1 / 1 on")).toBeInTheDocument();
     expect(screen.getByText("0 / 1 on · from a set position")).toBeInTheDocument();
     expect(screen.getByText("(alt)")).toBeInTheDocument();
+    expect(screen.getByText("custom")).toBeInTheDocument();
     expect(screen.getByText("1.e4 e5 2.Nf3")).toBeInTheDocument();
     const alt = screen.getByRole("switch", { name: "Alt active" });
     expect(alt).toHaveAttribute("aria-checked", "false");
@@ -97,6 +98,37 @@ describe("Repertoire page", () => {
     fireEvent.click(screen.getByRole("switch", { name: "Course: The Italian active" }));
     await vi.waitFor(() => expect(calls.some((c) => c.path === "/repertoire/books/1")).toBe(true));
     expect(calls.filter((c) => c.path === "/repertoire/1/sections")).toHaveLength(1);
+  });
+
+  it("deletes a line after a confirm that states the cost, on the server's word", async () => {
+    let reply: Reply = { status: 200, body: { detail: "deleted", loads: 3 } };
+    const calls = stubFetch({
+      "/repertoire": () => ({ status: 200, body: { books: [book()] } }),
+      "/repertoire/1/sections": () => ({ status: 200, body: { sections: sections() } }),
+      "/repertoire/conflicts": () => ({ status: 200, body: { positions: [], duplicates: [], contested: 0 } }),
+      "/repertoire/lines/1": () => reply,
+      "/repertoire/lines/2": () => reply,
+    });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /Course: The Italian/ }));
+    await screen.findByText("1) Giuoco");
+    fireEvent.click(screen.getByRole("button", { name: "Delete Main" }));
+    const group = screen.getByRole("group", { name: "Delete Main?" });
+    expect(group.textContent).toContain("Delete the line, its puzzle and 3 loads of practice history; a full import brings the line back?");
+    fireEvent.click(within(group).getByRole("button", { name: "Keep" }));
+    expect(screen.queryByRole("group")).toBeNull();
+    expect(screen.getByText("1.e4 e5 2.Nf3")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Delete Alt" }));
+    expect(screen.getByRole("group", { name: "Delete Alt?" }).textContent).toContain("0 loads of practice history?");
+    reply = { status: 500, body: { detail: "boom" } };
+    fireEvent.click(within(screen.getByRole("group")).getByRole("button", { name: "Delete" }));
+    await screen.findByText("boom");
+    expect(screen.getByText("(alt)")).toBeInTheDocument(); // still there: the server said no
+    reply = { status: 200, body: { detail: "deleted", loads: 0 } };
+    fireEvent.click(within(screen.getByRole("group")).getByRole("button", { name: "Delete" }));
+    await vi.waitFor(() => expect(screen.queryByText("(alt)")).toBeNull());
+    expect(calls.filter((c) => c.path === "/repertoire/lines/2" && c.method === "DELETE")).toHaveLength(2);
+    expect(calls.filter((c) => c.path === "/repertoire/conflicts")).toHaveLength(2); // re-counted after the delete
   });
 
   it("reverts a toggle the server refuses and shows why", async () => {
