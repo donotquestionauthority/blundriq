@@ -554,7 +554,8 @@ CREATE TABLE public.puzzle_attempts (
     moves_played text,
     attempt_at timestamp with time zone DEFAULT now(),
     attempt_id uuid,
-    session_id uuid
+    session_id uuid,
+    attempt_seq integer
 )
 WITH (autovacuum_vacuum_scale_factor='0.02', autovacuum_vacuum_threshold='50', autovacuum_analyze_scale_factor='0.01');
 
@@ -568,7 +569,7 @@ CREATE SEQUENCE public.puzzle_attempts_id_seq
 
 ALTER SEQUENCE public.puzzle_attempts_id_seq OWNED BY public.puzzle_attempts.id;
 
--- Materialised puzzles from the player's games, the repertoire, the corpus, or custom creation.
+-- Materialised puzzles from the player's games, the repertoire, the corpus, or custom creation. drilled_at: when a drill first served a repertoire puzzle (NULL = never; set once, it keeps the puzzle regardless of the deviation gate).
 CREATE TABLE public.puzzles (
     id integer NOT NULL,
     fen text NOT NULL,
@@ -587,6 +588,7 @@ CREATE TABLE public.puzzles (
     themes text[],
     acceptance_map jsonb,
     canonical_fen text GENERATED ALWAYS AS ((public.bq_canonical_fen(fen) || ' 0 1'::text)) STORED,
+    drilled_at timestamp with time zone,
     CONSTRAINT puzzles_repertoire_consistency_check CHECK ((((is_repertoire IS TRUE) AND (player_id IS NOT NULL) AND (repertoire_line_id IS NOT NULL)) OR ((is_repertoire IS FALSE) AND (repertoire_line_id IS NULL))))
 )
 WITH (autovacuum_vacuum_scale_factor='0.02', autovacuum_vacuum_threshold='50', autovacuum_analyze_scale_factor='0.01');
@@ -628,7 +630,7 @@ ALTER TABLE public.repertoire_annotations ALTER COLUMN id ADD GENERATED ALWAYS A
     CACHE 1
 );
 
--- One line per row: moves, fen_sequence, and generated position/material key arrays for matching.
+-- One line per row: moves, fen_sequence, and generated position/material key arrays for matching. origin is 'course' (the import) or 'manual' (added by the player from a gap card; never retired by an import).
 CREATE TABLE public.repertoire_lines (
     id integer NOT NULL,
     chapter_id integer,
@@ -640,7 +642,9 @@ CREATE TABLE public.repertoire_lines (
     created_at timestamp with time zone DEFAULT now(),
     fen_sequence jsonb,
     position_keys bigint[] GENERATED ALWAYS AS (public.bq_position_keys(fen_sequence)) STORED,
-    material_keys bigint[] GENERATED ALWAYS AS (public.bq_material_keys(fen_sequence)) STORED
+    material_keys bigint[] GENERATED ALWAYS AS (public.bq_material_keys(fen_sequence)) STORED,
+    origin text DEFAULT 'course'::text NOT NULL,
+    CONSTRAINT repertoire_lines_origin_check CHECK ((origin = ANY (ARRAY['course'::text, 'manual'::text])))
 );
 
 CREATE SEQUENCE public.repertoire_lines_id_seq

@@ -74,10 +74,15 @@ BLUNDER_CLASSES = ("miss", "blunder", "mistake", "inaccuracy")
 BLUNDER_SCORE_WEIGHTS = {"miss": 8, "blunder": 4, "mistake": 2, "inaccuracy": 1}
 
 # The line report (core/repertoire/report.py): how many plies of each game follow a gap board
-# in the "most common continuations", and how much of the stored engine line pre-fills a custom
-# puzzle made from one (the modal extends it two plies at a time from there).
+# in the "most common continuations", and how much of the stored engine line seeds the line a
+# gap card adds to the repertoire (the modal's Extend control grows it from there).
 REPORT_CONTINUATION_PLIES = 4
 REPORT_PREFILL_PLIES = 10
+# A line the player adds by hand from a gap card: the most plies it may have (course lines have
+# no cap; custom puzzles have 30), and the title of the per-colour book such a line goes into
+# when it fits no chapter of the player's.
+REPERTOIRE_LINE_MAX_PLIES = 60
+CATCH_ALL_TITLE = "Catch-all"
 
 # Scout: a position shared with an opponent counts only from this 0-based ply on (the first
 # few moves of every game are shared with everyone).
@@ -209,7 +214,9 @@ MOTIF_THEME_VOCAB = frozenset({"fork", "pin", "skewer", "hangingPiece", "discove
 LOCK_PUZZLE_QUEUE = 3001
 LOCK_SRS_ATTEMPT = 3002
 LOCK_AI_BUDGET = 3003
-LOCK_REPERTOIRE = 3004  # matching and every repertoire change, from reading lines to publishing results
+LOCK_REPERTOIRE = 3004  # matching and every repertoire change, from reading lines to publishing results.
+# A transaction that needs both takes LOCK_REPERTOIRE first, then LOCK_PUZZLE_QUEUE (a drill);
+# nothing takes them the other way round.
 LOCK_REVIEW = 3005  # the review run, from reading the window to publishing events (core/review/run.py)
 LOCK_SEEN_BLUNDERS = 3006  # a visit's first list read and every acknowledgement of the Blunders list
 LOCK_SEEN_DEVIATIONS = 3007  # the same for the Deviations list
@@ -245,3 +252,8 @@ PENDING_BATCH_DEPTH_CAP = 2
 # gate is the `deviation_puzzle_min_occurrences` setting, and this constant is the serve
 # side's floor.
 REPERTOIRE_PUZZLE_MIN_EVENTS = 3
+# A drill of chosen lines: how many lines one drill may hold, and for how long after a drill
+# served a puzzle an attempt on it is still gradable when the puzzle has since stopped being
+# visible (the drill's exposure row is the proof it was served; a drill is not the queue).
+DRILL_MAX_LINES = 50
+DRILL_PROOF_DAYS = 7

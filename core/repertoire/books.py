@@ -24,6 +24,7 @@ from typing import Any
 from psycopg import Connection
 
 from core.constants import PLAYER_ID
+from core.puzzles import stats
 from core.repertoire import annotations, conflicts, matching
 from core.repertoire.conflicts import Kind, Refusal
 
@@ -72,14 +73,15 @@ def books(conn: Connection[Any]) -> list[Row]:
 
 def sections(conn: Connection[Any], book_id: int) -> list[Row] | None:
     """A book's chapters and their lines in the course's own order (chapters by source id,
-    lines by insertion), or None when the book is not the player's."""
+    lines by insertion), or None when the book is not the player's. Each line carries its
+    `origin` and how many times its puzzle was loaded (the delete confirm quotes it)."""
     owned = conn.execute("SELECT 1 FROM books WHERE id = %s AND player_id = %s", (book_id, PLAYER_ID)).fetchone()
     if owned is None:
         return None
     rows = conn.execute(
         """
         SELECT ch.id AS chapter_id, ch.title, ch.active AS chapter_active, ch.root_fen,
-               rl.id AS line_id, rl.line_name, rl.moves, rl.active AS line_active, rl.is_alternative
+               rl.id AS line_id, rl.line_name, rl.moves, rl.active AS line_active, rl.is_alternative, rl.origin
         FROM chapters ch
         LEFT JOIN repertoire_lines rl ON rl.chapter_id = ch.id
         WHERE ch.book_id = %s
@@ -110,8 +112,14 @@ def sections(conn: Connection[Any], book_id: int) -> list[Row] | None:
                     "moves": annotations.strings(r["moves"]),
                     "active": bool(r["line_active"]),
                     "is_alternative": bool(r["is_alternative"]),
+                    "origin": r["origin"],
+                    "loads": 0,
                 }
             )
+    loads = stats.by_line(conn, [int(ln["id"]) for lns in lines_of.values() for ln in lns])
+    for lns in lines_of.values():
+        for ln in lns:
+            ln["loads"] = loads.get(int(ln["id"]), stats.empty())["loads"]
     return out
 
 
