@@ -59,6 +59,7 @@ from core.settings import Settings
 CC0_SOURCE = "lichess_cc0"
 OWN_MATE_SOURCE = "own_mate"
 PTYPES = ("all", "motif", "repertoire", "blunder", "custom")
+DRILL_SCOPE = "drill"  # never a queue scope: `play_batch` neither mints nor serves it
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
@@ -243,11 +244,14 @@ def pending_members(conn: Connection[Any], scope: str, visible_ids: set[int]) ->
 
 
 def _all_pending_ids(conn: Connection[Any]) -> set[int]:
-    """Pending across every scope: a puzzle pending in one queue is not minted into another."""
+    """Pending across every queue scope: a puzzle pending in one queue is not minted into
+    another. A drill's exposures (`core.puzzles.drill`) are proof of service, not queue state,
+    and never hold a puzzle back."""
     with conn.cursor() as cur:
         cur.execute(
-            f"SELECT DISTINCT e.puzzle_id FROM player_puzzle_exposure e WHERE e.player_id = %s AND NOT {_ACKNOWLEDGED}",
-            (PLAYER_ID,),
+            f"SELECT DISTINCT e.puzzle_id FROM player_puzzle_exposure e WHERE e.player_id = %s"
+            f" AND e.scope <> %s AND NOT {_ACKNOWLEDGED}",
+            (PLAYER_ID, DRILL_SCOPE),
         )
         return {int(r["puzzle_id"]) for r in cur.fetchall()}
 
@@ -670,7 +674,7 @@ def _now(conn: Connection[Any]) -> datetime:
     return row["now"]
 
 
-def _attach(conn: Connection[Any], rows: list[dict[str, Any]]) -> None:
+def attach(conn: Connection[Any], rows: list[dict[str, Any]]) -> None:
     ids = [int(r["id"]) for r in rows]
     state = srs.states(conn, ids)
     summaries = srs.attempt_summaries(conn, ids)
@@ -700,7 +704,7 @@ def play_batch(
     visible = visibility.visible_rows(
         conn, last_n_games=last_n_games, lookahead_plies=lookahead, rep_scope=rep_scope_for(ptype, subtype)
     )
-    _attach(conn, visible)
+    attach(conn, visible)
     by_id = {int(r["id"]): r for r in visible}
     by_bucket: dict[str, list[dict[str, Any]]] = {}
     for r in visible:
@@ -714,7 +718,7 @@ def play_batch(
         minted = mint_batch(conn, by_bucket, config, scope, ptype, subtype, exclude, now)
         new_ids = [i for i in _batch_ids(conn, scope, minted) if i not in by_id]
         delta = visibility.visible_standard_by_id(conn, new_ids, last_n_games=last_n_games)
-        _attach(conn, delta)
+        attach(conn, delta)
         for r in delta:
             by_id.setdefault(int(r["id"]), r)
         pending = pending_members(conn, scope, set(by_id))
@@ -754,7 +758,7 @@ def browse(
     visible = visibility.visible_rows(
         conn, last_n_games=last_n_games, lookahead_plies=lookahead_plies(config), rep_scope=rep_scope
     )
-    _attach(conn, visible)
+    attach(conn, visible)
     now = _now(conn)
     visible.sort(key=lambda r: sort_key(r, now))
     for r in visible:
@@ -780,7 +784,7 @@ def retired(conn: Connection[Any]) -> list[dict[str, Any]]:
             {"pid": PLAYER_ID},
         )
         rows = [visibility.normalise(r) for r in cur.fetchall()]
-    _attach(conn, rows)
+    attach(conn, rows)
     for r in rows:
         r["play_batch_id"] = None
     return rows

@@ -4,6 +4,7 @@ GET  /practice/puzzles              the queue (srs=due), the browse list (all) o
 POST /practice/puzzles/{id}/attempt grade and record one attempt
 POST /practice/skip                 defer a served item
 GET  /practice/puzzles/{id}         the immutable solver payload for `?puzzle=<id>`
+GET  /practice/drill?lines=         the chosen lines' puzzles, whole, in order (core/puzzles/drill.py)
 GET  /practice/repertoire-scopes    books, chapters and lines that have a repertoire puzzle, with counts
 GET  /practice/today                today's puzzles solved, the target, and when the day rolls over
 """
@@ -18,8 +19,8 @@ from pydantic import BaseModel, Field
 
 from api import auth
 from core import db, home, settings
-from core.constants import CC0_SERVE_THEMES
-from core.puzzles import attempts, serve, srs, visibility
+from core.constants import CC0_SERVE_THEMES, DRILL_MAX_LINES
+from core.puzzles import attempts, drill, serve, srs, visibility
 
 router = APIRouter(prefix="/practice", tags=["practice"], dependencies=[auth.Authed])
 
@@ -65,6 +66,37 @@ def get_puzzles(
     }
 
 
+@router.get("/drill")
+def get_drill(lines: str = Query(max_length=2000)) -> dict[str, Any]:
+    """`lines` is a comma-separated list of repertoire line ids, in the order to drill them;
+    422 when it is not that or names more than the cap."""
+    try:
+        ids = [int(part) for part in lines.split(",") if part.strip()]
+    except ValueError as exc:
+        raise HTTPException(422, "lines must be a comma-separated list of ids") from exc
+    if not ids or any(i < 1 for i in ids):
+        raise HTTPException(422, "lines must be a comma-separated list of ids")
+    if len(set(ids)) > DRILL_MAX_LINES:
+        raise HTTPException(422, f"a drill holds {DRILL_MAX_LINES} lines at most")
+    with db.transaction() as conn:
+        config = settings.load(conn)
+        served = drill.serve_drill(conn, config, ids)
+        rows = served["puzzles"]
+        links = attempts.game_links(conn, [str(r["fen"]) for r in rows])
+        correct = attempts.correct_game_links(conn, rows)
+    for r in rows:
+        r["srs"] = srs.serialise(r.get("srs"))
+        r["game_links"] = links.get(str(r["fen"]), [])
+        r["correct_game_links"] = correct.get(int(r["id"]), [])
+    return {
+        "batch_id": served["batch_id"],
+        "puzzles": rows,
+        "skipped": served["skipped"],
+        "advance_threshold": config.srs_advance_threshold,
+        "max_lines": DRILL_MAX_LINES,
+    }
+
+
 @router.get("/today")
 def get_today() -> dict[str, Any]:
     with db.transaction() as conn:
@@ -94,6 +126,8 @@ class AttemptBody(BaseModel):
     # The segment the solver displayed, exactly as the puzzle payload gave it; None for a
     # standard puzzle. The verdict is against this segment (core/puzzles/attempts.py).
     presentation_ply: int | None = Field(None, ge=0, le=1000)
+    # The attempt's order within its load, counted by the solver from 1; None from an older client.
+    attempt_seq: int | None = Field(None, ge=1, le=100000)
 
 
 @router.post("/puzzles/{puzzle_id}/attempt")
@@ -110,6 +144,7 @@ def post_attempt(puzzle_id: int, body: AttemptBody) -> dict[str, Any]:
                 attempt_id=str(body.attempt_id) if body.attempt_id else None,
                 session_id=str(body.session_id) if body.session_id else None,
                 presentation_ply=body.presentation_ply,
+                attempt_seq=body.attempt_seq,
             )
         except attempts.NotAttemptable as exc:
             raise HTTPException(404, "puzzle not found") from exc

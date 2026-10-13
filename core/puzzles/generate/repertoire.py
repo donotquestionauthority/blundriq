@@ -21,6 +21,9 @@ different:
   because the player's progress was against a different solution. Their attempts are
   kept as a record.
 
+A puzzle a drill has served (`drilled_at` set, by `core.puzzles.drill`) is kept and active
+below the deviation gate: the player asked for that line. The orphan rule still applies to it.
+
 A line whose stored data is malformed is skipped and its puzzle soft-disabled, with SRS
 untouched: a re-import can heal the line, and the player should not lose progress to a
 temporary import problem.
@@ -78,6 +81,7 @@ SELECT rl.id AS line_id, rl.line_name, rl.moves, rl.fen_sequence, bk.color,
        bk.title AS book_title, ch.title AS chapter_title,
        COALESCE(ev.games, 0) AS event_count,
        pz.id AS existing_id, pz.active AS existing_active, pz.fen AS existing_fen, pz.title AS existing_title,
+       pz.drilled_at AS existing_drilled_at,
        pz.solution_line AS existing_solution_line,
        pz.solution_fen_sequence AS existing_solution_fen_sequence
 FROM repertoire_lines rl
@@ -178,7 +182,7 @@ def generate(conn: Connection[Any], config: Settings) -> dict[str, int]:
                 to_deactivate.append(int(existing_id))
             continue
 
-        if int(row["event_count"]) < config.deviation_puzzle_min_occurrences:
+        if int(row["event_count"]) < config.deviation_puzzle_min_occurrences and row["existing_drilled_at"] is None:
             if existing_id is not None and row["existing_active"]:
                 to_deactivate.append(int(existing_id))
             continue
@@ -232,6 +236,65 @@ def generate(conn: Connection[Any], config: Settings) -> dict[str, int]:
             cur.execute("UPDATE puzzles SET title = %s, updated_at = now() WHERE id = %s", (title, puzzle_id))
         stats.retitled = len(retitle)
     return stats.as_dict()
+
+
+_ONE_LINE = """
+SELECT rl.id AS line_id, rl.line_name, rl.moves, rl.fen_sequence, bk.color,
+       bk.title AS book_title, ch.title AS chapter_title,
+       pz.id AS existing_id, pz.active AS existing_active, pz.fen AS existing_fen,
+       pz.solution_line AS existing_solution_line, pz.solution_fen_sequence AS existing_solution_fen_sequence
+FROM repertoire_lines rl
+JOIN chapters ch ON ch.id = rl.chapter_id
+JOIN books bk ON bk.id = ch.book_id
+LEFT JOIN puzzles pz ON pz.repertoire_line_id = rl.id AND pz.player_id = %(pid)s
+WHERE rl.id = %(line)s AND bk.player_id = %(pid)s AND rl.active = TRUE AND ch.active = TRUE AND bk.active = TRUE
+"""
+
+
+def ensure_line_puzzle(conn: Connection[Any], line_id: int) -> int | None:
+    """The id of the active puzzle for one effectively-active line, made with the generator's
+    own rules when there is none, reactivated when it is off, rebuilt (its SRS state deleted,
+    its attempts kept) when the line changed under it. None for a line that is not the
+    player's, not effectively active, or malformed. The drill's mint; the caller holds the
+    repertoire lock and commits."""
+    with conn.cursor() as cur:
+        cur.execute(_ONE_LINE, {"pid": PLAYER_ID, "line": line_id})
+        row = cur.fetchone()
+    if row is None:
+        return None
+    moves = _as_list(row["moves"])
+    fens = _as_list(row["fen_sequence"])
+    if moves is None or fens is None or not fens or len(fens) != len(moves) + 1:
+        return None
+    existing_id = row["existing_id"]
+    fresh_fen = str(fens[0])
+    drifted = existing_id is not None and (
+        str(row["existing_fen"]) != fresh_fen
+        or _as_list(row["existing_solution_line"]) != moves
+        or _as_list(row["existing_solution_fen_sequence"]) != fens
+    )
+    if existing_id is not None and not drifted:
+        if not row["existing_active"]:
+            conn.execute("UPDATE puzzles SET active = TRUE, updated_at = now() WHERE id = %s", (int(existing_id),))
+        return int(existing_id)
+    if drifted and existing_id is not None:
+        conn.execute("DELETE FROM player_puzzle_state WHERE puzzle_id = %s", (int(existing_id),))
+    with conn.cursor() as cur:
+        cur.execute(
+            _UPSERT,
+            {
+                "fen": fresh_fen,
+                "line": json.dumps(moves),
+                "seq": json.dumps(fens),
+                "color": "w" if str(row["color"]) == "white" else "b",
+                "title": f"{row['book_title']} › {row['chapter_title']} › {row['line_name']}",
+                "line_id": int(row["line_id"]),
+                "player": PLAYER_ID,
+            },
+        )
+        made = cur.fetchone()
+    assert made is not None
+    return int(made["id"])
 
 
 def rebuild_fen_sequence(fen: str, moves: list[str]) -> list[str]:
