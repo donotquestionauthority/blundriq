@@ -94,14 +94,12 @@ _PRECEDENCE = {ME: 0, OPPONENT: 1, ENDED: 2, RAN_OUT: 3}
 # Python (`status_of`, `own_moves`): the Python is what the tests check against the matcher, and
 # a parity test holds the two together. Every text tie-break orders under COLLATE "C": Python
 # compares strings by code point and the database's default collation does not.
-# The reduction's session settings, for its transaction. A hosted database's estimates for one
-# player's rows are off by orders of magnitude (nine matched games for a thousand, six lines for
-# two thousand), and the plans built on them — nested loops over the (game, line) pairs — took
-# half a minute: so no nested loops (every join here is a hash join over tables of thousands of
-# rows whatever the estimates say), enough working memory that no hash or sort of the pairs
-# spills to the instance's throttled disk, and no JIT (the statement's two hundred expressions
-# cost more to compile on every run than they save). The gap boards' lookups by id that follow
-# are nested loops by right, so that one comes back.
+
+# The reduction's session settings, for its transaction: the planner's row estimates for one
+# player's small tables cannot be relied on, so nested loops — a probe per (game, line) pair —
+# are discouraged, the pairs' hashes and sorts get working memory sized to them rather than the
+# server's default, and the statement's many expressions are not JIT-compiled per run. The gap
+# boards' lookups by id that follow are nested loops by right, so that one comes back.
 READ_SETTINGS = ("SET LOCAL jit = off; SET LOCAL enable_nestloop = off; SET LOCAL work_mem = '32MB'",)
 READ_SETTINGS_AFTER = ("SET LOCAL enable_nestloop = on",)
 
@@ -162,10 +160,8 @@ n AS MATERIALIZED (
 ),
 r AS MATERIALIZED (
     -- One row per (game, attached line), with its precedence for the reduction and how many
-    -- lines of the chapter the game is attached to (a window over the pairs, never a join: a
-    -- join on the game alone multiplied the pairs by the game's chapters before the line could
-    -- narrow them). Two joins whose hash tables are the games and the lines (thousands of rows),
-    -- held once in the read's working memory for the two aggregates below.
+    -- lines of the chapter the game is attached to — a window over the pairs, so no join
+    -- multiplies rows. Held once for the two aggregates below.
     SELECT g.gid, g.result, g.played_at, g.m, n.line_id, n.chapter_id, n.book_id, n.rank,
            s.status, """
     + _PRECEDENCE_SQL
@@ -180,11 +176,11 @@ r AS MATERIALIZED (
     + """
 ),
 -- A game is one game per chapter and per book: its representative pair is the first by
--- precedence then rank — the least (precedence, rank) key per (chapter, game), one hash
--- aggregate into a few thousand groups — and that pair is rebuilt from the game and the line
--- the key names, since every attached line shares the game's fields. The book's representative
--- is the first of its chapter representatives, and the game's over every attached line (the gap
--- game, when it is `opponent`) the first of those.
+-- precedence then rank — the least (precedence, rank) key per (chapter, game) — rebuilt from
+-- the game and the line the key names rather than joined back to the pairs, since every attached
+-- line shares the game's fields. The book's representative is the first of its chapter
+-- representatives, and the game's over every attached line (the gap game, when it is
+-- `opponent`) the first of those.
 best AS MATERIALIZED (
     SELECT chapter_id, gid, min(prec * 1000000 + rank) AS key FROM r GROUP BY chapter_id, gid
 ),
@@ -221,9 +217,8 @@ FROM gap WHERE status = 'opponent'
 # The gap board of each kind-A game and what the card needs from the game: the board after the
 # opponent's move at `m` (the gap ply is m + 1, per game), its canonical key, the next
 # REPORT_CONTINUATION_PLIES moves, the family, and whether the game is analysed. The stored
-# engine entry itself is read afterwards for each board's representative only (`_ENGINE_SQL`):
-# a game's analysis is a large value, and reading it for every gap game cost more than the
-# reduction.
+# engine entry itself — a large value per game — is read afterwards, for a board's candidate
+# representatives only (`_ENGINE_SQL`).
 _GAP_GAMES_SQL = """
 SELECT cg.id AS gid, pg.result, cg.played_at, cg.canonical_family,
        cg.fen_sequence->>t.gap_ply AS gap_fen,
@@ -505,29 +500,42 @@ def gaps(conn: Connection[Any], config: Settings, *, time_class: str, colour: st
 # --- gaps -------------------------------------------------------------------------
 
 
-def _representative(members: list[Row]) -> Row:
-    """The most recent analysed game of a board, else the most recent game: its board is the
-    card's FEN and its stored engine entry the prefill."""
-    return max(members, key=lambda r: (bool(r["analysed"]), r["played_at"] is not None, r["played_at"], int(r["gid"])))
+def _recency(r: Row) -> tuple[bool, Any, int]:
+    return (r["played_at"] is not None, r["played_at"], int(r["gid"]))
 
 
-def _engine_entries(conn: Connection[Any], reps: list[Row]) -> dict[int, Row | None]:
-    """{gid: the stored engine entry at the game's gap board, or None} for the representatives."""
-    if not reps:
+def _engine_entries(conn: Connection[Any], games: list[Row]) -> dict[int, Row | None]:
+    """{gid: the stored engine entry at the game's gap board, or None when the analysis has none}."""
+    if not games:
         return {}
     rows = conn.execute(
-        _ENGINE_SQL, {"gids": [int(r["gid"]) for r in reps], "plies_at": [int(r["gap_ply"]) for r in reps]}
+        _ENGINE_SQL, {"gids": [int(r["gid"]) for r in games], "plies_at": [int(r["gap_ply"]) for r in games]}
     ).fetchall()
     return {int(r["gid"]): cast(Row, r["analysis"]) if isinstance(r["analysis"], dict) else None for r in rows}
 
 
 def _cards(conn: Connection[Any], groups: list[list[Row]], *, colour: str, context: dict[int, Row] | None) -> list[Row]:
-    """One card per group of games reaching one board, the engine entry read once per board."""
-    reps = [_representative(g) for g in groups]
-    engine = _engine_entries(conn, reps)
+    """One card per group of games reaching one board. A board's representative is the most
+    recent game whose stored analysis has an entry at the board, else its most recent game; the
+    entries are read for the candidates in that order, a batch per round, until each board has
+    its answer — an analysed game may stop short of the board, and the next candidate then
+    stands — so the card's board, stem and engine line come from one game."""
+    candidates = [sorted((r for r in g if r["analysed"]), key=_recency, reverse=True) for g in groups]
+    chosen: list[tuple[Row, Row | None] | None] = [None] * len(groups)
+    while True:
+        probe = [(i, c[0]) for i, c in enumerate(candidates) if chosen[i] is None and c]
+        if not probe:
+            break
+        entries = _engine_entries(conn, [r for _, r in probe])
+        for i, r in probe:
+            entry = entries.get(int(r["gid"]))
+            if entry is not None:
+                chosen[i] = (r, entry)
+            else:
+                candidates[i] = candidates[i][1:]
     return [
-        _group(g, rep, engine.get(int(rep["gid"])), colour=colour, context=context)
-        for g, rep in zip(groups, reps, strict=True)
+        _group(g, *(chosen[i] or (max(g, key=_recency), None)), colour=colour, context=context)
+        for i, g in enumerate(groups)
     ]
 
 

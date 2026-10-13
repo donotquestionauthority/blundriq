@@ -376,6 +376,20 @@ def test_a_gap_groups_by_canonical_board_with_one_context_tuple_and_one_engine_r
         {"moves": ["c3", "Be7", "d4", "exd4"], "games": 2, "score": 0.5},
         {"moves": ["d4"], "games": 1, "score": 0.5},
     ]
+    # A newer game whose analysis stops before the board (the analyser stops at a move it cannot
+    # read) does not hide the older game's entry: the card's engine line, board and stem are the
+    # older game's. A newer game with no analysis at all never did.
+    clean.execute(
+        "UPDATE chess_games SET ply_analysis = %s::jsonb WHERE id = 3", (json.dumps([{"ply": 0}, {"ply": 1}]),)
+    )
+    clean.execute("UPDATE player_games SET analyzed_at_depth = 18 WHERE chess_game_id = 3")
+    clean.commit()
+    card = _gaps(clean, "white")["gaps"][0]
+    assert card["engine"]["best_move"] == "O-O" and card["fen"] == fens[6] and card["stem"] == base
+    clean.execute("UPDATE chess_games SET ply_analysis = %s::jsonb WHERE id = 2", (json.dumps([{"ply": 0}]),))
+    clean.commit()
+    card = _gaps(clean, "white")["gaps"][0]
+    assert card["engine"] == {"best_move": "c3", "line": ["c3", "Nf6", "d4"], "eval": 0, "mate_in": None}
 
 
 def test_a_black_gap_board_is_the_board_after_whites_move(clean: psycopg.Connection[DictRow]) -> None:
