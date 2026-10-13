@@ -289,9 +289,13 @@ def _reduced(conn: Connection[Any], config: Settings, time_class: str) -> tuple[
     game whose representative over every attached line is `opponent`, with that line as context)."""
     params, tc = _window_params(config, time_class)
     sql = _REPORT_SQL.format(window=window_cte(), analysable=analysable_sql("cg"), time_class=tc)
-    # The statement's two hundred expressions would be compiled by the server's JIT on every
-    # run, which costs more than they save on a small instance; for this transaction only.
+    # For this statement only: no JIT (its two hundred expressions cost more to compile on every
+    # run than they save) and no nested loops (the planner's estimates for a small player's rows
+    # are off by orders of magnitude on a hosted database — nine games for a thousand — and a
+    # nested loop over the (game, line) pairs built on them took half a minute; every join here
+    # is a hash join over tables of thousands of rows whatever the estimates say).
     conn.execute("SET LOCAL jit = off")
+    conn.execute("SET LOCAL enable_nestloop = off")
     compact: dict[tuple[str, int], list[Row]] = defaultdict(list)
     gap_games: list[Row] = []
     for r in conn.execute(cast(LiteralString, sql), params).fetchall():
@@ -299,6 +303,7 @@ def _reduced(conn: Connection[Any], config: Settings, time_class: str) -> tuple[
             gap_games.append({"id": int(r["id"]), **cast(Row, r["ctx"])})
             continue
         compact[(str(r["scope"]), int(r["id"]))].append(r)
+    conn.execute("SET LOCAL enable_nestloop = on")  # the gap boards' lookups by id are nested loops by right
     scopes: dict[str, dict[int, Row]] = {"line": {}, "chapter": {}, "book": {}}
     for (scope, sid), rows in compact.items():
         scopes[scope][sid] = _summary(rows)
