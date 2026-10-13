@@ -214,11 +214,12 @@ def test_create_and_remove_a_puzzle_over_http(client: TestClient) -> None:
     assert client.get(f"/practice/puzzles/{pid}").status_code == 404
 
 
-def test_a_gap_puzzle_over_http_is_tagged_and_visible_when_it_agrees_with_the_repertoire(
+def test_a_custom_puzzle_that_agrees_with_the_repertoire_is_visible_and_one_that_conflicts_is_not(
     client: TestClient, clean: psycopg.Connection[DictRow]
 ) -> None:
-    """A puzzle made from the line report's gap card carries the `gap` tag. Agreeing with the
-    repertoire does not hide it (redundancy is a blunder-only rule); a conflict with it does."""
+    """Agreeing with the repertoire does not hide a custom puzzle (redundancy is a blunder-only
+    rule); a conflict with it does. The line report no longer makes custom puzzles (a gap becomes
+    a repertoire line), so `gap` is not a context tag."""
     from tests import repertoire_helpers as h
 
     h.book(clean, 1, "Italian", "white")
@@ -226,12 +227,12 @@ def test_a_gap_puzzle_over_http_is_tagged_and_visible_when_it_agrees_with_the_re
     h.line(clean, 1, 1, "Main", ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3"])
     clean.commit()
     after_bc5 = "r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"
-    agreeing = {"fen": after_bc5, "solution_line": ["c3", "Nf6", "d4"], "color": "w", "source_types": ["gap"]}
+    agreeing = {"fen": after_bc5, "solution_line": ["c3", "Nf6", "d4"], "color": "w", "source_types": ["deviation"]}
     made = client.post("/puzzles", json=agreeing)
     assert made.status_code == 200 and made.json()["visible"] is True
     pid = made.json()["id"]
-    assert client.get(f"/practice/puzzles/{pid}").json()["source_types"] == ["gap", "custom"]
-    served = client.get("/practice/puzzles", params={"ptype": "custom", "subtype": "gap", "srs": "all"}).json()
+    assert client.get(f"/practice/puzzles/{pid}").json()["source_types"] == ["deviation", "custom"]
+    served = client.get("/practice/puzzles", params={"ptype": "custom", "subtype": "deviation", "srs": "all"}).json()
     assert [p["id"] for p in served["puzzles"]] == [pid]
     assert (
         client.get("/practice/puzzles", params={"ptype": "custom", "subtype": "blunder", "srs": "all"}).json()[
@@ -250,7 +251,7 @@ def test_a_gap_puzzle_over_http_is_tagged_and_visible_when_it_agrees_with_the_re
     conflicting = {**agreeing, "solution_line": ["d3", "Nf6", "Bg5"]}
     made = client.post("/puzzles", json=conflicting)
     assert made.status_code == 200 and made.json()["visible"] is False
-    assert client.post("/puzzles", json={**agreeing, "source_types": ["report"]}).status_code == 422
+    assert client.post("/puzzles", json={**agreeing, "source_types": ["gap"]}).status_code == 422
 
 
 def test_a_puzzle_the_dismissed_board_hides_says_so(client: TestClient) -> None:

@@ -46,10 +46,11 @@ active repertoire through the read module's continuing-move projection: a covere
 "prepared but not played" (the book prescribes a move there, the player played another), an
 uncovered one is a gap (kind B). A line that merely ends at the board is not preparation.
 
-**Puzzles.** A gap board's owner is the active *standard* puzzle on it, under the predicate of
-the index that defines ownership (`ix_puzzles_player_standard_fen`); whether Practice would
-serve it is the visibility module's answer, never this module's. Line, chapter and book puzzle
-counts are the positions Practice serves for that scope (`visibility.repertoire_scopes`).
+**Puzzles and the stem.** Line, chapter and book puzzle counts are the positions Practice serves
+for that scope (`visibility.repertoire_scopes`); the practice numbers per line are
+`core.puzzles.stats`. A gap card carries `stem`, the representative game's own moves from the
+start to the gap board, re-rendered and checked to reach it, which is what a line added from the
+card opens with; and the chapters such a line may go into (`core.repertoire.lines`).
 """
 
 from __future__ import annotations
@@ -59,11 +60,21 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, LiteralString, cast
 
+import chess
 from psycopg import Connection
 
 from core.chess.eligibility import analysable_sql, time_class_sql, window_cte
-from core.constants import PLAYER_ID, REPORT_CONTINUATION_PLIES, REPORT_PREFILL_PLIES
-from core.puzzles import serve, visibility
+from core.chess.san import normalize_san
+from core.chess.san import parse as parse_san
+from core.constants import (
+    CATCH_ALL_TITLE,
+    PLAYER_ID,
+    REPERTOIRE_LINE_MAX_PLIES,
+    REPORT_CONTINUATION_PLIES,
+    REPORT_PREFILL_PLIES,
+)
+from core.puzzles import serve, stats, visibility
+from core.repertoire import lines as lines_by_hand
 from core.repertoire import read
 from core.settings import Settings
 
@@ -117,6 +128,8 @@ SELECT cg.id AS gid, pg.result, cg.played_at, cg.canonical_family,
        cg.moves->>(%(gap_ply)s - 1) AS arrived_by,
        (SELECT array_agg(x ORDER BY ord) FROM jsonb_array_elements_text(cg.moves) WITH ORDINALITY AS t(x, ord)
          WHERE ord > %(gap_ply)s AND ord <= %(gap_ply)s + %(plies)s) AS continuation,
+       (SELECT array_agg(x ORDER BY ord) FROM jsonb_array_elements_text(cg.moves) WITH ORDINALITY AS t(x, ord)
+         WHERE ord <= %(gap_ply)s) AS stem,
        cg.ply_analysis -> (%(gap_ply)s) AS analysis
 FROM chess_games cg
 JOIN player_games pg ON pg.chess_game_id = cg.id AND pg.player_id = %(pid)s
@@ -134,6 +147,8 @@ SELECT cg.id AS gid, pg.result, cg.played_at, cg.canonical_family, pg.player_col
        CASE WHEN %(gap_ply)s > 0 THEN cg.moves->>(%(gap_ply)s - 1) END AS arrived_by,
        (SELECT array_agg(x ORDER BY ord) FROM jsonb_array_elements_text(cg.moves) WITH ORDINALITY AS t(x, ord)
          WHERE ord > %(gap_ply)s AND ord <= %(gap_ply)s + %(plies)s) AS continuation,
+       (SELECT array_agg(x ORDER BY ord) FROM jsonb_array_elements_text(cg.moves) WITH ORDINALITY AS t(x, ord)
+         WHERE ord <= %(gap_ply)s) AS stem,
        cg.ply_analysis -> (%(gap_ply)s) AS analysis
 FROM player_games pg
 JOIN chess_games cg ON cg.id = pg.chess_game_id
@@ -142,13 +157,6 @@ WHERE pg.player_id = %(pid)s AND pg.no_repertoire_match AND pg.player_color = %(
   AND cg.fen_sequence IS NOT NULL AND cg.moves IS NOT NULL
   AND jsonb_array_length(cg.moves) > %(gap_ply)s
   AND {analysable} AND {time_class}
-"""
-
-_OWNERS_SQL = """
-SELECT p.id, p.canonical_fen
-FROM puzzles p
-WHERE p.player_id = %(pid)s AND p.is_repertoire = FALSE AND p.active = TRUE
-  AND p.canonical_fen = ANY(%(canons)s)
 """
 
 
@@ -280,40 +288,62 @@ def _ordered(rows: list[Row], name: str) -> list[Row]:
     return sorted(rows, key=key)
 
 
+_ACTIVE_LINES_SQL = """
+SELECT rl.id AS line_id, rl.line_name, rl.is_alternative, rl.origin, jsonb_array_length(rl.moves) AS len,
+       ch.id AS chapter_id, ch.title AS chapter_title,
+       bk.id AS book_id, bk.title AS book_title, bk.color
+FROM repertoire_lines rl
+JOIN chapters ch ON ch.id = rl.chapter_id AND ch.active
+JOIN books bk ON bk.id = ch.book_id AND bk.active AND bk.player_id = %(pid)s
+WHERE rl.active
+"""
+
+
 def lines(conn: Connection[Any], config: Settings, *, time_class: str) -> Row:
-    """`{"books": [...]}`: book › chapter › line rows with games, results, depth, faithfulness
-    and the slip, every level ordered most games first (then most recent, then name).
-    `time_class` is one of `eligibility.TIME_CLASSES`."""
+    """`{"books": [...]}`: book › chapter › line rows with games, results, depth, faithfulness,
+    the slip and the practice numbers, every level ordered most games first (then most recent,
+    then name). Every effectively-active line is a row, with zero games when no game in the
+    window reached it, so a line just added can be found and drilled. `time_class` is one of
+    `eligibility.TIME_CLASSES`."""
     rows = _per_line_rows(conn, config, time_class)
     book_counts, chapter_counts, line_counts = _scope_counts(conn, config)
     books: dict[int, Row] = {}
     chapters: dict[int, Row] = {}
     lines_: dict[int, Row] = {}
-    tallies: dict[tuple[str, int], _Tally] = defaultdict(_Tally)
-    line_games: dict[int, set[int]] = defaultdict(set)
-    chapter_game_lines: dict[int, dict[int, set[int]]] = defaultdict(lambda: defaultdict(set))
-    for r in rows:
-        gid, m, status, colour = int(r["gid"]), int(r["m"]), str(r["status"]), str(r["color"])
-        slip = (own_moves(m, colour) + 1, r["expected"], r["played"]) if status == ME else None
-        bid, cid, lid = int(r["book_id"]), int(r["chapter_id"]), int(r["line_id"])
+
+    def see(r: Row) -> None:
+        bid, cid, lid, colour = int(r["book_id"]), int(r["chapter_id"]), int(r["line_id"]), str(r["color"])
         if bid not in books:
-            books[bid] = {"id": bid, "title": r["book_title"], "color": colour, "chapters": {}}
+            books[bid] = {"id": bid, "title": r["book_title"], "color": colour}
         if cid not in chapters:
-            chapters[cid] = {"id": cid, "title": r["chapter_title"], "book_id": bid, "lines": {}}
+            chapters[cid] = {"id": cid, "title": r["chapter_title"], "book_id": bid}
         if lid not in lines_:
             lines_[lid] = {
                 "id": lid,
                 "title": r["line_name"],
                 "is_alternative": bool(r["is_alternative"]),
+                "origin": r.get("origin", "course"),
                 "chapter_id": cid,
                 "depth_total": own_moves(int(r["len"]), colour),
             }
+
+    for r in conn.execute(_ACTIVE_LINES_SQL, {"pid": PLAYER_ID}).fetchall():
+        see(r)
+    tallies: dict[tuple[str, int], _Tally] = defaultdict(_Tally)
+    line_games: dict[int, set[int]] = defaultdict(set)
+    chapter_game_lines: dict[int, dict[int, set[int]]] = defaultdict(lambda: defaultdict(set))
+    for r in rows:
+        see(r)
+        gid, m, status, colour = int(r["gid"]), int(r["m"]), str(r["status"]), str(r["color"])
+        slip = (own_moves(m, colour) + 1, r["expected"], r["played"]) if status == ME else None
+        bid, cid, lid = int(r["book_id"]), int(r["chapter_id"]), int(r["line_id"])
         result, played_at = r["result"], r["played_at"]
         tallies[("line", lid)].add(gid, status, result, played_at, m, slip)
         tallies[("chapter", cid)].add(gid, status, result, played_at, m, slip)
         tallies[("book", bid)].add(gid, status, result, played_at, m, slip)
         line_games[lid].add(gid)
         chapter_game_lines[cid][gid].add(lid)
+    practice = stats.by_line(conn, list(lines_))
     chapters_of: dict[int, list[Row]] = defaultdict(list)
     for ch in chapters.values():
         chapters_of[int(ch["book_id"])].append(ch)
@@ -322,7 +352,13 @@ def lines(conn: Connection[Any], config: Settings, *, time_class: str) -> Row:
         lines_of[int(ln["chapter_id"])].append(ln)
 
     def finish(scope: str, row: Row, counts: dict[int, int], colour: str) -> Row:
-        out = {**row, **tallies[(scope, int(row["id"]))].summary(colour), "puzzles": counts.get(int(row["id"]), 0)}
+        return {**row, **tallies[(scope, int(row["id"]))].summary(colour), "puzzles": counts.get(int(row["id"]), 0)}
+
+    def summed(rows_: list[Row]) -> dict[str, int]:
+        out = stats.empty()
+        for r in rows_:
+            for k in out:
+                out[k] += int(r["practice"][k])
         return out
 
     out_books: list[Row] = []
@@ -336,17 +372,18 @@ def lines(conn: Connection[Any], config: Settings, *, time_class: str) -> Row:
                 lid = int(ln["id"])
                 row = finish("line", ln, line_counts, colour)
                 # Shared: every game under this line also sits under another line of the chapter.
-                row["shared"] = all(len(chapter_game_lines[cid][g]) > 1 for g in line_games[lid])
-                del row["chapter_id"]
+                games_here = line_games[lid]
+                row["shared"] = bool(games_here) and all(len(chapter_game_lines[cid][g]) > 1 for g in games_here)
+                row["practice"] = practice.get(lid, stats.empty())
+                row.update(book_id=bid, book=b["title"], chapter=ch["title"], colour=colour)
                 out_lines.append(row)
             out_lines = _ordered(out_lines, "title")
-            crow = finish("chapter", {k: v for k, v in ch.items() if k != "lines"}, chapter_counts, colour)
-            del crow["book_id"]
-            crow["lines"] = out_lines
+            crow = finish("chapter", dict(ch), chapter_counts, colour)
+            crow.update(book=b["title"], colour=colour, lines=out_lines, practice=summed(out_lines))
             out_chapters.append(crow)
         out_chapters = _ordered(out_chapters, "title")
-        brow = finish("book", {k: v for k, v in b.items() if k != "chapters"}, book_counts, colour)
-        brow["chapters"] = out_chapters
+        brow = finish("book", dict(b), book_counts, colour)
+        brow.update(colour=colour, chapters=out_chapters, practice=summed(out_chapters))
         out_books.append(brow)
     out_books = _ordered(out_books, "title")
     return {"books": out_books}
@@ -433,9 +470,25 @@ def _group(members: list[Row], *, colour: str, context: dict[int, Row] | None) -
         "context": ctx,
         "continuations": continuations,
         "engine": engine,
+        "stem": _stem(rep),
         "last_played": _iso(played_at),
-        "puzzle": None,
     }
+
+
+def _stem(rep: Row) -> list[str] | None:
+    """The representative game's moves from the start to the gap board, re-rendered as the
+    server's SAN and checked to reach the card's board; None when they do not replay there."""
+    board = chess.Board()
+    out: list[str] = []
+    for token in rep["stem"] or ():
+        move = parse_san(board, normalize_san(str(token)))
+        if not move:
+            return None
+        # Chess960 games never reach here (the window is analysable games), so the start is the start.
+        out.append(board.san(move))
+        board.push(move)
+    canon = str(rep["canon"]).split(" ")[:4]
+    return out if board.fen().split(" ")[:4] == canon else None
 
 
 def _score(members: list[Row], moves: tuple[str, ...]) -> float | None:
@@ -443,22 +496,6 @@ def _score(members: list[Row], moves: tuple[str, ...]) -> float | None:
     sub = [r for r in members if tuple(r["continuation"] or ()) == moves and r["result"]]
     pts = sum(1.0 if r["result"] == "win" else 0.5 if r["result"] == "draw" else 0.0 for r in sub)
     return round(pts / len(sub), 3) if sub else None
-
-
-def _attach_puzzles(conn: Connection[Any], cards: list[Row]) -> None:
-    """`puzzle: {id, playable} | None` on every card: the board's active standard owner, and
-    whether Practice would serve it (the visibility read, batched)."""
-    canons = sorted({str(c["canon"]) for c in cards})
-    if not canons:
-        return
-    owners = {
-        str(r["canonical_fen"]): int(r["id"])
-        for r in conn.execute(_OWNERS_SQL, {"pid": PLAYER_ID, "canons": canons}).fetchall()
-    }
-    visible = {int(r["id"]) for r in visibility.visible_standard_by_id(conn, list(owners.values()), last_n_games=0)}
-    for c in cards:
-        pid = owners.get(str(c["canon"]))
-        c["puzzle"] = None if pid is None else {"id": pid, "playable": pid in visible}
 
 
 def _kind_a(conn: Connection[Any], config: Settings, time_class: str, colour: str, params: dict[str, Any]) -> list[Row]:
@@ -582,19 +619,47 @@ def gaps(conn: Connection[Any], config: Settings, *, time_class: str, colour: st
     # every White game is unmatched and "uncovered" at the start: that is one fact, not a card per
     # first move. As Black an uncovered first move is a gap whether or not a Black line is active.
     if colour == "white" and not read.has_active_repertoire(conn, colour):
-        return {"colour": colour, "no_book": True, "prepared": [], "gaps": [], "prefill_plies": REPORT_PREFILL_PLIES}
+        return {
+            "colour": colour,
+            "no_book": True,
+            "prepared": [],
+            "gaps": [],
+            "prefill_plies": REPORT_PREFILL_PLIES,
+            "max_plies": REPERTOIRE_LINE_MAX_PLIES,
+        }
     _, _, line_counts = _scope_counts(conn, config)
     cards = _kind_a(conn, config, time_class, colour, params)
     prepared, cards_b = _kind_b(conn, config, time_class, colour, params, line_counts)
     cards += cards_b
-    _attach_puzzles(conn, cards)
     cards = _ordered(cards, "fen")
+    chapters = _destinations(conn, colour)
     for c in cards:
         del c["canon"]
+        ctx = c.get("context")
+        first = [ch for ch in chapters if ctx is not None and ch["id"] == ctx["chapter_id"]]
+        c["chapters"] = first + [ch for ch in chapters if not first or ch["id"] != first[0]["id"]]
+        c["catch_all"] = {
+            "book": f"{CATCH_ALL_TITLE} ({colour})",
+            "chapter": c["family"] or lines_by_hand.CATCH_ALL_FAMILY_FALLBACK,
+        }
     return {
         "colour": colour,
         "no_book": False,
         "prepared": prepared,
         "gaps": cards,
         "prefill_plies": REPORT_PREFILL_PLIES,
+        "max_plies": REPERTOIRE_LINE_MAX_PLIES,
     }
+
+
+def _destinations(conn: Connection[Any], colour: str) -> list[Row]:
+    """The chapters a manual line of this colour may go into: start-rooted, in an active book
+    of the colour, the chapter itself active; the Repertoire page's order."""
+    rows = conn.execute(
+        "SELECT ch.id, ch.title, bk.id AS book_id, bk.title AS book FROM chapters ch"
+        " JOIN books bk ON bk.id = ch.book_id"
+        " WHERE bk.player_id = %s AND bk.color = %s AND bk.active AND ch.active AND ch.root_fen IS NULL"
+        " ORDER BY bk.title, bk.id, ch.source_chapter_id NULLS LAST, ch.title, ch.id",
+        (PLAYER_ID, colour),
+    ).fetchall()
+    return [{"id": int(r["id"]), "title": r["title"], "book_id": int(r["book_id"]), "book": r["book"]} for r in rows]

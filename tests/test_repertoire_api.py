@@ -172,8 +172,22 @@ def test_the_line_report_routes(client: TestClient) -> None:
     assert client.get("/repertoire/report/lines").json()["books"][0]["games"] == 2  # focus: rapid games count
     assert client.get("/repertoire/report/lines", params={"time_class": "nope"}).status_code == 422
     gaps = client.get("/repertoire/report/gaps", params={"colour": "white", "time_class": "all"}).json()
-    assert gaps == {"colour": "white", "no_book": False, "prepared": [], "gaps": [], "prefill_plies": 10}
+    assert gaps == {
+        "colour": "white",
+        "no_book": False,
+        "prepared": [],
+        "gaps": [],
+        "prefill_plies": 10,
+        "max_plies": 60,
+    }
     black = client.get("/repertoire/report/gaps", params={"colour": "black"}).json()
-    assert black == {"colour": "black", "no_book": False, "prepared": [], "gaps": [], "prefill_plies": 10}
+    assert black == {
+        "colour": "black",
+        "no_book": False,
+        "prepared": [],
+        "gaps": [],
+        "prefill_plies": 10,
+        "max_plies": 60,
+    }
     assert client.get("/repertoire/report/gaps").status_code == 422  # colour is required
     assert client.get("/repertoire/report/gaps", params={"colour": "red"}).status_code == 422
