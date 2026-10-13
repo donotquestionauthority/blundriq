@@ -102,7 +102,7 @@ _PRECEDENCE = {ME: 0, OPPONENT: 1, ENDED: 2, RAN_OUT: 3}
 # spills to the instance's throttled disk, and no JIT (the statement's two hundred expressions
 # cost more to compile on every run than they save). The gap boards' lookups by id that follow
 # are nested loops by right, so that one comes back.
-READ_SETTINGS = ("SET LOCAL jit = off", "SET LOCAL enable_nestloop = off", "SET LOCAL work_mem = '32MB'")
+READ_SETTINGS = ("SET LOCAL jit = off; SET LOCAL enable_nestloop = off; SET LOCAL work_mem = '32MB'",)
 READ_SETTINGS_AFTER = ("SET LOCAL enable_nestloop = on",)
 
 _PRECEDENCE_SQL = "CASE status WHEN 'me' THEN 0 WHEN 'opponent' THEN 1 WHEN 'ended' THEN 2 ELSE 3 END"
@@ -220,8 +220,10 @@ FROM gap WHERE status = 'opponent'
 
 # The gap board of each kind-A game and what the card needs from the game: the board after the
 # opponent's move at `m` (the gap ply is m + 1, per game), its canonical key, the next
-# REPORT_CONTINUATION_PLIES moves, the family, and the stored engine line from that board (NULL
-# when the game is not analysed).
+# REPORT_CONTINUATION_PLIES moves, the family, and whether the game is analysed. The stored
+# engine entry itself is read afterwards for each board's representative only (`_ENGINE_SQL`):
+# a game's analysis is a large value, and reading it for every gap game cost more than the
+# reduction.
 _GAP_GAMES_SQL = """
 SELECT cg.id AS gid, pg.result, cg.played_at, cg.canonical_family,
        cg.fen_sequence->>t.gap_ply AS gap_fen,
@@ -231,11 +233,18 @@ SELECT cg.id AS gid, pg.result, cg.played_at, cg.canonical_family,
          WHERE ord > t.gap_ply AND ord <= t.gap_ply + %(plies)s) AS continuation,
        (SELECT array_agg(x ORDER BY ord) FROM jsonb_array_elements_text(cg.moves) WITH ORDINALITY AS e(x, ord)
          WHERE ord <= t.gap_ply) AS stem,
-       cg.ply_analysis -> t.gap_ply AS analysis
+       t.gap_ply, cg.ply_analysis IS NOT NULL AS analysed
 FROM unnest(%(gids)s::int[], %(plies_at)s::int[]) AS t(gid, gap_ply)
 JOIN chess_games cg ON cg.id = t.gid
 JOIN player_games pg ON pg.chess_game_id = cg.id AND pg.player_id = %(pid)s
 WHERE cg.fen_sequence IS NOT NULL AND cg.moves IS NOT NULL
+"""
+
+# The stored engine entry at a board, for the representative games only.
+_ENGINE_SQL = """
+SELECT t.gid, cg.ply_analysis -> t.gap_ply AS analysis
+FROM unnest(%(gids)s::int[], %(plies_at)s::int[]) AS t(gid, gap_ply)
+JOIN chess_games cg ON cg.id = t.gid
 """
 
 # Unmatched games of one colour in the window: the first own-decision board and its context.
@@ -250,7 +259,7 @@ SELECT cg.id AS gid, pg.result, cg.played_at, cg.canonical_family, pg.player_col
          WHERE ord > %(gap_ply)s AND ord <= %(gap_ply)s + %(plies)s) AS continuation,
        (SELECT array_agg(x ORDER BY ord) FROM jsonb_array_elements_text(cg.moves) WITH ORDINALITY AS t(x, ord)
          WHERE ord <= %(gap_ply)s) AS stem,
-       cg.ply_analysis -> (%(gap_ply)s) AS analysis
+       %(gap_ply)s AS gap_ply, cg.ply_analysis IS NOT NULL AS analysed
 FROM player_games pg
 JOIN chess_games cg ON cg.id = pg.chess_game_id
 WHERE pg.player_id = %(pid)s AND pg.no_repertoire_match AND pg.player_color = %(colour)s
@@ -496,9 +505,36 @@ def gaps(conn: Connection[Any], config: Settings, *, time_class: str, colour: st
 # --- gaps -------------------------------------------------------------------------
 
 
-def _group(members: list[Row], *, colour: str, context: dict[int, Row] | None) -> Row:
-    """One gap card from the games reaching one canonical board. `context`, when given, maps a
-    game to its continuing line's (book, chapter, line, expected, played) — kind A only."""
+def _representative(members: list[Row]) -> Row:
+    """The most recent analysed game of a board, else the most recent game: its board is the
+    card's FEN and its stored engine entry the prefill."""
+    return max(members, key=lambda r: (bool(r["analysed"]), r["played_at"] is not None, r["played_at"], int(r["gid"])))
+
+
+def _engine_entries(conn: Connection[Any], reps: list[Row]) -> dict[int, Row | None]:
+    """{gid: the stored engine entry at the game's gap board, or None} for the representatives."""
+    if not reps:
+        return {}
+    rows = conn.execute(
+        _ENGINE_SQL, {"gids": [int(r["gid"]) for r in reps], "plies_at": [int(r["gap_ply"]) for r in reps]}
+    ).fetchall()
+    return {int(r["gid"]): cast(Row, r["analysis"]) if isinstance(r["analysis"], dict) else None for r in rows}
+
+
+def _cards(conn: Connection[Any], groups: list[list[Row]], *, colour: str, context: dict[int, Row] | None) -> list[Row]:
+    """One card per group of games reaching one board, the engine entry read once per board."""
+    reps = [_representative(g) for g in groups]
+    engine = _engine_entries(conn, reps)
+    return [
+        _group(g, rep, engine.get(int(rep["gid"])), colour=colour, context=context)
+        for g, rep in zip(groups, reps, strict=True)
+    ]
+
+
+def _group(members: list[Row], rep: Row, analysis: Row | None, *, colour: str, context: dict[int, Row] | None) -> Row:
+    """One gap card from the games reaching one canonical board, `rep` their representative and
+    `analysis` its stored engine entry. `context`, when given, maps a game to its continuing
+    line's (book, chapter, line, expected, played) — kind A only."""
     results = Counter(str(r["result"]) for r in members if r["result"])
     games = len(members)
     wins, draws, losses = results.get("win", 0), results.get("draw", 0), results.get("loss", 0)
@@ -509,12 +545,6 @@ def _group(members: list[Row], *, colour: str, context: dict[int, Row] | None) -
         {"moves": list(moves), "games": n, "score": _score(members, moves)}
         for moves, n in sorted(((k, v) for k, v in conts.items() if k), key=lambda kv: (-kv[1], kv[0]))[:5]
     ]
-    # The representative: the most recent analysed game, else the most recent game. Its board is
-    # the card's FEN and its stored line the prefill; both from one row.
-    rep = max(
-        members, key=lambda r: (r["analysis"] is not None, r["played_at"] is not None, r["played_at"], int(r["gid"]))
-    )
-    analysis = cast(Row, rep["analysis"]) if isinstance(rep["analysis"], dict) else None
     engine: Row | None = None
     if analysis is not None:
         line = analysis.get("best_line")  # the PV as one SAN string (core/analysis/game.py pv_san)
@@ -618,7 +648,7 @@ def _kind_a(conn: Connection[Any], colour: str, gap_games: list[Row], params: di
     for r in rows:
         if r["gap_fen"]:
             groups[str(r["canon"])].append(dict(r))
-    return [_group(g, colour=colour, context=context) for g in groups.values()]
+    return _cards(conn, list(groups.values()), colour=colour, context=context)
 
 
 def _kind_b(
@@ -698,7 +728,7 @@ def _kind_b(
             }
         )
     out_prepared.sort(key=lambda r: (-int(r["games"]), str(r["fen"]), str(r["book_move"]), str(r["played"])))
-    cards = [_group(g, colour=colour, context=None) for g in uncovered.values()]
+    cards = _cards(conn, list(uncovered.values()), colour=colour, context=None)
     return out_prepared, cards
 
 
