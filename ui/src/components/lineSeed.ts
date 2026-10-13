@@ -24,10 +24,10 @@ export function played(moves: string[]): string[] {
   return out;
 }
 
-/** Whose move it is after `moves` from the start. */
+/** Whose move it is after `moves` from the start (`moves` already replayed by `played`). */
 export function turnAfter(moves: string[]): "w" | "b" {
   const game = new Chess(START);
-  for (const m of moves) game.move(m);
+  for (const m of moves) legalMove(game, m);
   return game.turn();
 }
 

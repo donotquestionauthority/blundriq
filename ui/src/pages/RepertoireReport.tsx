@@ -8,7 +8,7 @@ import { fmtCp } from "../engine/eval";
 import { useApi } from "../hooks/useApi";
 import { getReportGaps, getReportLines } from "../repertoire";
 import type { GapCard, GapsResponse, PreparedRow, ReportTally } from "../repertoire";
-import { DRILL_MAX_LINES, filterRows, flatten, medianDepth, SORT_KEYS, sortRows, VIEWS } from "./reportRows";
+import { filterRows, flatten, medianDepth, SORT_KEYS, sortRows, VIEWS } from "./reportRows";
 import type { Dir, Filters, Row, SortKey, View } from "./reportRows";
 import { SQUARES } from "../utils/board";
 import { numberedLine } from "../utils/chess";
@@ -238,17 +238,24 @@ export default function RepertoireReport() {
   const [checkedRaw, setChecked] = useState<Set<number>>(() => new Set());
 
   const flat = useMemo(() => (lines.data ? flatten(lines.data.books) : null), [lines.data]);
-  const shownRows = useMemo(() => (flat ? sortRows(filterRows(flat[view], filters), sort, dir) : []), [flat, view, filters, sort, dir]);
+  const drillMax = lines.data?.drill_max_lines ?? 50;
+  // The lines the filters leave, in the table's order: what "shown" means for every view. A
+  // chapter or book row stands for its shown lines only, so Select all shown and a container's
+  // checkbox never reach a line the filters hide.
+  const shownLines = useMemo(() => (flat ? sortRows(filterRows(flat.lines, filters), sort, dir) : []), [flat, filters, sort, dir]);
+  const shownLineSet = useMemo(() => new Set(shownLines.map((r) => r.id)), [shownLines]);
+  const shownRows = useMemo(
+    () => (flat ? sortRows(filterRows(flat[view], filters), sort, dir).map((r) => (r.kind === "lines" ? r : { ...r, lineIds: r.lineIds.filter((id) => shownLineSet.has(id)) })) : []),
+    [flat, view, filters, sort, dir, shownLineSet],
+  );
   const books = useMemo(() => (flat ? Array.from(new Map(flat.books.map((b) => [b.book_id, b])).values()) : []), [flat]);
   const chapters = useMemo(() => (flat ? flat.chapters.filter((c) => filters.book === null || c.book_id === filters.book) : []), [flat, filters.book]);
-  // A line id that is no longer a row (a delete elsewhere, another read) is not selected: the
-  // selection is the checked ids that are rows now, derived, never pruned in an effect.
-  const checked = useMemo(() => {
-    const known = new Set((flat?.lines ?? []).map((l) => l.id));
-    return new Set(Array.from(checkedRaw).filter((id) => known.has(id)));
-  }, [checkedRaw, flat]);
+  // The selection is the checked ids among the shown lines, derived, never pruned in an effect:
+  // a line a filter hides, or that is no longer a row, is not selected and not drilled; it is
+  // checked again the moment it is shown again.
+  const checked = useMemo(() => new Set(Array.from(checkedRaw).filter((id) => shownLineSet.has(id))), [checkedRaw, shownLineSet]);
 
-  const shownLineIds = useMemo(() => Array.from(new Set(shownRows.flatMap((r) => r.lineIds))), [shownRows]);
+  const shownLineIds = useMemo(() => shownLines.map((r) => r.id), [shownLines]);
   const allShownChecked = shownLineIds.length > 0 && shownLineIds.every((id) => checked.has(id));
   const toggleRow = (r: Row) => {
     setChecked((c) => {
@@ -271,14 +278,9 @@ export default function RepertoireReport() {
       return next;
     });
   };
-  // The drill takes the checked lines in the order the table shows them, the unshown ones after.
-  const drillIds = useMemo(() => {
-    const shownOrder = flat ? sortRows(filterRows(flat.lines, filters), sort, dir).map((r) => r.id) : [];
-    const inOrder = shownOrder.filter((id) => checked.has(id));
-    const rest = Array.from(checked).filter((id) => !inOrder.includes(id));
-    return [...inOrder, ...rest];
-  }, [flat, filters, sort, dir, checked]);
-  const overCap = drillIds.length > DRILL_MAX_LINES;
+  // The drill takes the checked lines in the order the table shows them.
+  const drillIds = useMemo(() => shownLineIds.filter((id) => checked.has(id)), [shownLineIds, checked]);
+  const overCap = drillIds.length > drillMax;
 
   const onHeader = (key: SortKey) => {
     if (key === sort) update({ dir: dir === "desc" ? "asc" : "desc" });
@@ -379,8 +381,8 @@ export default function RepertoireReport() {
             <button type="button" disabled={drillIds.length === 0 || overCap} onClick={() => navigate(`/practice?drill=${drillIds.join(",")}`)} className="rounded bg-zinc-900 px-3 py-1 text-xs font-medium text-white disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900">
               Drill {drillIds.length} {drillIds.length === 1 ? "line" : "lines"}
             </button>
-            {overCap && <span className="text-xs text-red-600 dark:text-red-400">{DRILL_MAX_LINES} at most</span>}
-            {checked.size > 0 && (
+            {overCap && <span className="text-xs text-red-600 dark:text-red-400">{drillMax} at most</span>}
+            {checkedRaw.size > 0 && (
               <button type="button" onClick={() => setChecked(new Set())} className="text-xs text-zinc-500 underline">
                 Clear
               </button>

@@ -186,7 +186,7 @@ describe("the rows", () => {
 describe("the line report page", () => {
   it("shows one flat table ordered by games with the book and chapter on each row, the practice numbers, the custom chip, and sorts on a header", async () => {
     const calls = stubFetch({
-      "/repertoire/report/lines": () => ({ status: 200, body: { books: books() } }),
+      "/repertoire/report/lines": () => ({ status: 200, body: { books: books(), drill_max_lines: 50 } }),
       "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
     });
     renderPage();
@@ -218,7 +218,7 @@ describe("the line report page", () => {
 
   it("the chapter and book views, the filters, select all shown, and Drill in the table's order", async () => {
     stubFetch({
-      "/repertoire/report/lines": () => ({ status: 200, body: { books: books() } }),
+      "/repertoire/report/lines": () => ({ status: 200, body: { books: books(), drill_max_lines: 50 } }),
       "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
     });
     renderPage();
@@ -255,7 +255,7 @@ describe("the line report page", () => {
 
   it("the book filter narrows the chapter filter; the origin filter; the state round-trips through the URL", async () => {
     stubFetch({
-      "/repertoire/report/lines": () => ({ status: 200, body: { books: books() } }),
+      "/repertoire/report/lines": () => ({ status: 200, body: { books: books(), drill_max_lines: 50 } }),
       "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
     });
     renderPage("/repertoire/report?view=chapters&sort=book&dir=asc&book=1&colour=white");
@@ -273,10 +273,33 @@ describe("the line report page", () => {
     expect(within(screen.getByLabelText("Chapter")).getAllByRole("option").map((o) => o.textContent)).toEqual(["All chapters", "Italian › Giuoco", "Scandi › Qa5"]);
   });
 
+  it("a container row and Select all shown reach only the lines the filters leave", async () => {
+    stubFetch({
+      "/repertoire/report/lines": () => ({ status: 200, body: { books: books(), drill_max_lines: 50 } }),
+      "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
+    });
+    renderPage("/repertoire/report?view=chapters&origin=manual");
+    await screen.findByTestId("report-table");
+    // Origin applies to lines: the Giuoco chapter row stands for Evans alone.
+    fireEvent.click(screen.getByLabelText("Select Giuoco"));
+    expect(screen.getByRole("button", { name: "Drill 1 line" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("tab", { name: "By line" }));
+    expect(screen.getAllByTestId("report-row-lines")).toHaveLength(1);
+    expect(screen.getByLabelText("Select Evans")).toBeChecked();
+    fireEvent.change(screen.getByLabelText("Origin"), { target: { value: "" } });
+    expect(screen.getByLabelText("Select Main")).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Drill 1 line" })).toBeEnabled();
+    // Hiding a checked line takes it out of the drill; showing it again brings it back.
+    fireEvent.change(screen.getByLabelText("Colour"), { target: { value: "black" } });
+    expect(screen.getByRole("button", { name: "Drill 0 lines" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Colour"), { target: { value: "" } });
+    expect(screen.getByRole("button", { name: "Drill 1 line" })).toBeEnabled();
+  });
+
   it("a drill over the cap is refused on the page", async () => {
     const many: ReportBook[] = [{ ...books()[0], chapters: [{ ...books()[0].chapters[0], lines: Array.from({ length: 51 }, (_, i) => line({ id: 100 + i, title: `L${i}` })) }] }];
     stubFetch({
-      "/repertoire/report/lines": () => ({ status: 200, body: { books: many } }),
+      "/repertoire/report/lines": () => ({ status: 200, body: { books: many, drill_max_lines: 50 } }),
       "/repertoire/report/gaps": (q) => ({ status: 200, body: gaps(q.get("colour") as "white" | "black") }),
     });
     renderPage();
@@ -299,7 +322,7 @@ describe("the line report page", () => {
         const [path, q] = url.replace(/^.*\/api/, "").split("?");
         const tc = new URLSearchParams(q).get("time_class");
         if (path === "/repertoire/report/lines" && tc === "focus") await slow;
-        const body = path === "/repertoire/report/lines" ? { books: tc === "focus" ? books() : [] } : gaps(new URLSearchParams(q).get("colour") as "white");
+        const body = path === "/repertoire/report/lines" ? { books: tc === "focus" ? books() : [], drill_max_lines: 50 } : gaps(new URLSearchParams(q).get("colour") as "white");
         return { ok: true, status: 200, statusText: "200", json: async () => body };
       }),
     );
@@ -313,7 +336,7 @@ describe("the line report page", () => {
 
   it("shows the gaps for the colour with more of them, Add to repertoire only with a stem, Prepared but not played, and the no-book notice", async () => {
     stubFetch({
-      "/repertoire/report/lines": () => ({ status: 200, body: { books: [] } }),
+      "/repertoire/report/lines": () => ({ status: 200, body: { books: [], drill_max_lines: 50 } }),
       "/repertoire/report/gaps": (q) =>
         q.get("colour") === "white"
           ? { status: 200, body: gaps("white", { no_book: true }) }
@@ -343,7 +366,7 @@ describe("the line report page", () => {
 
   it("opens the modal with the card and the server's constants; a save marks the card and re-reads the lines", async () => {
     const calls = stubFetch({
-      "/repertoire/report/lines": () => ({ status: 200, body: { books: [] } }),
+      "/repertoire/report/lines": () => ({ status: 200, body: { books: [], drill_max_lines: 50 } }),
       "/repertoire/report/gaps": (q) => ({ status: 200, body: q.get("colour") === "white" ? gaps("white", { gaps: [card()] }) : gaps("black") }),
     });
     renderPage();

@@ -158,6 +158,26 @@ def test_the_catch_all_book_and_family_chapter_are_created_once_per_colour_and_r
     assert [t["title"] for t in titles] == ["Scandinavian", lines.CATCH_ALL_FAMILY_FALLBACK]
 
 
+def test_a_switched_off_catch_all_stays_off(db: psycopg.Connection[DictRow]) -> None:
+    a = lines.add_manual(db, moves=SCANDI_GAP, line_name="a", window=0, catch_all=("white", "Scandinavian"))
+    db.execute("UPDATE chapters SET active = FALSE WHERE id = %s", (a["chapter_id"],))
+    with pytest.raises(lines.NoChapter, match="switched off"):
+        lines.add_manual(
+            db, moves=SCANDI_GAP[:-2] + ["Qd8", "d4"], line_name="b", window=0, catch_all=("white", "Scandinavian")
+        )
+    db.execute("UPDATE chapters SET active = TRUE WHERE id = %s", (a["chapter_id"],))
+    db.execute("UPDATE books SET active = FALSE WHERE id = %s", (a["book_id"],))
+    with pytest.raises(lines.NoChapter, match="switched off"):
+        lines.add_manual(
+            db, moves=SCANDI_GAP[:-2] + ["Qd8", "d4"], line_name="b", window=0, catch_all=("white", "Scandinavian")
+        )
+    flags = db.execute(
+        "SELECT bk.active AS b, ch.active AS c FROM chapters ch JOIN books bk ON bk.id = ch.book_id WHERE ch.id = %s",
+        (a["chapter_id"],),
+    ).fetchone()
+    assert flags is not None and (flags["b"], flags["c"]) == (False, True)
+
+
 def test_a_destination_is_one_thing(db: psycopg.Connection[DictRow]) -> None:
     with pytest.raises(lines.InvalidLine, match="one destination"):
         lines.add_manual(db, moves=SCANDI_GAP, line_name="x", window=0)

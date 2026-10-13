@@ -547,13 +547,13 @@ def test_a_gap_card_carries_the_games_own_stem_to_the_board_and_the_chapters_a_l
         (1, "Giuoco", "Italian"),
         (9, "Also start-rooted", "Italian"),
     ]
-    assert card["catch_all"] == {"book": "Catch-all (white)", "chapter": card["family"] or "Unnamed opening"}
+    assert card["catch_all"] == {"book": "Catch-all (White)", "chapter": card["family"] or "Unnamed opening"}
     # Kind B as Black: the stem is the one opponent move; no Black book means no chapters.
     h.game(clean, 2, ["d4", "d5", "c4"], color="black")
     _match(clean)
     out = _gaps(clean, "black")
     (b,) = out["gaps"]
-    assert b["stem"] == ["d4"] and b["chapters"] == [] and b["catch_all"]["book"] == "Catch-all (black)"
+    assert b["stem"] == ["d4"] and b["chapters"] == [] and b["catch_all"]["book"] == "Catch-all (Black)"
     assert out["max_plies"] == 60 and out["prefill_plies"] == 10
 
 

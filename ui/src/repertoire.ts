@@ -436,6 +436,7 @@ export function duplicateOf(err: unknown): DuplicateLine | null {
   return body?.detail === "duplicate" && body.duplicate ? (body.duplicate as DuplicateLine) : null;
 }
 
-export const getReportLines = (timeClass: string) => api.get<{ books: ReportBook[] }>(`/repertoire/report/lines?time_class=${encodeURIComponent(timeClass)}`);
+/** `drill_max_lines`: how many lines one drill takes (core/constants.py; the server refuses more). */
+export const getReportLines = (timeClass: string) => api.get<{ books: ReportBook[]; drill_max_lines: number }>(`/repertoire/report/lines?time_class=${encodeURIComponent(timeClass)}`);
 export const getReportGaps = (colour: "white" | "black", timeClass: string) => api.get<GapsResponse>(`/repertoire/report/gaps?colour=${colour}&time_class=${encodeURIComponent(timeClass)}`);
 export const reportPath = () => "/repertoire/report";

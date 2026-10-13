@@ -66,6 +66,16 @@ def serve_drill(conn: Connection[Any], config: Settings, line_ids: list[int]) ->
         if puzzle_id is None:
             skipped.append(lid)
             continue
+        shape = conn.execute(
+            "SELECT jsonb_array_length(solution_line) AS n, (split_part(fen, ' ', 2) = color) AS opens FROM puzzles"
+            " WHERE id = %s",
+            (puzzle_id,),
+        ).fetchone()
+        assert shape is not None
+        ply = visibility.last_player_ply(int(shape["n"]), opens_on_player=bool(shape["opens"]))
+        if ply < 0:  # a line with no move of the player's to find: nothing to drill, nothing stamped
+            skipped.append(lid)
+            continue
         conn.execute(
             "UPDATE puzzles SET drilled_at = clock_timestamp(), updated_at = now()"
             " WHERE id = %s AND drilled_at IS NULL",
@@ -75,9 +85,6 @@ def serve_drill(conn: Connection[Any], config: Settings, line_ids: list[int]) ->
         if row is None:  # cannot happen for a line the mint just accepted; stated, not assumed
             skipped.append(lid)
             continue
-        ply = visibility.last_player_ply(
-            len(row["solution_line"]), opens_on_player=str(row["fen"]).split(" ")[1] == str(row["color"])
-        )
         row["presentation_ply"] = ply
         seq = fen_sequence(str(row["fen"]), [str(m) for m in row["solution_line"]])
         row["presentation_fen"] = seq[ply] if ply < len(seq) else None

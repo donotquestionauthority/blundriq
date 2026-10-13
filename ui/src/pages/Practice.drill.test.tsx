@@ -127,26 +127,29 @@ describe("Practice: a drill", () => {
 
   it("serves the lines in order, each a load of its own with numbered attempts, counts the first try, and ends on Done", async () => {
     const calls = stubFetch({
-      "/practice/drill": () => ({ status: 200, body: drill([line(11, 901), line(12, 902), line(11, 901)], [777]) }),
+      "/practice/drill": () => ({ status: 200, body: drill([line(11, 901), line(12, 902), line(13, 903)], [777]) }),
       "/practice/puzzles/11/attempt": () => OK,
       "/practice/puzzles/12/attempt": (_m, body) => ({ ...OK, body: { ...OK.body, solved: (body as { solved: boolean }).solved } }),
+      "/practice/puzzles/13/attempt": () => OK,
     });
-    renderPage("/practice?drill=901,902,901,777");
+    renderPage("/practice?drill=901,902,903,777");
     const header = await screen.findByTestId("drill-header");
     expect(header.textContent).toContain("Drill · 1 of 3 · 0 first-try");
     expect(header.textContent).toContain("1 skipped");
-    expect(calls.find((c) => c.path === "/practice/drill")?.query.get("lines")).toBe("901,902,901,777");
+    expect(calls.find((c) => c.path === "/practice/drill")?.query.get("lines")).toBe("901,902,903,777");
     expect(calls.some((c) => c.path === "/practice/puzzles")).toBe(false); // not the queue
     expect(screen.queryByRole("tablist", { name: "Practice type" })).toBeNull();
     expect(screen.queryByText("Skip →")).toBeNull();
     expect(screen.getByText("#11")).toBeInTheDocument();
-    expect(screen.getByTestId("location").textContent).toBe("/practice?drill=901,902,901,777"); // kept: a reload serves it again
+    expect(screen.getByTestId("location").textContent).toBe("/practice?drill=901,902,903,777"); // kept: a reload serves it again
+    expect(screen.queryByText("← Previous")).toBeNull(); // no stepper row before a verdict: no Skip, no Previous
     // Line 1: wrong, Try Again, right. One load, two attempts numbered 1 and 2, first wrong.
     failLine();
     expect(await screen.findByText("Try Again")).toBeInTheDocument();
     fireEvent.click(screen.getByText("Try Again"));
     await solveLine();
     expect(await screen.findByText("Next line →")).toBeInTheDocument();
+    expect(screen.getByText("← Previous")).toBeDisabled(); // a drill only goes forward
     const attempts11 = () => calls.filter((c) => c.path === "/practice/puzzles/11/attempt");
     await vi.waitFor(() => expect(attempts11()).toHaveLength(2));
     expect(attempts11().map((c) => [c.body!.attempt_seq, c.body!.solved, c.body!.presentation_ply])).toEqual([
@@ -163,13 +166,12 @@ describe("Practice: a drill", () => {
     await vi.waitFor(() => expect(calls.filter((c) => c.path === "/practice/puzzles/12/attempt")).toHaveLength(1));
     expect(screen.getByTestId("drill-header").textContent).toContain("2 of 3 · 1 first-try");
     fireEvent.click(screen.getByText("Next line →"));
-    // Line 3 is line 1 again: a new load, a new session, the sequence from 1.
-    expect(await screen.findByText("#11")).toBeInTheDocument();
+    // Line 3: a new load, the sequence from 1.
+    expect(await screen.findByText("#13")).toBeInTheDocument();
     await solveLine();
     expect(await screen.findByText("Finish →")).toBeInTheDocument();
-    await vi.waitFor(() => expect(attempts11()).toHaveLength(3));
-    expect(attempts11()[2].body!.attempt_seq).toBe(1);
-    expect(attempts11()[2].body!.session_id).not.toBe(attempts11()[0].body!.session_id);
+    await vi.waitFor(() => expect(calls.filter((c) => c.path === "/practice/puzzles/13/attempt")).toHaveLength(1));
+    expect(calls.find((c) => c.path === "/practice/puzzles/13/attempt")!.body!.attempt_seq).toBe(1);
     fireEvent.click(screen.getByText("Finish →"));
     const done = await screen.findByTestId("drill-done");
     expect(done.textContent).toContain("3 lines drilled · first try right 2 · wrong 1");
@@ -179,9 +181,9 @@ describe("Practice: a drill", () => {
     expect(await screen.findByText("#11")).toBeInTheDocument();
     expect(screen.getByTestId("drill-header").textContent).toContain("1 of 3 · 0 first-try");
     await solveLine();
-    await vi.waitFor(() => expect(attempts11()).toHaveLength(4));
-    expect(attempts11()[3].body!.attempt_seq).toBe(1);
-    expect(new Set(attempts11().map((c) => c.body!.session_id)).size).toBe(3);
+    await vi.waitFor(() => expect(attempts11()).toHaveLength(3));
+    expect(attempts11()[2].body!.attempt_seq).toBe(1);
+    expect(new Set(attempts11().map((c) => c.body!.session_id)).size).toBe(2); // round 1's load, round 2's load
   });
 
   it("Stop waits for a posting verdict, then returns to the report; an empty drill says so", async () => {

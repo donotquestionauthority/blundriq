@@ -68,6 +68,7 @@ from core.chess.san import normalize_san
 from core.chess.san import parse as parse_san
 from core.constants import (
     CATCH_ALL_TITLE,
+    DRILL_MAX_LINES,
     PLAYER_ID,
     REPERTOIRE_LINE_MAX_PLIES,
     REPORT_CONTINUATION_PLIES,
@@ -300,7 +301,7 @@ WHERE rl.active
 
 
 def lines(conn: Connection[Any], config: Settings, *, time_class: str) -> Row:
-    """`{"books": [...]}`: book › chapter › line rows with games, results, depth, faithfulness,
+    """`{"books": [...], "drill_max_lines"}`: book › chapter › line rows with games, results, depth, faithfulness,
     the slip and the practice numbers, every level ordered most games first (then most recent,
     then name). Every effectively-active line is a row, with zero games when no game in the
     window reached it, so a line just added can be found and drilled. `time_class` is one of
@@ -386,7 +387,7 @@ def lines(conn: Connection[Any], config: Settings, *, time_class: str) -> Row:
         brow.update(colour=colour, chapters=out_chapters, practice=summed(out_chapters))
         out_books.append(brow)
     out_books = _ordered(out_books, "title")
-    return {"books": out_books}
+    return {"books": out_books, "drill_max_lines": DRILL_MAX_LINES}
 
 
 # --- gaps -------------------------------------------------------------------------
@@ -639,7 +640,7 @@ def gaps(conn: Connection[Any], config: Settings, *, time_class: str, colour: st
         first = [ch for ch in chapters if ctx is not None and ch["id"] == ctx["chapter_id"]]
         c["chapters"] = first + [ch for ch in chapters if not first or ch["id"] != first[0]["id"]]
         c["catch_all"] = {
-            "book": f"{CATCH_ALL_TITLE} ({colour})",
+            "book": f"{CATCH_ALL_TITLE} ({colour.capitalize()})",
             "chapter": c["family"] or lines_by_hand.CATCH_ALL_FAMILY_FALLBACK,
         }
     return {

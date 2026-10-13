@@ -204,7 +204,7 @@ _SERVED_PENDING = cast(
     WHERE p.id = %(id)s AND p.player_id = %(pid)s
       AND NOT (p.source_types @> ARRAY['own_mate'] AND p.acceptance_map IS NULL)
       AND NOT (p.source_types @> ARRAY['custom'] AND NOT p.active)
-      AND (NOT {serve_acknowledged()}
+      AND ((e.scope <> %(drill)s AND NOT {serve_acknowledged()})
            OR (e.scope = %(drill)s AND e.served_at >= now() - make_interval(days => %(proof_days)s)))
     ORDER BY e.served_at DESC
     LIMIT 1

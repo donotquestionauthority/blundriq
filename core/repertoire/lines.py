@@ -101,8 +101,10 @@ def _chapter(conn: Connection[Any], chapter_id: int) -> Row:
         " FROM chapters ch JOIN books bk ON bk.id = ch.book_id WHERE ch.id = %s AND bk.player_id = %s",
         (chapter_id, PLAYER_ID),
     ).fetchone()
-    if row is None or not row["chapter_active"] or not row["book_active"]:
-        raise NoChapter("no such active chapter")
+    if row is None:
+        raise NoChapter("no such chapter")
+    if not row["chapter_active"] or not row["book_active"]:
+        raise NoChapter("that chapter is switched off; switch it on first")
     if row["root_fen"] is not None:
         raise NoChapter("a chapter rooted at a position after the start cannot take a line from move 1")
     return dict(row)
@@ -110,7 +112,9 @@ def _chapter(conn: Connection[Any], chapter_id: int) -> Row:
 
 def catch_all_chapter(conn: Connection[Any], colour: Colour, family: str | None) -> int:
     """The id of the catch-all chapter for this colour and family, creating the book and the
-    chapter when they do not exist yet. Under the caller's repertoire lock."""
+    chapter when they do not exist yet. A catch-all that was switched off stays off: `_chapter`
+    refuses it like any other, and only the toggle (its gate, its rematch) brings it back. Under
+    the caller's repertoire lock."""
     title = (family or "").strip() or CATCH_ALL_FAMILY_FALLBACK
     book = conn.execute(
         "SELECT id FROM books WHERE player_id = %s AND source_book_id IS NULL AND title = %s AND color = %s",
@@ -132,8 +136,6 @@ def catch_all_chapter(conn: Connection[Any], colour: Colour, family: str | None)
             (int(book["id"]), title),
         ).fetchone()
         assert chapter is not None
-    conn.execute("UPDATE chapters SET active = TRUE WHERE id = %s AND NOT active", (int(chapter["id"]),))
-    conn.execute("UPDATE books SET active = TRUE WHERE id = %s AND NOT active", (int(book["id"]),))
     return int(chapter["id"])
 
 

@@ -497,8 +497,7 @@ export default function GameReview() {
               <input type="checkbox" checked={mode === storedMode} disabled={mode === storedMode} onChange={makeDefault} />
               <span title={mode === storedMode ? LEARN_COPY.alreadyDefault : undefined}>{LEARN_COPY.alwaysStartHere}</span>
             </label>
-            {/* Up here with the mode controls, away from Back / Next: under the stepper a low click
-                on Next used to land on it. */}
+            {/* With the mode controls: the stepper row below holds Back / Next and nothing else clickable. */}
             {blunderPlies.length > 0 && (
               <label className="flex cursor-pointer items-center gap-2" data-testid="inacc-only">
                 <input type="checkbox" checked={inaccOnly} onChange={(e) => setInaccOnly(e.target.checked)} />

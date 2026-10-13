@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import uuid
 from typing import Any
 
@@ -73,7 +74,7 @@ def test_a_drill_mints_the_missing_puzzles_serves_whole_lines_in_order_and_skips
     assert db.execute("SELECT drilled_at FROM puzzles WHERE repertoire_line_id = 901").fetchone() == stamp
 
 
-def test_the_cap_and_the_lock_order(db: psycopg.Connection[DictRow]) -> None:
+def test_the_cap_and_a_line_named_twice(db: psycopg.Connection[DictRow]) -> None:
     with pytest.raises(drill.TooManyLines):
         drill.serve_drill(db, _config(), list(range(1, 52)))
     assert drill.serve_drill(db, _config(), [901] * 60)["batch_id"] == 1  # one line named sixty times is one line
@@ -192,6 +193,22 @@ def test_a_served_drill_attempt_grades_after_the_chapter_is_switched_off_in_ever
     db.execute("UPDATE player_puzzle_exposure SET served_at = served_at - interval '8 days' WHERE scope = 'drill'")
     with pytest.raises(attempts.NotAttemptable):
         _record(db, pid, right, ply, seq=4, session=str(uuid.uuid4()))
+    # Nor does a drill exposure that was never attempted: it is not "pending" queue work.
+    (other,) = drill.serve_drill(db, _config(), [901])["puzzles"]
+    db.execute("UPDATE books SET active = FALSE WHERE id = 901")
+    db.execute(
+        "UPDATE player_puzzle_exposure SET served_at = served_at - interval '8 days' WHERE puzzle_id = %s",
+        (other["id"],),
+    )
+    with pytest.raises(attempts.NotAttemptable):
+        _record(db, int(other["id"]), "e4,Nf3,Bc4,c3", int(other["presentation_ply"]), seq=1, session=str(uuid.uuid4()))
+    db.execute("UPDATE player_puzzle_exposure SET served_at = now() WHERE puzzle_id = %s", (other["id"],))
+    assert (
+        _record(
+            db, int(other["id"]), "e4,Nf3,Bc4,c3", int(other["presentation_ply"]), seq=1, session=str(uuid.uuid4())
+        )["solved"]
+        is True
+    )
     # A regular-queue exposure's proof is unchanged by all this: acknowledged is finished.
     db.execute("UPDATE player_puzzle_exposure SET served_at = now() WHERE scope = 'drill'")
     assert _record(db, pid, right, ply, seq=5, session=str(uuid.uuid4()))["solved"] is True
@@ -210,6 +227,52 @@ def test_one_drills_proof_is_untouched_by_another_and_by_a_queue_acknowledgement
     assert _record(db, pid, _own_moves(BLACK_LINE, 1), ply, seq=1, session=str(uuid.uuid4()))["solved"] is True
     rows = db.execute("SELECT count(*) AS n FROM player_puzzle_exposure WHERE scope = 'drill'").fetchone()
     assert rows is not None and rows["n"] == 3  # nothing skipped, closed or deleted
+
+
+def test_a_delete_and_a_toggle_wait_for_a_drill_that_holds_the_repertoire_lock(fresh_db_url: str) -> None:
+    """The drill's read, mint and stamp are one transaction under the repertoire lock: a delete
+    and a toggle started meanwhile both commit after it."""
+    from core.repertoire import books, matching
+    from core.repertoire import lines as manual
+
+    with psycopg.Connection[DictRow].connect(fresh_db_url, row_factory=dict_row) as a:
+        h.player(a)
+        h.book(a, 901, "B", "white")
+        h.chapter(a, 901, 901, "C")
+        h.line(a, 901, 901, "L", ITALIAN)
+        h.line(a, 902, 901, "M", SCANDI)
+        a.commit()
+        matching.lock(a)  # stands in for a drill paused after its line read
+        done: list[str] = []
+
+        def deleter() -> None:
+            with psycopg.Connection[DictRow].connect(fresh_db_url, row_factory=dict_row) as b:
+                manual.delete(b, 901)
+                b.commit()
+            done.append("delete")
+
+        def toggler() -> None:
+            with psycopg.Connection[DictRow].connect(fresh_db_url, row_factory=dict_row) as c:
+                books.set_active(c, "lines", 902, False, 0)
+                c.commit()
+            done.append("toggle")
+
+        threads = [threading.Thread(target=deleter), threading.Thread(target=toggler)]
+        for t in threads:
+            t.start()
+        time.sleep(1.0)
+        assert done == []  # both blocked behind the lock the drill holds
+        out = drill.serve_drill(a, _config(), [901, 902])  # the same connection: the lock is reentrant
+        a.commit()
+        for t in threads:
+            t.join(10.0)
+        assert sorted(done) == ["delete", "toggle"]
+        assert [r["repertoire_line_id"] for r in out["puzzles"]] == [901, 902]  # both read before either change
+        a.execute("DELETE FROM repertoire_lines")
+        a.execute("DELETE FROM chapters")
+        a.execute("DELETE FROM books")
+        a.execute("DELETE FROM players")
+        a.commit()
 
 
 def test_a_drill_waits_for_the_repertoire_lock_so_a_delete_cannot_slip_under_its_mint(fresh_db_url: str) -> None:
@@ -259,6 +322,32 @@ def test_the_whole_line_is_a_segment_the_grader_accepts_for_both_colours(clean: 
     assert visibility.last_player_ply(5, opens_on_player=False) == 3
     with pytest.raises(attempts.SegmentMismatch):
         _graded(clean, pid, _segment(ITALIAN, 6), 5)
+
+
+def test_the_round_trip_gap_to_catch_all_to_drill_starts_at_move_one(db: psycopg.Connection[DictRow]) -> None:
+    """A gap line saved into the catch-all is drilled from the start position with every own
+    move of the line to find, whatever chapter the context came from."""
+    from core.repertoire import lines as manual
+
+    stem = ["e4", "e5", "Nf3", "Nc6", "Bc4", "d6"]
+    made = manual.add_manual(
+        db, moves=stem + ["c3", "Be7", "d4"], line_name="after d6", window=0, catch_all=("white", "Italian")
+    )
+    (row,) = drill.serve_drill(db, _config(), [int(made["id"])])["puzzles"]
+    assert row["fen"] == h.START and row["presentation_ply"] == 8 and row["solution_line"] == stem + ["c3", "Be7", "d4"]
+    assert row["presentation_fen"] == h.spine(None, stem + ["c3", "Be7", "d4"])[8]
+    own = "e4,Nf3,Bc4,c3,d4"
+    assert _record(db, int(row["id"]), own, 8, seq=1, session=str(uuid.uuid4()))["solved"] is True
+    assert _record(db, int(row["id"]), "e4,Nf3,Bc4,c3,d3", 8, seq=1, session=str(uuid.uuid4()))["solved"] is False
+
+
+def test_a_line_with_no_player_move_is_skipped_and_never_stamped(db: psycopg.Connection[DictRow]) -> None:
+    h.line(db, 905, 903, "One opponent move", ["e4"])  # a Black line of one White move
+    out = drill.serve_drill(db, _config(), [905, 903])
+    assert out["skipped"] == [905] and [r["repertoire_line_id"] for r in out["puzzles"]] == [903]
+    stamped = db.execute("SELECT drilled_at FROM puzzles WHERE repertoire_line_id = 905").fetchone()
+    assert stamped is None or stamped["drilled_at"] is None
+    assert visibility.last_player_ply(1, opens_on_player=False) == -1
 
 
 def test_generate_keeps_the_settings_contract_for_drilled_puzzles(db: psycopg.Connection[DictRow]) -> None:

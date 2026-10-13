@@ -3,9 +3,6 @@
  *  file only exports components. */
 import type { PracticeNumbers, ReportBook, ReportLine, ReportTally } from "../repertoire";
 
-/** The most lines one drill takes (core/constants.py DRILL_MAX_LINES; the server refuses more). */
-export const DRILL_MAX_LINES = 50;
-
 export type View = "lines" | "chapters" | "books";
 export type SortKey = "colour" | "book" | "chapter" | "line" | "games" | "score" | "faithful" | "depth" | "loads" | "first_right" | "first_wrong" | "last_played";
 export type Dir = "asc" | "desc";

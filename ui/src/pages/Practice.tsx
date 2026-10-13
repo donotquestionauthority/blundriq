@@ -571,15 +571,12 @@ function PlayMode({
 
 // ─── Drill: the chosen lines, whole, in order ───────────────────────────────
 
-/** How many lines a drill may hold (core/constants.py DRILL_MAX_LINES; the server refuses more). */
-const DRILL_MAX_LINES = 50;
-
 /**
  * A drill of the lines the report sent (`/practice?drill=1,2,3`): one serve, each line played
  * whole from its first board, in the order given, until the list is done. Not the queue: no
- * batch, nothing due, no Skip — Next is offered once a verdict is in. A line can be in the list
- * twice; the solver's key is the position, so each is a load of its own, and so is every round.
- * The tally is this page's own: the first verdict of each load, as the hook reported it.
+ * batch, nothing due, no Skip, no Previous — Next is offered once a verdict is in, and every
+ * position in the list is one load (the solver's key is the position and the round), so the
+ * tally — the first verdict of each load, as the hook reported it — is the server's count too.
  * Stop and Done tell the server nothing (a drill has no server-side lifetime to end); Stop waits
  * for a verdict still posting, as every way of leaving a solver does.
  */
@@ -632,11 +629,6 @@ function DrillMode({ lineIds, onAttemptRecorded, onNavigationLock }: { lineIds: 
     attempt.reset();
     setCursor((c) => c + 1);
   };
-  const back = () => {
-    if (navigationBlocked || cursor === 0) return;
-    attempt.reset();
-    setCursor((c) => c - 1);
-  };
   const again = () => {
     attempt.reset();
     setFirsts({});
@@ -685,9 +677,8 @@ function DrillMode({ lineIds, onAttemptRecorded, onNavigationLock }: { lineIds: 
         onComplete={attempt.handleComplete}
         presentationPly={puzzle.presentation_ply}
         acceptanceMap={puzzle.acceptance_map}
-        onPrev={back}
         onNext={showNext ? advance : null}
-        prevDisabled={cursor === 0 || navigationBlocked}
+        prevDisabled
         nextDisabled={navigationBlocked}
         nextLabel={cursor + 1 < puzzles.length ? "Next line →" : "Finish →"}
         nextHighlighted={attempt.lastResult === "solved"}
@@ -1026,7 +1017,7 @@ export default function Practice() {
     const raw = searchParams.get("drill");
     if (!raw) return null;
     const ids = raw.split(",").map((x) => Number(x)).filter((n) => Number.isInteger(n) && n > 0);
-    return ids.length > 0 && ids.length <= DRILL_MAX_LINES ? ids : null;
+    return ids.length > 0 ? ids : null; // the server holds the cap
   }, [searchParams]);
   const [openPuzzle, setOpenPuzzle] = useState<Puzzle | null>(null);
   const [inPageLock, setInPageLock] = useState(false);

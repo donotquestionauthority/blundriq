@@ -152,9 +152,11 @@ def standard_rows_sql(*, windowed: bool, extra_where: str = "") -> LiteralString
 # the player's parity so the truncated line still ends on their move.
 # The index of the player's last move in the line: the last index whose parity is the first
 # player ply's (0 when the line opens on the player's move, else 1).
-_LAST_PLAYER_PLY = """((jsonb_array_length(p.solution_line) - 1)
+_LAST_PLAYER_PLY = """(CASE WHEN jsonb_array_length(p.solution_line) - 1
+             < CASE WHEN split_part(p.fen, ' ', 2) = p.color THEN 0 ELSE 1 END THEN -1
+        ELSE (jsonb_array_length(p.solution_line) - 1)
           - ((jsonb_array_length(p.solution_line) - 1
-              - CASE WHEN split_part(p.fen, ' ', 2) = p.color THEN 0 ELSE 1 END) %% 2))"""
+              - CASE WHEN split_part(p.fen, ' ', 2) = p.color THEN 0 ELSE 1 END) %% 2) END)"""
 _PRESENTATION_PLY = f"""(CASE WHEN ls.furthest_ply IS NULL THEN {_LAST_PLAYER_PLY}
         ELSE LEAST(ls.furthest_ply + {{n}},
         (jsonb_array_length(p.solution_line) - 1)
@@ -454,6 +456,9 @@ def presentation_ply(conn: Connection[Any], puzzle_id: int, *, lookahead_plies: 
 
 def last_player_ply(line_length: int, *, opens_on_player: bool) -> int:
     """The index of the player's last move in a line of `line_length` plies: the whole line as
-    a segment (the drill's presentation, and a drilled line's before it has any deviation)."""
+    a segment (the drill's presentation, and a drilled line's before it has any deviation). -1
+    for a line with no player ply at all (one opponent move), which nothing can present."""
     first = 0 if opens_on_player else 1
+    if line_length - 1 < first:
+        return -1
     return (line_length - 1) - ((line_length - 1 - first) % 2)
