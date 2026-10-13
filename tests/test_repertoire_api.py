@@ -209,6 +209,15 @@ def test_the_manual_line_routes(client: TestClient) -> None:
     assert made.json()["chapter_id"] == 1 and made.json()["book_id"] == 1 and "rematch" in made.json()
     dup = client.post("/repertoire/lines", json={"moves": scandi, "line_name": "again", "chapter_id": 1})
     assert dup.status_code == 409 and dup.json()["detail"] == "duplicate"
+    winawer = ["e4", "e6", "d4", "d5", "Nc3", "Bb4", "e5", "c5", "a3", "Bxc3+", "bxc3"]
+    assert (
+        client.post("/repertoire/lines", json={"moves": winawer, "line_name": "check", "chapter_id": 1}).status_code
+        == 201
+    )
+    twice = client.post(
+        "/repertoire/lines", json={"moves": winawer[:9] + ["Bxc3", "bxc3"], "line_name": "x", "chapter_id": 1}
+    )
+    assert twice.status_code == 409 and twice.json()["duplicate"]["kind"] == "identical"
     assert dup.json()["duplicate"]["kind"] == "identical" and dup.json()["duplicate"]["line_id"] == made.json()["id"]
     conflict = client.post(
         "/repertoire/lines", json={"moves": ["e4", "e5", "Nf3", "Nc6", "Bb5"], "line_name": "Spanish", "chapter_id": 1}

@@ -145,6 +145,25 @@ describe("AddLineModal", () => {
     expect(calls.find((x) => x.path === "/repertoire/lines")?.body).toEqual({ moves: ["d4", "d5", "c4", "e6"], line_name: "Queen's Pawn — 1.d4", catch_all: { colour: "black", family: "Queen's Pawn" } });
   });
 
+  it("the destination defaults to the catch-all whenever the context chapter is not one, even with other chapters on offer", () => {
+    stubFetch({ "/settings": () => ({ status: 200, body: {} }) });
+    const others = [
+      { id: 7, title: "Unrelated", book_id: 3, book: "Another course" },
+      { id: 9, title: "Other", book_id: 1, book: "Italian" },
+    ];
+    const { unmount } = render(<AddLineModal card={card({ context: null, chapters: others })} prefillPlies={10} maxPlies={60} onClose={vi.fn()} onAdded={vi.fn()} />);
+    expect(screen.getByLabelText("Book and chapter")).toHaveValue("catch-all");
+    unmount();
+    // The context chapter is tabiya-rooted (not among the destinations): the catch-all again.
+    const tabiya = card({ context: { ...card().context!, chapter_id: 42, chapter: "Tabiya" }, chapters: others });
+    const second = render(<AddLineModal card={tabiya} prefillPlies={10} maxPlies={60} onClose={vi.fn()} onAdded={vi.fn()} />);
+    expect(screen.getByLabelText("Book and chapter")).toHaveValue("catch-all");
+    second.unmount();
+    // The context chapter is a destination: preselected, wherever it sits in the list.
+    render(<AddLineModal card={card({ chapters: [...others, { id: 1, title: "Giuoco", book_id: 1, book: "Italian" }] })} prefillPlies={10} maxPlies={60} onClose={vi.fn()} onAdded={vi.fn()} />);
+    expect(screen.getByLabelText("Book and chapter")).toHaveValue("1");
+  });
+
   it("a duplicate and a conflict are shown in the modal and leave it open", async () => {
     let reply: Reply = { status: 409, body: { detail: "duplicate", duplicate: { line_id: 3, line_name: "Main", active: true, kind: "prefix" } } };
     stubFetch({ "/settings": () => ({ status: 200, body: {} }), "/repertoire/lines": () => reply });

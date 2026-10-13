@@ -35,7 +35,12 @@ export function AddLineModal({ card, prefillPlies, maxPlies, onClose, onAdded }:
   const stemLength = useMemo(() => played(card.stem ?? []).length, [card.stem]);
   const seed = useMemo(() => seedFor(card, prefillPlies, maxPlies), [card, prefillPlies, maxPlies]);
   const [line, setLine] = useState<MoveBuilderState>({ solutionLine: seed, isValid: seed.length > 0, endTurn: turnAfter(seed) });
-  const [destination, setDestination] = useState<string>(() => (card.chapters[0] ? String(card.chapters[0].id) : CATCH_ALL));
+  // The context chapter when it is a destination (start-rooted and on); otherwise the catch-all —
+  // never some other chapter of the colour, which would file the line under an unrelated book.
+  const [destination, setDestination] = useState<string>(() => {
+    const ctx = card.context?.chapter_id;
+    return ctx !== undefined && card.chapters.some((ch) => ch.id === ctx) ? String(ctx) : CATCH_ALL;
+  });
   const [name, setName] = useState(() => defaultName(card));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);

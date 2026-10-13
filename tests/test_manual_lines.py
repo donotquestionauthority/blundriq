@@ -111,6 +111,26 @@ def test_an_identical_line_or_one_the_book_already_teaches_further_is_a_duplicat
     assert _origin(db, out["id"]) == "manual"
 
 
+def test_duplicates_are_found_through_check_marks_and_only_an_effective_line_holds_a_prefix(
+    db: psycopg.Connection[DictRow],
+) -> None:
+    checking = ["e4", "d5", "Bb5+", "c6", "Ba4"]  # the server renders Bb5 as Bb5+
+    first = lines.add_manual(db, moves=checking, line_name="check", window=0, chapter_id=901)
+    stored = db.execute("SELECT moves FROM repertoire_lines WHERE id = %s", (first["id"],)).fetchone()
+    assert stored is not None and stored["moves"][2] == "Bb5+"
+    with pytest.raises(lines.Duplicate) as e1:
+        lines.add_manual(db, moves=["e4", "d5", "Bb5", "c6", "Ba4"], line_name="again", window=0, chapter_id=901)
+    assert e1.value.kind == "identical" and e1.value.line_id == first["id"]
+    h.chapter(db, 905, 901, "Other")
+    with pytest.raises(lines.Duplicate) as e2:
+        lines.add_manual(db, moves=["e4", "d5", "Bb5"], line_name="short", window=0, chapter_id=905)
+    assert e2.value.kind == "prefix" and e2.value.line_id == first["id"]
+    # The holder's chapter switched off: the line flag is still on, but it teaches nothing now.
+    db.execute("UPDATE chapters SET active = FALSE WHERE id = 901")
+    out = lines.add_manual(db, moves=["e4", "d5", "Bb5"], line_name="short", window=0, chapter_id=905)
+    assert _origin(db, out["id"]) == "manual"
+
+
 def test_the_gate_refuses_a_line_the_active_repertoire_disagrees_with_and_names_the_holder(
     db: psycopg.Connection[DictRow],
 ) -> None:

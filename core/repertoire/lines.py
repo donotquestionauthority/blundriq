@@ -140,16 +140,23 @@ def catch_all_chapter(conn: Connection[Any], colour: Colour, family: str | None)
 
 
 def _duplicates(conn: Connection[Any], chapter: Row, moves: list[str]) -> None:
+    """Both sides compared as normalised SAN (no check, mate or annotation marks): the stored
+    moves and the new line's, which `_replay` renders with python-chess's `+`/`#`. An identical
+    line in the same chapter is a duplicate in any state; a longer line is a prefix holder only
+    while it is effective (its chapter on too; the book is the destination's, so on)."""
     rows = conn.execute(
-        "SELECT rl.id, rl.line_name, rl.moves, rl.active, rl.chapter_id FROM repertoire_lines rl"
-        " JOIN chapters ch ON ch.id = rl.chapter_id WHERE ch.book_id = %s AND ch.root_fen IS NULL",
+        "SELECT rl.id, rl.line_name, rl.moves, rl.active, rl.chapter_id, ch.active AS chapter_active"
+        " FROM repertoire_lines rl JOIN chapters ch ON ch.id = rl.chapter_id"
+        " WHERE ch.book_id = %s AND ch.root_fen IS NULL",
         (int(chapter["book_id"]),),
     ).fetchall()
+    mine = [normalize_san(m) for m in moves]
     for r in rows:
         theirs = [normalize_san(m) for m in annotations.strings(r["moves"])]
-        if int(r["chapter_id"]) == int(chapter["id"]) and theirs == moves:
+        if int(r["chapter_id"]) == int(chapter["id"]) and theirs == mine:
             raise Duplicate(int(r["id"]), str(r["line_name"]), bool(r["active"]), "identical")
-        if bool(r["active"]) and len(theirs) > len(moves) and theirs[: len(moves)] == moves:
+        effective = bool(r["active"]) and bool(r["chapter_active"])
+        if effective and len(theirs) > len(mine) and theirs[: len(mine)] == mine:
             raise Duplicate(int(r["id"]), str(r["line_name"]), True, "prefix")
 
 
