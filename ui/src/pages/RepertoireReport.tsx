@@ -288,21 +288,28 @@ function Board({ fen, colour }: { fen: string; colour: "white" | "black" }) {
 const missedText = (d: DecisionRow) => `${d.slips} of ${d.opportunities}`;
 const practiceText = (d: DecisionRow) => (d.practice.of === 0 ? "not yet reached in practice" : `failed here in ${d.practice.failed} of the last ${d.practice.of} first tries that reached it`);
 
-/** What a decision's expansion needs about each line through it. */
+/** What a decision's expansion needs about each line through it: the line, and the plies at which
+ *  it reaches the board (more than one when the line reaches it twice). */
 interface LineInfo {
   row: Row;
-  ply: number;
+  plies: number[];
 }
 
+/** A walk-through is of one occurrence: a line at one of its plies. */
+type Walk = { id: number; ply: number };
+
 function DecisionLines({ d, lines, queue, onToggle }: { d: DecisionRow; lines: LineInfo[]; queue: Set<number>; onToggle: (id: number) => void }) {
-  const [walk, setWalk] = useState<LineInfo | null>(null);
+  const [walk, setWalk] = useState<Walk | null>(null);
+  const open = (id: number, ply: number) => walk !== null && walk.id === id && walk.ply === ply;
+  // The own move number of a ply, for the label: the line's decision at that ply carries it.
+  const moveAt = (row: Row, ply: number) => row.line?.decisions.find((dec) => dec[0] === ply)?.[1];
   return (
     <div className="space-y-2 text-xs" data-testid="decision-lines">
       <p className="text-zinc-500">
         One decision · {lines.length} {lines.length === 1 ? "line" : "lines"}. {practiceText(d)}.
       </p>
       <ul className="space-y-0.5">
-        {lines.map(({ row, ply }) => (
+        {lines.map(({ row, plies }) => (
           <li key={row.id} className="flex flex-wrap items-center gap-x-2">
             <input type="checkbox" aria-label={`Queue ${row.line?.title ?? ""}`} checked={queue.has(row.id)} onChange={() => onToggle(row.id)} />
             <span>
@@ -312,15 +319,17 @@ function DecisionLines({ d, lines, queue, onToggle }: { d: DecisionRow; lines: L
               {row.games} {row.games === 1 ? "game" : "games"} · {row.left_by_me} {row.left_by_me === 1 ? "slip" : "slips"}
             </span>
             {d.pick === row.id && <span className={chip}>drill pick</span>}
-            <button type="button" onClick={() => setWalk(walk?.row.id === row.id ? null : { row, ply })} className="underline">
-              {walk?.row.id === row.id ? "close" : "walk through"}
-            </button>
+            {plies.map((ply) => (
+              <button key={ply} type="button" onClick={() => setWalk(open(row.id, ply) ? null : { id: row.id, ply })} className="underline">
+                {open(row.id, ply) ? "close" : plies.length > 1 ? `walk through at move ${moveAt(row, ply) ?? "?"}` : "walk through"}
+              </button>
+            ))}
           </li>
         ))}
       </ul>
       {walk && (
         <div className="rounded border border-zinc-200 p-3 dark:border-zinc-800">
-          <LineWalkthrough key={walk.row.id} lineId={walk.row.id} initialPly={walk.ply + 1} />
+          <LineWalkthrough key={`${walk.id}:${walk.ply}`} lineId={walk.id} initialPly={walk.ply + 1} />
         </div>
       )}
     </div>
@@ -581,7 +590,7 @@ export default function RepertoireReport() {
       else next.add(key);
       return next;
     });
-  const decisionLines = (d: DecisionRow): LineInfo[] => linesOf(d).flatMap(({ line_id, ply }) => (lineById.has(line_id) ? [{ row: lineById.get(line_id)!, ply }] : []));
+  const decisionLines = (d: DecisionRow): LineInfo[] => linesOf(d).flatMap(({ line_id, plies }) => (lineById.has(line_id) ? [{ row: lineById.get(line_id)!, plies }] : []));
   const header = (key: string, label: string, title?: string, numeric = false) => (
     <th key={key} className={th} aria-sort={currentSort === key ? (dir === "asc" ? "ascending" : "descending") : "none"} title={title}>
       <button type="button" onClick={() => onHeader(key)} className={`inline-flex items-center gap-1 hover:text-zinc-900 dark:hover:text-zinc-100 ${numeric ? "w-full justify-end" : ""}`}>

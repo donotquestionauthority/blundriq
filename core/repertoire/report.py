@@ -67,7 +67,7 @@ recent first tries went; the Decisions view is the same evidence grouped by boar
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, LiteralString, cast
 
 import chess
@@ -354,6 +354,11 @@ def _iso(v: Any) -> str | None:
     return v.isoformat() if isinstance(v, datetime) else None
 
 
+def _day(v: Any) -> str | None:
+    """The UTC day: what the page shows, a tenth of the bytes of a timestamp over thousands of rows."""
+    return v.astimezone(UTC).date().isoformat() if isinstance(v, datetime) else None
+
+
 def _summary(rows: list[Row]) -> Row:
     """A scope's numbers from its compact rows (one game per row counted `n` times): the slip is
     the most common whole (own move, expected, played) among the games the player left, ties by
@@ -596,8 +601,8 @@ def _decision_rows(
                 "opportunities": d.opportunities,
                 "slips": d.slips,
                 "most_played": d.most_played,
-                "last_slip": _iso(d.last_slip),
-                "last_played": _iso(d.last_played),
+                "last_slip": _day(d.last_slip),
+                "last_played": _day(d.last_played),
                 "lines": [[ply, ids] for ply, ids in sorted(by_ply.items())],
                 "pick": decisions_mod.pick(d, line_games, line_len, rank),
                 "practice": by_board.get((d.colour, d.board), {"failed": 0, "of": 0}),

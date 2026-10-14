@@ -154,7 +154,7 @@ function decisionValue(r: DecisionRow, key: DecisionSortKey): number | string | 
     case "last_slip":
       return r.last_slip;
     case "lines":
-      return r.lines.reduce((n, [, ids]) => n + ids.length, 0);
+      return decisionLineCount(r);
     case "practice":
       return r.practice.of === 0 ? null : r.practice.failed;
     case "last_played":
@@ -184,9 +184,27 @@ export const filterDecisions = (rows: DecisionRow[], shownLines: Set<number>) =>
  *  line's ply there (a line has one board per ply), so expansions survive a re-read of the same
  *  boards and never attach to another. */
 export const decisionKey = (r: DecisionRow) => `${r.colour}:${r.lines[0]?.[0] ?? 0}:${r.lines[0]?.[1][0] ?? 0}`;
-/** The lines through a decision as (id, ply) pairs, in the server's order. */
-export const decisionLines = (r: DecisionRow): { line_id: number; ply: number }[] => r.lines.flatMap(([ply, ids]) => ids.map((line_id) => ({ line_id, ply })));
-export const decisionLineCount = (r: DecisionRow) => r.lines.reduce((n, [, ids]) => n + ids.length, 0);
+/** The lines through a decision, one entry per line in the server's order, each with the plies at
+ *  which it reaches the board (a line can reach a board twice: one line, two occurrences). */
+export function decisionLines(r: DecisionRow): { line_id: number; plies: number[] }[] {
+  const out: { line_id: number; plies: number[] }[] = [];
+  const at = new Map<number, number[]>();
+  for (const [ply, ids] of r.lines) {
+    for (const id of ids) {
+      const plies = at.get(id);
+      if (plies) plies.push(ply);
+      else {
+        const fresh = [ply];
+        at.set(id, fresh);
+        out.push({ line_id: id, plies: fresh });
+      }
+    }
+  }
+  for (const l of out) l.plies.sort((a, b) => a - b);
+  return out;
+}
+/** Distinct lines through the board — what "N lines" counts and sorts by. */
+export const decisionLineCount = (r: DecisionRow) => new Set(r.lines.flatMap(([, ids]) => ids)).size;
 
 export interface Filters {
   colour: "white" | "black" | null;

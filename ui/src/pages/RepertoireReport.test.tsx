@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import RepertoireReport, { PAGE } from "./RepertoireReport";
-import { decisionKey, filterDecisions, filterRows, flatten, sortDecisions, sortRows } from "./reportRows";
+import { decisionKey, decisionLineCount, decisionLines, filterDecisions, filterRows, flatten, sortDecisions, sortRows } from "./reportRows";
 import type { DecisionRow, GapCard, GapsResponse, PracticeNumbers, ReportBook, ReportLine, ReportResponse, ReportTally } from "../repertoire";
 import { readQueue, resetQueueForTests } from "../utils/drillQueue";
 import pageSource from "./RepertoireReport?raw";
@@ -241,6 +241,13 @@ describe("the rows", () => {
     const row = screen.getAllByTestId("report-row-lines")[0];
     expect(within(row).getAllByRole("cell")[15].textContent).toBe("✓ · newest: right up to move 1");
     expect(within(row).getAllByRole("cell")[9].textContent).toBe("3 of 4 · correct through move 3");
+  });
+
+  it("a line that reaches the board twice is one line with two occurrences", () => {
+    const d = decision({ lines: [[0, [1, 2]], [4, [1]]] });
+    expect(decisionLineCount(d)).toBe(2);
+    expect(decisionLines(d)).toEqual([{ line_id: 1, plies: [0, 4] }, { line_id: 2, plies: [0] }]);
+    expect(sortDecisions([d, decision({ move: "x", lines: [[0, [1, 2, 3]]] })], "lines", "desc").map((r) => r.move)).toEqual(["x", "Bc4"]);
   });
 
   it("decisions: Study order is most missed then latest slip; a decision is shown when any of its lines is", () => {
@@ -525,6 +532,35 @@ describe("the line report page", () => {
     expect(screen.getAllByTestId("report-row-chapters").map((r) => within(r).getAllByRole("cell")[3].textContent)).toEqual(["Giuoco(2 lines)", "Qa5(1 lines)"]);
   });
 
+  it("the Decisions expansion: a line reaching the board twice is one entry with a walk-through per occurrence, switched directly", async () => {
+    const knights = line({ id: 1, title: "Knights", decisions: [[0, 1, "Nf3", "clean", 1, 0], [2, 2, "Ng1", "clean", 1, 0], [4, 3, "Nf3", "clean", 1, 0]], decisions_total: 3, tested: 3, deepest_tested: 3, correct_through: 3, trouble_spot: null });
+    stubFetch({
+      "/repertoire/report": () => ({
+        status: 200,
+        body: reportBody([{ ...books()[0], chapters: [{ ...books()[0].chapters[0], lines: [knights, line({ id: 2, title: "Short" })] }] }], {}, {}, 50, {
+          decisions: { rows: [decision({ own_move: 1, move: "Nf3", opportunities: 1, slips: 0, most_played: null, lines: [[0, [1, 2]], [4, [1]]], pick: 1 })], contested: [], unknown_loads: 0 },
+        }),
+      }),
+    });
+    renderPage("/repertoire/report?view=decisions");
+    await screen.findByTestId("report-table");
+    const row = screen.getAllByTestId("report-row-decisions")[0];
+    fireEvent.click(within(row).getByRole("button", { name: "2 lines" }));
+    const lines = screen.getByTestId("decision-lines");
+    expect(lines.textContent).toContain("One decision · 2 lines.");
+    expect(within(lines).getAllByRole("listitem")).toHaveLength(2);
+    const walks = within(lines).getAllByRole("button", { name: /walk through/ });
+    expect(walks.map((b) => b.textContent)).toEqual(["walk through at move 1", "walk through at move 3", "walk through"]);
+    fireEvent.click(walks[0]);
+    expect(screen.getByTestId("walkthrough")).toHaveAttribute("data-ply", "1");
+    expect(within(lines).getAllByRole("button", { name: "close" })).toHaveLength(1);
+    fireEvent.click(within(lines).getByRole("button", { name: "walk through at move 3" })); // straight to the other occurrence
+    expect(screen.getByTestId("walkthrough")).toHaveAttribute("data-line", "1");
+    expect(screen.getByTestId("walkthrough")).toHaveAttribute("data-ply", "5");
+    fireEvent.click(within(lines).getByRole("button", { name: "close" }));
+    expect(screen.queryByTestId("walkthrough")).toBeNull();
+  });
+
   it("the Decisions view: one row per board in Study order, the lines beneath, the pick queued with +, a walk-through, the contested notice, and the filters through the lines", async () => {
     stubFetch({
       "/repertoire/report": () => ({
@@ -571,6 +607,10 @@ describe("the line report page", () => {
     fireEvent.click(within(lines).getAllByRole("button", { name: "walk through" })[0]);
     expect(screen.getByTestId("walkthrough")).toHaveAttribute("data-line", "1");
     expect(screen.getByTestId("walkthrough")).toHaveAttribute("data-ply", "5");
+    // A line reaching the board twice: one entry, "2 lines", a walk-through per occurrence, switching directly.
+    fireEvent.click(screen.getByRole("tab", { name: "By line" }));
+    fireEvent.click(screen.getByRole("tab", { name: "By decision" }));
+    expect(screen.getAllByTestId("report-row-decisions")).toHaveLength(2);
     // Sorting by move ascending puts Black's move 1 first; the filters apply through the lines.
     fireEvent.change(screen.getByLabelText("Sort"), { target: { value: "move" } });
     expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?view=decisions&sort=move&dir=asc");
