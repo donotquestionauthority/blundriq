@@ -57,13 +57,35 @@ assert set(TimeClass.__args__) == set(TIME_CLASSES)  # the route's literal is th
 
 
 @router.get("/report")
-def line_report(time_class: TimeClass = Query("focus")) -> dict[str, Any]:
-    """`{"lines": {books, drill_max_lines}, "gaps": {"white", "black"}}`: book › chapter › line rows
-    with games, results, depth, faithfulness and the practice numbers, most games first; and per
-    colour the boards where the player's games left the repertoire by the opponent's hand or never
-    found a book, the prepared-but-not-played rows, and the chapters a new line may go into."""
+def line_report(
+    time_class: TimeClass = Query("focus"), games: int | None = Query(None, ge=0, le=100000)
+) -> JSONResponse:
+    """`{"lines": {books, drill_max_lines}, "gaps": {"white", "black"}, "decisions", "scope"}`: book
+    › chapter › line rows with games, results, depth, faithfulness, the practice numbers, what the
+    player did at each board the line prescribes a move at and the puzzle's recent first tries, most
+    games first; per colour the boards where the player's games left the repertoire by the
+    opponent's hand or never found a book, the prepared-but-not-played rows, and the chapters a new
+    line may go into; the same evidence grouped by board; and the effective scope — the last `games`
+    analysable games, 500 by default, never more than the analysis window (`report.scope`)."""
     with db.transaction() as conn:
-        return report.full(conn, settings.load(conn), time_class=time_class)
+        out = report.full(conn, settings.load(conn), time_class=time_class, games=games)
+    # The read's value is plain JSON already (every timestamp rendered by the module); the response
+    # is built from it directly rather than re-walked by the framework's generic encoder, which
+    # costs a visible fraction of a second over a payload of this many small arrays.
+    return JSONResponse(out)
+
+
+@router.get("/report/decisions")
+def line_report_decisions(
+    time_class: TimeClass = Query("focus"), games: int | None = Query(None, ge=0, le=100000)
+) -> JSONResponse:
+    """The report's second read, for the same scope: what the player did at every board the
+    repertoire prescribes a move at — one row per board with an opportunity, the contested boards,
+    the loads that could not be read — and per line what its boards say (`report.decisions_view`).
+    The page issues it with `/report` and fills the table's decision cells when it lands."""
+    with db.transaction() as conn:
+        out = report.decisions_view(conn, settings.load(conn), time_class=time_class, games=games)
+    return JSONResponse(out)
 
 
 @router.get("/similar")

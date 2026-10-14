@@ -26,7 +26,9 @@ Chess.com / Lichess APIs
         │                 Practice (api) ──► puzzle_attempts, player_puzzle_state (SRS), exposure, skip
         │                 a drill (core/puzzles/drill.py) serves chosen lines whole: it mints a missing line
         │                 puzzle, stamps puzzles.drilled_at and writes exposures under the drill scope as proof
-        │                 of service only (never queue state; attempts.py grades against them for a week)
+        │                 of service only (never queue state; attempts.py grades against them for a week);
+        │                 the lines come from the report's drill queue (ui/src/utils/drillQueue.ts: the tab's
+        │                 sessionStorage, in the order added, cleared when the drill reaches Done)
         │                 pipeline srs-maintain un-retires mastered puzzles whose pattern recurs
         │
         └─► pipeline review ──► review_events (the whole window retagged hourly, per-game replace, under the
@@ -142,7 +144,9 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `core/puzzles/drill.py` | A drill of chosen lines: mint, `drilled_at`, the proof-of-service exposures, whole-line presentation. |
 | `core/puzzles/stats.py` | Loads and first-attempt verdicts per repertoire line (`session_id`, `attempt_seq`): the line report's practice numbers. |
 | `core/repertoire/lines.py` | A line added by hand (the catch-all books, the gate, duplicates) and a line deleted, each with its rematch. |
-| `core/repertoire/report.py` | The line report in one read (`full`): every active line's games, results, depth, faithfulness and practice numbers, and both colours' gap boards with their stem; the per-(game, line) rows are reduced in SQL to a few rows per scope (`_REPORT_SQL`, text tie-breaks under `COLLATE "C"`), the destinations once per colour. |
+| `core/repertoire/report.py` | The line report in two reads over the last `games` analysable games (`scope`: the request clamped to the analysis window, 500 by default). `full`: every active line's games, results, depth, faithfulness, slips and last slip, practice numbers and recent first tries, both colours' gap boards with their stem — the per-(game, line) rows reduced in SQL to a few rows per scope (`_REPORT_SQL`, text tie-breaks under `COLLATE "C"`), the destinations once per colour. `decisions_view`: the decision evidence for the same scope — one row per board with an opportunity, the contested boards, and per line what its boards say (the list to the last tested decision, the untested tail by count) — issued by the page with the first and filled in when it lands. |
+| `core/repertoire/decisions.py` | Decisions: every board where the effective repertoire prescribes a move, identified by canonical board and the board the move reaches; every in-scope game's boards joined by position key and verified by canonical text, a board once per game, success by the next board (`read`); a board with two continuations is contested and counted nowhere; per line the tested count, the deepest tested, the continuously tested prefix and the trouble spot (`line_evidence`); the line a decision's Drill queues (`pick`). |
+| `core/repertoire/practice.py` | Recent practice from the first attempts' move traces (`classify`: token equality, else the parsed move against the expected; a trace that does not replay is unknown), every first attempt read before any cap, then the newest five per line and, among the loads that reached it, per decision. |
 | `core/home.py` | The Home page: due count, today's puzzles and games against their targets, streaks, blunders and deviation patterns their lists have never shown, the pipeline's latest run. Reads only. |
 | `api/auth.py` | One password, one signed cookie. |
 | `api/routes/*` | Thin routes. |

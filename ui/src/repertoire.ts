@@ -318,7 +318,24 @@ export interface ReportTally {
   depth_reached: Record<string, number>;
   slip: { own_move: number; expected: string; played: string; count: number } | null;
   last_played: string | null;
+  /** When the player last left this scope's lines while they still prescribed a move. */
+  last_slip: string | null;
 }
+export type DecisionState = "untested" | "contested" | "clean" | "slipped";
+/** One of a line's decisions (core/repertoire/decisions.py), compact: `[ply, own move, move, state,
+ *  opportunities, slips]` — the board at `ply` with the player to move, what the games did there,
+ *  or why nothing is counted. */
+export type LineDecision = [number, number, string, DecisionState, number, number];
+export interface TroubleSpot {
+  own_move: number;
+  move: string;
+  slips: number;
+  opportunities: number;
+}
+/** The first try of one load, from its move trace, compact: `[verdict, through, failed at, complete]`
+ *  — what it reproduced (an own move), where it failed, or that it could not be read; `complete` is
+ *  the whole line reproduced, decided by the classifier from the puzzle's own plies. */
+export type RecentTry = ["ok" | "fail" | "unknown", number | null, number | null, boolean];
 /** Loads of a line's puzzle, and how the first attempt of each load went (core/puzzles/stats.py). */
 export interface PracticeNumbers {
   loads: number;
@@ -336,7 +353,25 @@ export interface ReportLine extends ReportTally {
   book_id: number;
   chapter_id: number;
   practice: PracticeNumbers;
+  /** The newest five loads' first tries, newest first; `unknown_loads` over every load. */
+  recent: RecentTry[];
+  unknown_loads: number;
 }
+/** What a line's boards say, from the second read: the decisions in ply order and three separate
+ *  numbers — because board-level evidence has holes: how many are tested, the deepest tested, and
+ *  the continuously tested successful prefix. */
+export interface LineEvidence {
+  /** Up to the last tested or contested decision; the untested tail is `decisions_total` minus its length. */
+  decisions: LineDecision[];
+  decisions_total: number;
+  tested: number;
+  deepest_tested: number | null;
+  correct_through: number | null;
+  trouble_spot: TroubleSpot | null;
+}
+/** A line none of whose decisions was reached is sent as its count alone. */
+export type LineEvidenceOrCount = LineEvidence | { decisions_total: number };
+export const hasEvidence = (e: LineEvidenceOrCount | undefined): e is LineEvidence => e !== undefined && "decisions" in e;
 export interface ReportChapter extends ReportTally {
   id: number;
   title: string;
@@ -438,10 +473,57 @@ export function duplicateOf(err: unknown): DuplicateLine | null {
 }
 
 /** `drill_max_lines`: how many lines one drill takes (core/constants.py; the server refuses more). */
+/** One decision with an opportunity in scope, grouped by board over every line through it. */
+export interface DecisionRow {
+  colour: "white" | "black";
+  own_move: number;
+  move: string;
+  unreadable: boolean;
+  opportunities: number;
+  slips: number;
+  most_played: string | null;
+  last_slip: string | null;
+  last_played: string | null;
+  /** The lines through the board, grouped by the ply they reach it at: `[[ply, [line ids]], ...]`. */
+  lines: [number, number[]][];
+  /** The line a Drill queues: most games attached, then shortest after the decision, then the tie-break. */
+  pick: number | null;
+  /** First tries of the newest five loads that reached this board, over every line through it. */
+  practice: { failed: number; of: number };
+}
+/** A board where effective lines prescribe different continuations (reached by transposition with
+ *  other counters, which the gate's full-FEN identity admits): counted nowhere, shown in a notice. */
+export interface ContestedBoard {
+  colour: "white" | "black";
+  fen: string;
+  own_move: number;
+  alternatives: { move: string; line_ids: number[] }[];
+  line_ids: number[];
+}
+export interface ReportScope {
+  /** The effective number of most recent games the whole page describes. */
+  games: number;
+  limit: number;
+  options: number[];
+}
 export interface ReportResponse {
   lines: { books: ReportBook[]; drill_max_lines: number };
   gaps: { white: GapsResponse; black: GapsResponse };
+  scope: ReportScope;
 }
-/** The whole report in one read: the lines table and both colours' gaps. */
-export const getReport = (timeClass: string) => api.get<ReportResponse>(`/repertoire/report?time_class=${encodeURIComponent(timeClass)}`);
+/** The second read, for the same scope: the decisions and each line's evidence (`lines` keyed by
+ *  line id as strings, as JSON keys are). */
+export interface DecisionsResponse {
+  rows: DecisionRow[];
+  contested: ContestedBoard[];
+  unknown_loads: number;
+  lines: Record<string, LineEvidenceOrCount>;
+  scope: ReportScope;
+}
+const scopeQuery = (timeClass: string, games: number | null) => `time_class=${encodeURIComponent(timeClass)}${games === null ? "" : `&games=${games}`}`;
+/** The report's first read: the lines table and both colours' gaps over the last `games`
+ *  analysable games (the server's default and clamp when null). */
+export const getReport = (timeClass: string, games: number | null = null) => api.get<ReportResponse>(`/repertoire/report?${scopeQuery(timeClass, games)}`);
+/** The report's second read, issued with the first: the decision evidence for the same scope. */
+export const getReportDecisions = (timeClass: string, games: number | null = null) => api.get<DecisionsResponse>(`/repertoire/report/decisions?${scopeQuery(timeClass, games)}`);
 export const reportPath = () => "/repertoire/report";
