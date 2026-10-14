@@ -7,7 +7,7 @@ import type { TimeClass } from "../blunders";
 import { AddLineModal } from "../components/AddLineModal";
 import { LineWalkthrough } from "../components/PositionCard/LineReaderPanel";
 import { fmtCp } from "../engine/eval";
-import { useApi } from "../hooks/useApi";
+import { sameDeps, useApi } from "../hooks/useApi";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { getReport, getReportDecisions, hasEvidence } from "../repertoire";
 import type { ContestedBoard, DecisionRow, GapCard, GapsResponse, LineDecision, LineEvidenceOrCount, PreparedRow, RecentTry, ReportLine, ReportTally } from "../repertoire";
@@ -504,15 +504,20 @@ export default function RepertoireReport() {
     [params, setParams],
   );
 
-  // One read for the whole page: the lines table, both colours' gaps and the decisions, over the
-  // scope the URL names (the server clamps it to the analysis window and says what it used).
-  const report = useApi(() => getReport(timeClass, games), [timeClass, games]);
-  // The second read, issued with the first: the decision evidence for the same scope. The table
-  // paints from the first; these cells show `…` until this lands, `–` if it fails, and a late
-  // answer for a previous scope is stale and not shown (isStale: the deps that produced the data).
-  const decisionsRead = useApi(() => getReportDecisions(timeClass, games), [timeClass, games]);
-  const decisionsData = decisionsRead.data && !decisionsRead.isStale ? decisionsRead.data : null;
-  const evidenceState: Evidence = decisionsData ? "ready" : decisionsRead.error && !decisionsRead.isLoading ? "failed" : "pending";
+  // Two reads for the page, issued together over the scope the URL names (the server clamps it to
+  // the analysis window and says what it used): the lines table and both colours' gaps, then the
+  // decision evidence. Both carry the generation, which a confirmed save advances so both are read
+  // again and both old answers are stale at once.
+  const [generation, setGeneration] = useState(0);
+  const report = useApi(() => getReport(timeClass, games), [timeClass, games, generation]);
+  const decisionsRead = useApi(() => getReportDecisions(timeClass, games), [timeClass, games, generation]);
+  // The evidence is joined to the rows only when both answers describe the same request: while a
+  // new scope is read the old pair stays together (dimmed) until either new answer lands, and from
+  // then the cells show `…` until both are current, whichever landed first; `–` once the current
+  // rows are in and their decisions failed. An answer for another request is never joined.
+  const paired = report.data != null && decisionsRead.data != null && sameDeps(report.dataDeps, decisionsRead.dataDeps);
+  const decisionsData = paired ? decisionsRead.data : null;
+  const evidenceState: Evidence = paired ? "ready" : decisionsRead.error && !decisionsRead.isLoading && !report.isStale ? "failed" : "pending";
   const lines = report.data?.lines ?? null;
   const scope = report.data?.scope ?? null;
   // A stale scope in the URL (the window shrank, or a hand-typed number) is rewritten to what the
@@ -573,15 +578,14 @@ export default function RepertoireReport() {
   const both = report.data?.gaps ?? null;
   const shown: GapsResponse | null = both ? (gapColour ?? (both.black.gaps.length > both.white.gaps.length ? "black" : "white")) === "white" ? both.white : both.black : null;
   const activeColour = shown?.colour ?? gapColour ?? "white";
-  const refetch = report.refetch;
-  // A confirmed save marks its card and re-reads the report at once (the one read serves the
-  // lines and the gaps); closing only clears the modal, so a cancelled modal re-reads nothing.
-  // The modal calls onAdded and onClose in the same turn, so nothing here may depend on state
-  // set by the other.
+  // A confirmed save marks its card and advances the generation, so the lines, the gaps and the
+  // decision evidence are all read again (the new line's row and its evidence arrive as a pair);
+  // closing only clears the modal, so a cancelled modal re-reads nothing. The modal calls onAdded
+  // and onClose in the same turn, so nothing here may depend on state set by the other.
   const onAdded = useCallback(() => {
     if (source) setAdded((a) => ({ ...a, [source.fen]: true }));
-    refetch();
-  }, [source, refetch]);
+    setGeneration((g) => g + 1);
+  }, [source]);
   const closeModal = useCallback(() => setSource(null), []);
 
   const columns = COLUMNS.filter((c) => c.views.includes(tableView));

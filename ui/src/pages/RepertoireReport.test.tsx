@@ -599,6 +599,49 @@ describe("the line report page", () => {
     expect(within(screen.getAllByTestId("report-row-lines")[1]).getAllByRole("cell")[9].textContent).toBe("0 of 3 · all untested");
   });
 
+  it("a scope change: the new evidence is never joined to the old rows, whichever answer lands first; the old pair stays together meanwhile", async () => {
+    // The new decisions answer before the new rows: the old rows stay on the table, dimmed, with
+    // their cells waiting — the 250-game evidence is never written into the 500-game rows.
+    let release: (() => void) | null = null;
+    const slow = new Promise<void>((r) => {
+      release = r;
+    });
+    const calls = stubFetch({
+      "/repertoire/report": (q) => (q.get("games") === "250" ? { status: 200, body: reportBody([], {}, {}, 50, { scope: { ...SCOPE, games: 250 } }), wait: slow } : { status: 200, body: reportBody() }),
+      "/repertoire/report/decisions": (q) => (q.get("games") === "250" ? { status: 200, body: decisionsBody({ rows: [], lines: { "1": { decisions_total: 3 } }, scope: { ...SCOPE, games: 250 } }) } : { status: 200, body: decisionsBody() }),
+    });
+    renderPage();
+    await screen.findByTestId("report-table");
+    await screen.findByText("3 of 3 · correct through move 2");
+    fireEvent.change(screen.getByLabelText("Games"), { target: { value: "250" } });
+    await waitFor(() => expect(calls.filter((c) => c.query.get("games") === "250")).toHaveLength(2));
+    await new Promise((r) => setTimeout(r, 0)); // the 250-game decisions have landed; the rows have not
+    const main = screen.getAllByTestId("report-row-lines").find((r) => r.textContent?.includes("Main"))!;
+    expect(within(main).getAllByRole("cell")[9].textContent).toBe("…"); // not "0 of 3 · all untested"
+    expect(screen.getByTestId("report-table").parentElement?.className).toContain("opacity-60");
+    release!();
+    await screen.findByText("No active line in your repertoire.");
+    expect(screen.queryByText("0 of 3 · all untested")).toBeNull(); // the 250-game evidence has no row to join
+  });
+
+  it("a time-class change: with the new rows in before the new evidence, the cells read … rather than the old evidence", async () => {
+    let release: (() => void) | null = null;
+    const slow = new Promise<void>((r) => {
+      release = r;
+    });
+    stubFetch({
+      "/repertoire/report": () => ({ status: 200, body: reportBody() }),
+      "/repertoire/report/decisions": (q) => (q.get("time_class") === "all" ? { status: 200, body: decisionsBody({ rows: [], lines: { "1": { decisions_total: 3 } } }), wait: slow } : { status: 200, body: decisionsBody() }),
+    });
+    renderPage();
+    await screen.findByText("3 of 3 · correct through move 2");
+    fireEvent.change(screen.getByLabelText("Time class"), { target: { value: "all" } });
+    await waitFor(() => expect(within(screen.getAllByTestId("report-row-lines")[1]).getAllByRole("cell")[9].textContent).toBe("…"));
+    expect(screen.getByTestId("report-table").parentElement?.className).not.toContain("opacity-60"); // the rows are current
+    release!();
+    await screen.findByText("0 of 3 · all untested");
+  });
+
   it("the Sort control sorts like a header: text ascending, numbers descending, the arrow flips", async () => {
     stubFetch(bothRoutes());
     renderPage();
@@ -837,10 +880,10 @@ describe("the line report page", () => {
     expect(screen.getByTestId("location").textContent).toContain("gaps=white");
   });
 
-  it("opens the modal with the card and the server's constants; a save marks the card and re-reads the report in the same turn; a cancel reads nothing", async () => {
+  it("opens the modal with the card and the server's constants; a save marks the card and re-reads both the report and its evidence in the same turn; a cancel reads nothing", async () => {
     let saved = false;
     const calls = stubFetch({
-      "/repertoire/report/decisions": () => ({ status: 200, body: decisionsBody({ rows: [], lines: { "42": { decisions_total: 3 } } }) }),
+      "/repertoire/report/decisions": () => ({ status: 200, body: decisionsBody({ rows: [], lines: saved ? { "42": { decisions_total: 3 } } : {} }) }),
       "/repertoire/report": () => ({ status: 200, body: reportBody(saved ? [{ ...books()[0], chapters: [{ ...books()[0].chapters[0], lines: [line({ id: 42, title: "Added line", games: 0, origin: "manual" })] }] }] : [], { gaps: [card()] }) }),
     });
     renderPage();
@@ -848,14 +891,17 @@ describe("the line report page", () => {
     fireEvent.click(within(cards[0]).getByRole("button", { name: "Add to repertoire" }));
     const dialog = screen.getByRole("dialog", { name: "Add to repertoire" });
     expect(dialog).toHaveAttribute("data-fen", GAP);
-    expect(dialog).toHaveAttribute("data-destinations", "1"); // White's destinations, from the one read
+    expect(dialog).toHaveAttribute("data-destinations", "1"); // White's destinations, from the main read
     expect(dialog).toHaveAttribute("data-prefill", "10");
     expect(dialog).toHaveAttribute("data-max", "60");
     const before = calls.filter((c) => c.path === "/repertoire/report").length;
+    const beforeDecisions = calls.filter((c) => c.path === "/repertoire/report/decisions").length;
     // Cancelling re-reads nothing.
     fireEvent.click(screen.getByText("fake-close"));
     expect(screen.queryByRole("dialog")).toBeNull();
+    await new Promise((r) => setTimeout(r, 0));
     expect(calls.filter((c) => c.path === "/repertoire/report")).toHaveLength(before);
+    expect(calls.filter((c) => c.path === "/repertoire/report/decisions")).toHaveLength(beforeDecisions);
     // A confirmed save: the card is marked, the modal is gone, and the report is read again —
     // the new line is in the table, ready to drill.
     fireEvent.click(within(screen.getAllByTestId("gap-card")[0]).getByRole("button", { name: "Add to repertoire" }));
@@ -864,9 +910,52 @@ describe("the line report page", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(within(screen.getAllByTestId("gap-card")[0]).getByText(/Added to your repertoire/)).toBeInTheDocument();
     await waitFor(() => expect(calls.filter((c) => c.path === "/repertoire/report").length).toBe(before + 1));
+    expect(calls.filter((c) => c.path === "/repertoire/report/decisions")).toHaveLength(beforeDecisions + 1);
     await screen.findByLabelText("Select Added line");
+    // The new line's evidence came with the re-read, not the `–` of the evidence from before the save.
+    const added = screen.getAllByTestId("report-row-lines")[0];
+    await waitFor(() => expect(within(added).getAllByRole("cell")[9].textContent).toBe("0 of 3 · all untested"));
     fireEvent.click(screen.getByLabelText("Select Added line"));
     expect(readQueue()).toEqual([42]);
     expect(screen.getByRole("button", { name: "Drill queue" })).toBeEnabled();
+  });
+
+  it("after a save, the new rows and the new evidence are joined only as a pair, in either order", async () => {
+    for (const slowRoute of ["/repertoire/report", "/repertoire/report/decisions"] as const) {
+      resetQueueForTests();
+      let saved = false;
+      let release: (() => void) | null = null;
+      const slow = new Promise<void>((r) => {
+        release = r;
+      });
+      const withLine = [{ ...books()[0], chapters: [{ ...books()[0].chapters[0], lines: [line({ id: 42, title: "Added line", games: 0, origin: "manual" }), line({ id: 1, title: "Main" })] }] }];
+      const without = [{ ...books()[0], chapters: [{ ...books()[0].chapters[0], lines: [line({ id: 1, title: "Main" })] }] }];
+      stubFetch({
+        "/repertoire/report": () => ({ status: 200, body: reportBody(saved ? withLine : without, { gaps: [card()] }), wait: saved && slowRoute === "/repertoire/report" ? slow : undefined }),
+        "/repertoire/report/decisions": () => ({ status: 200, body: decisionsBody({ rows: [], lines: saved ? { "42": { decisions_total: 3 }, "1": { decisions_total: 5 } } : evidence() }), wait: saved && slowRoute === "/repertoire/report/decisions" ? slow : undefined }),
+      });
+      const page = renderPage();
+      await screen.findByText("3 of 3 · correct through move 2");
+      fireEvent.click(within(screen.getAllByTestId("gap-card")[0]).getByRole("button", { name: "Add to repertoire" }));
+      saved = true;
+      fireEvent.click(screen.getByText("fake-save"));
+      await new Promise((r) => setTimeout(r, 0));
+      const mainRow = () => screen.getAllByTestId("report-row-lines").find((r) => r.textContent?.includes("Main"))!;
+      if (slowRoute === "/repertoire/report") {
+        // The new evidence is in, the new rows are not: the old rows stay, dimmed, their cells waiting.
+        expect(within(mainRow()).getAllByRole("cell")[9].textContent).toBe("…");
+        expect(screen.queryByLabelText("Select Added line")).toBeNull();
+      } else {
+        // The new rows are in, the new evidence is not: the cells wait rather than show the old evidence.
+        await screen.findByLabelText("Select Added line");
+        expect(within(mainRow()).getAllByRole("cell")[9].textContent).toBe("…");
+      }
+      release!();
+      await screen.findByLabelText("Select Added line");
+      await waitFor(() => expect(within(mainRow()).getAllByRole("cell")[9].textContent).toBe("0 of 5 · all untested"));
+      expect(within(screen.getAllByTestId("report-row-lines").find((r) => r.textContent?.includes("Added line"))!).getAllByRole("cell")[9].textContent).toBe("0 of 3 · all untested");
+      page.unmount();
+      vi.unstubAllGlobals();
+    }
   });
 });

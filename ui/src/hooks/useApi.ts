@@ -8,8 +8,9 @@ interface ApiState<T> {
   dataDeps: unknown[] | null;
 }
 
-function shallowEqualDeps(a: unknown[] | null, b: unknown[]): boolean {
-  if (a === null || a.length !== b.length) return false;
+/** Whether two reads' `dataDeps` (or one's against the current deps) name the same request. */
+export function sameDeps(a: unknown[] | null, b: unknown[] | null): boolean {
+  if (a === null || b === null || a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (!Object.is(a[i], b[i])) return false;
   return true;
 }
@@ -23,6 +24,10 @@ function shallowEqualDeps(a: unknown[] | null, b: unknown[]): boolean {
  * would land one render late and let the old data mount once under the new deps. Pass
  * primitives in `deps`; a freshly-constructed object compares unequal every render.
  * `keepDataOnError` keeps the last data through a failed re-run (for a page that polls).
+ * `dataDeps` is returned so two reads over the same deps can be joined only when both answered
+ * the same request (`sameDeps`); a page that must re-run both after a mutation puts a generation
+ * in their deps, which marks both old answers stale at once, where `refetch()` would leave the
+ * other read's answer in place.
  */
 export function useApi<T>(
   fetcher: () => Promise<T>,
@@ -63,7 +68,7 @@ export function useApi<T>(
     };
   }, [run]);
 
-  const isStale = state.data != null && !shallowEqualDeps(state.dataDeps, deps);
+  const isStale = state.data != null && !sameDeps(state.dataDeps, deps);
 
   return { ...state, refetch: run, isStale };
 }
