@@ -27,8 +27,17 @@ def _seed(conn: psycopg.Connection[DictRow]) -> None:
 
 
 def _rows(conn: psycopg.Connection[DictRow], games: int | None = None, time_class: str = "all") -> Row:
+    """Both reads, merged as the page sees them: the first read's rows with each line's evidence
+    from the second read folded in (a line with none carries `decisions_total` alone)."""
     conn.commit()
-    return report.full(conn, Settings(), time_class=time_class, games=games)
+    out = report.full(conn, Settings(), time_class=time_class, games=games)
+    view = report.decisions_view(conn, Settings(), time_class=time_class, games=games)
+    for b in out["lines"]["books"]:
+        for ch in b["chapters"]:
+            for ln in ch["lines"]:
+                ln.update(view["lines"].get(int(ln["id"]), {}))
+    out["decisions"] = {k: v for k, v in view.items() if k != "lines"}
+    return out
 
 
 def _decisions(out: Row) -> dict[tuple[str, int], Row]:
@@ -60,7 +69,8 @@ def test_opponents_always_leave_early_leaves_the_continuation_untested(clean: ps
     ln = _line(out, "Main")
     assert (ln["tested"], ln["decisions_total"], ln["deepest_tested"], ln["correct_through"]) == (1, 4, 1, 1)
     assert ln["trouble_spot"] is None
-    assert [d[3] for d in ln["decisions"]] == ["clean", "untested", "untested", "untested"]
+    # The list ends at the last decision with anything to show; the untested tail is the count's.
+    assert [d[3] for d in ln["decisions"]] == ["clean"] and ln["decisions_total"] == 4
     assert _decisions(out)[("white", 1)]["opportunities"] == 2
 
 
@@ -229,6 +239,38 @@ def test_a_gate_valid_disagreement_at_a_transposed_board_is_contested_and_exclud
     )
 
 
+def test_a_board_first_reached_late_in_a_game_is_still_an_opportunity(clean: psycopg.Connection[DictRow]) -> None:
+    """The only line is three plies long; the game reaches its second decision's board at ply 6,
+    after knights out and back — no ply bounds where an opportunity may lie."""
+    _seed(clean)
+    h.line(clean, 1, 1, "Main", ["d4", "Nf6", "c4"])
+    h.game(clean, 1, ["Nf3", "Nf6", "Ng1", "Ng8", "d4", "Nf6", "c4", "e6"])
+    out = _rows(clean)
+    ln = _line(out, "Main")
+    # The start board: reached at ply 0 (Nf3 played: a slip); the board after d4 Nf6: first reached
+    # at ply 6, c4 played — an opportunity and a success, past the line's three plies.
+    assert [d[3] for d in ln["decisions"]] == ["slipped", "clean"]
+    assert _decisions(out)[("white", 2)] == {**_decisions(out)[("white", 2)], "opportunities": 1, "slips": 0}
+    assert ln["correct_through"] is None and ln["tested"] == 2
+
+
+def test_a_tabiya_rooted_line_reached_after_a_long_unrelated_opening(clean: psycopg.Connection[DictRow]) -> None:
+    """A chapter rooted at a board after `d4 Nf6 c4 e6` (its lines start there); a game reaches
+    that board at ply 12 by another order and plays the line's first move."""
+    _seed(clean)
+    root = spine(None, ["d4", "Nf6", "c4", "e6"])[-1]
+    h.chapter(clean, 2, 1, "Tabiya")
+    clean.execute("UPDATE chapters SET root_fen = %s WHERE id = 2", (root,))
+    h.line(clean, 1, 2, "From the tabiya", ["Nf3", "d5", "g3"], fens=spine(root, ["Nf3", "d5", "g3"]))
+    h.game(
+        clean, 1, ["Nf3", "Nf6", "Ng1", "Ng8", "c4", "e6", "Nf3", "Nf6", "Ng1", "Ng8", "d4", "Nf6", "Nf3", "d5", "g3"]
+    )
+    out = _rows(clean)
+    ln = _line(out, "From the tabiya")
+    assert [(d[1], d[3]) for d in ln["decisions"]] == [(3, "clean"), (4, "clean")]  # the tabiya's own move numbers
+    assert _decisions(out)[("white", 3)]["opportunities"] == 1  # first reached at ply 12
+
+
 # --- the line's evidence: holes are visible, never implied ----------------------------------------------------
 
 
@@ -263,7 +305,8 @@ def test_a_line_no_game_reached_has_no_through_and_no_spot(clean: psycopg.Connec
     h.game(clean, 1, ["e4", "e5"], color="black")  # a Black game reaches no White decision
     out = _rows(clean)
     ln = _line(out, "Main")
-    assert (ln["tested"], ln["deepest_tested"], ln["correct_through"], ln["trouble_spot"]) == (0, None, None, None)
+    # A line none of whose decisions was reached is sent compact: its count alone.
+    assert ln["decisions_total"] == 4 and "decisions" not in ln and "tested" not in ln
     assert out["decisions"]["rows"] == []
 
 

@@ -75,6 +75,19 @@ def line_report(
     return JSONResponse(out)
 
 
+@router.get("/report/decisions")
+def line_report_decisions(
+    time_class: TimeClass = Query("focus"), games: int | None = Query(None, ge=0, le=100000)
+) -> JSONResponse:
+    """The report's second read, for the same scope: what the player did at every board the
+    repertoire prescribes a move at — one row per board with an opportunity, the contested boards,
+    the loads that could not be read — and per line what its boards say (`report.decisions_view`).
+    The page issues it with `/report` and fills the table's decision cells when it lands."""
+    with db.transaction() as conn:
+        out = report.decisions_view(conn, settings.load(conn), time_class=time_class, games=games)
+    return JSONResponse(out)
+
+
 @router.get("/similar")
 def similar(
     fen: str = Query(max_length=100),

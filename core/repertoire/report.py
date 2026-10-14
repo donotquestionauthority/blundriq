@@ -469,17 +469,8 @@ def _rank(lines_: dict[int, Row], chapters: dict[int, Row], books: dict[int, Row
     return {lid: i for i, lid in enumerate(order)}
 
 
-def _lines(
-    conn: Connection[Any], scopes: dict[str, dict[int, Row]], decisions: list[decisions_mod.Decision] | None = None
-) -> tuple[Row, Row]:
-    """`({"books": [...], "drill_max_lines"}, decisions view)`: book › chapter › line rows with
-    games, results, depth, faithfulness, the slip, the practice numbers and, from the decisions,
-    what each line's boards say (`tested`, `deepest_tested`, `correct_through`, `trouble_spot`,
-    `decisions`) and the recent first tries of its puzzle (`recent`, `unknown_loads`); every level
-    ordered most games first (then most recent, then name). Every effectively-active line is a
-    row, with zero games when no game in the window reached it, so a line just added can be found
-    and drilled. A line and a chapter carry the ids of what holds them; the titles are on the
-    holder, once. The decisions view is `_decision_rows`."""
+def _active_lines(conn: Connection[Any]) -> tuple[dict[int, Row], dict[int, Row], dict[int, Row]]:
+    """(lines, chapters, books) of the effective repertoire, by id; a line carries `len`."""
     books: dict[int, Row] = {}
     chapters: dict[int, Row] = {}
     lines_: dict[int, Row] = {}
@@ -499,13 +490,21 @@ def _lines(
             "depth_total": own_moves(int(r["len"]), colour),
             "len": int(r["len"]),
         }
+    return lines_, chapters, books
+
+
+def _lines(conn: Connection[Any], scopes: dict[str, dict[int, Row]]) -> Row:
+    """`{"books": [...], "drill_max_lines"}`: book › chapter › line rows with games, results,
+    depth, faithfulness, the slip, the latest slip, the practice numbers and the recent first
+    tries of the line's puzzle (`recent`, `unknown_loads`); every level ordered most games first
+    (then most recent, then name). What the line's boards say is the decisions read's
+    (`decisions_view`), fetched by the page on its own. Every effectively-active line is a
+    row, with zero games when no game in the window reached it, so a line just added can be found
+    and drilled. A line and a chapter carry the ids of what holds them; the titles are on the
+    holder, once. The decisions view is `_decision_rows`."""
+    lines_, chapters, books = _active_lines(conn)
     practice_totals = stats.by_line(conn, list(lines_))
-    loads = practice.read(conn, list(lines_))
-    recent = practice.recent_by_line(loads)
-    decisions = decisions or []
-    per_line = decisions_mod.by_line(decisions)
-    colour_of_line = {lid: str(books[int(ln["book_id"])]["color"]) for lid, ln in lines_.items()}
-    rank = _rank(lines_, chapters, books)
+    recent = practice.recent_by_line(practice.read(conn, list(lines_)))
     chapters_of: dict[int, list[Row]] = defaultdict(list)
     for ch in chapters.values():
         chapters_of[int(ch["book_id"])].append(ch)
@@ -534,7 +533,6 @@ def _lines(
                 lid = int(ln["id"])
                 row = finish("line", {k: v for k, v in ln.items() if k != "len"})
                 row["practice"] = practice_totals.get(lid, stats.empty())
-                row.update(decisions_mod.line_evidence(lid, per_line.get(lid, [])))
                 rec = recent.get(lid, {"recent": [], "unknown": 0})
                 row["recent"] = rec["recent"]
                 row["unknown_loads"] = rec["unknown"]
@@ -550,10 +548,7 @@ def _lines(
         brow.update(colour=colour, chapters=out_chapters, practice=summed(out_chapters))
         out_books.append(brow)
     out_books = _ordered(out_books, "title")
-    line_games = {lid: int(scopes["line"].get(lid, _EMPTY)["games"]) for lid in lines_}
-    line_len = {lid: int(ln["len"]) for lid, ln in lines_.items()}
-    view = _decision_rows(decisions, loads, colour_of_line, line_games, line_len, rank)
-    return {"books": out_books, "drill_max_lines": DRILL_MAX_LINES}, view
+    return {"books": out_books, "drill_max_lines": DRILL_MAX_LINES}
 
 
 def _decision_rows(
@@ -624,27 +619,75 @@ def _decision_rows(
 
 
 def full(conn: Connection[Any], config: Settings, *, time_class: str, games: int | None = None) -> Row:
-    """The whole report for one time class (`eligibility.TIME_CLASSES`) and scope: `{"lines":
-    _lines(), "gaps": {"white": _gaps(), "black": _gaps()}, "decisions": _decision_rows(), "scope":
-    scope()}`, from one reduction of the per-line rows, one decisions read and one scope count."""
+    """The report's first read for one time class (`eligibility.TIME_CLASSES`) and scope:
+    `{"lines": _lines(), "gaps": {"white": _gaps(), "black": _gaps()}, "scope": scope()}`, from
+    one reduction of the per-line rows, one practice read and one scope count. The decision
+    evidence is `decisions_view`, the page's second read."""
     sc = scope(config, games)
     n = int(sc["games"])
     scopes, gap_games = _reduced(conn, config, time_class, n)
-    decisions = _decisions(conn, config, time_class, n)
     line_counts = _line_counts(conn, config)
-    lines_, view = _lines(conn, scopes, decisions)
     return {
-        "lines": lines_,
+        "lines": _lines(conn, scopes),
         "gaps": {c: _gaps(conn, config, time_class, c, gap_games, line_counts, n) for c in ("white", "black")},
-        "decisions": view,
         "scope": sc,
     }
+
+
+def decisions_view(conn: Connection[Any], config: Settings, *, time_class: str, games: int | None = None) -> Row:
+    """The report's second read, for the same scope: `{"rows", "contested", "unknown_loads"}` as
+    `_decision_rows` and `"lines": {line_id: evidence}` — `line_evidence` for every line with any
+    decision an in-scope game reached or that is contested (its list ending at the last such
+    decision, the untested tail implied by the count), and `{"decisions_total": n}` alone for a
+    line none of whose decisions was reached. `scope` rides along so the page can match the two
+    reads."""
+    sc = scope(config, games)
+    n = int(sc["games"])
+    lines_, chapters, books = _active_lines(conn)
+    decisions = _decisions(conn, config, time_class, n)
+    per_line = decisions_mod.by_line(decisions)
+    colour_of_line = {lid: str(books[int(ln["book_id"])]["color"]) for lid, ln in lines_.items()}
+    rank = _rank(lines_, chapters, books)
+    loads = practice.read(conn, list(lines_))
+    line_games = {lid: int(r["n"]) for lid, r in _line_games(conn, config, time_class, n).items()}
+    line_len = {lid: int(ln["len"]) for lid, ln in lines_.items()}
+    evidence: dict[int, Row] = {}
+    for lid in lines_:
+        ev = decisions_mod.line_evidence(lid, per_line.get(lid, []))
+        if ev["tested"] > 0 or any(d[3] == decisions_mod.CONTESTED for d in ev["decisions"]):
+            evidence[lid] = ev
+        else:
+            evidence[lid] = {"decisions_total": ev["decisions_total"]}
+    view = _decision_rows(decisions, loads, colour_of_line, line_games, line_len, rank)
+    view["lines"] = evidence
+    view["scope"] = sc
+    return view
+
+
+_LINE_GAMES_SQL = """
+WITH {window}
+SELECT grl.line_id, count(*) AS n
+FROM game_repertoire_results grr
+JOIN game_result_lines grl ON grl.game_repertoire_result_id = grr.id
+JOIN chess_games cg ON cg.id = grr.chess_game_id
+WHERE grr.player_id = %(pid)s AND cg.id IN (SELECT chess_game_id FROM window_games)
+  AND {analysable} AND {time_class}
+GROUP BY grl.line_id
+"""
+
+
+def _line_games(conn: Connection[Any], config: Settings, time_class: str, games: int) -> dict[int, Row]:
+    """{line_id: {n}}: the games the matcher attached to each line in scope — the Games column's
+    number, read alone here for the drill pick (the decisions read does not carry the table)."""
+    params, tc = _window_params(config, time_class, games)
+    sql = _LINE_GAMES_SQL.format(window=window_cte(), analysable=analysable_sql("cg"), time_class=tc)
+    return {int(r["line_id"]): r for r in conn.execute(cast(LiteralString, sql), params).fetchall()}
 
 
 def lines(conn: Connection[Any], config: Settings, *, time_class: str, games: int | None = None) -> Row:
     """The lines half of `full`, computed alone (the tests' convenience; the API reads `full`)."""
     n = int(scope(config, games)["games"])
-    return _lines(conn, _reduced(conn, config, time_class, n)[0], _decisions(conn, config, time_class, n))[0]
+    return _lines(conn, _reduced(conn, config, time_class, n)[0])
 
 
 def gaps(conn: Connection[Any], config: Settings, *, time_class: str, colour: str, games: int | None = None) -> Row:

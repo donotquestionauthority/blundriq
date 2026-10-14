@@ -91,20 +91,15 @@ dec AS MATERIALIZED (
            jsonb_agg(jsonb_build_array(line_id, ply, split_part(fen, ' ', 6)::int) ORDER BY line_id, ply) AS occurrences
     FROM occ GROUP BY color, board
 ),
-reach AS MATERIALIZED (
-    -- No board past the longest line's can be a decision: a game's plies beyond it are never read.
-    SELECT COALESCE(max(len), 0) AS plies FROM eff
-),
 scope AS MATERIALIZED (
-    SELECT cg.id AS gid, pg.player_color AS color, cg.played_at, cg.position_keys[1:reach.plies + 1] AS keys,
-           ARRAY(SELECT x FROM jsonb_array_elements_text(cg.fen_sequence) WITH ORDINALITY AS e(x, ord)
-                 WHERE ord <= reach.plies + 1) AS fens,
-           ARRAY(SELECT x FROM jsonb_array_elements_text(cg.moves) WITH ORDINALITY AS e(x, ord)
-                 WHERE ord <= reach.plies) AS moves,
-           least(jsonb_array_length(cg.moves), reach.plies) AS glen
+    -- Every board of the game: a repertoire board can be reached first late in a game, by
+    -- transposition or after reversible moves, so no ply bounds where an opportunity may lie.
+    SELECT cg.id AS gid, pg.player_color AS color, cg.played_at, cg.position_keys AS keys,
+           ARRAY(SELECT x FROM jsonb_array_elements_text(cg.fen_sequence) AS x) AS fens,
+           ARRAY(SELECT x FROM jsonb_array_elements_text(cg.moves) AS x) AS moves,
+           jsonb_array_length(cg.moves) AS glen
     FROM player_games pg
     JOIN chess_games cg ON cg.id = pg.chess_game_id
-    CROSS JOIN reach
     WHERE pg.player_id = %(pid)s
       AND cg.id IN (SELECT chess_game_id FROM window_games)
       AND cg.fen_sequence IS NOT NULL AND cg.moves IS NOT NULL
@@ -317,8 +312,13 @@ def line_evidence(line_id: int, decisions: list[Decision]) -> Row:
         if state == SLIPPED and (trouble is None or (-d.slips, ply) < (trouble[0], trouble[1])):
             trouble = (-d.slips, ply, own, d)
         rows.append([ply, own, d.move, state, d.opportunities, d.slips])
+    # The list ends at the last decision with anything to show; the untested tail is implied by
+    # `decisions_total` ("then N untested"). A hole — an untested decision before a tested one —
+    # stays in the list, visible. Every line's first decision is reached by every game, so the
+    # tails are where the bytes are, not whole lines.
+    keep = max((i + 1 for i, r in enumerate(rows) if r[3] in (CLEAN, SLIPPED, CONTESTED)), default=0)
     return {
-        "decisions": rows,
+        "decisions": rows[:keep],
         "decisions_total": len(rows),
         "tested": tested,
         "deepest_tested": deepest,

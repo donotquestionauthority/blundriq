@@ -1,7 +1,8 @@
 /** The line report's row model: one flat shape for the line, chapter and book views, with the
  *  sort and the filters the page applies to it. Pure functions, kept out of the page so the page
  *  file only exports components. */
-import type { DecisionRow, PracticeNumbers, ReportBook, ReportLine, ReportTally } from "../repertoire";
+import type { DecisionRow, LineEvidenceOrCount, PracticeNumbers, ReportBook, ReportLine, ReportTally } from "../repertoire";
+import { hasEvidence } from "../repertoire";
 
 /** The three table views over the lines, and the decisions view over the boards. */
 export type View = "lines" | "chapters" | "books" | "decisions";
@@ -24,12 +25,14 @@ export interface Row extends ReportTally {
   chapter: string | null;
   chapter_id: number | null;
   line: ReportLine | null;
+  /** The second read's evidence for a line row; undefined until it lands (or when it failed). */
+  evidence?: LineEvidenceOrCount;
   lineIds: number[];
   count: number; // lines under a chapter, chapters under a book
   practice: PracticeNumbers;
 }
 
-export function flatten(books: ReportBook[]): { lines: Row[]; chapters: Row[]; books: Row[] } {
+export function flatten(books: ReportBook[], evidence?: Record<string, LineEvidenceOrCount>): { lines: Row[]; chapters: Row[]; books: Row[] } {
   const lines: Row[] = [];
   const chapters: Row[] = [];
   const out: Row[] = [];
@@ -39,7 +42,7 @@ export function flatten(books: ReportBook[]): { lines: Row[]; chapters: Row[]; b
       const ids = ch.lines.map((l) => l.id);
       bookLines.push(...ids);
       for (const l of ch.lines) {
-        lines.push({ ...l, key: `line:${l.id}`, kind: "lines", id: l.id, colour: b.colour, book: b.title, book_id: b.id, chapter: ch.title, chapter_id: ch.id, line: l, lineIds: [l.id], count: 1, practice: l.practice });
+        lines.push({ ...l, key: `line:${l.id}`, kind: "lines", id: l.id, colour: b.colour, book: b.title, book_id: b.id, chapter: ch.title, chapter_id: ch.id, line: l, evidence: evidence?.[String(l.id)], lineIds: [l.id], count: 1, practice: l.practice });
       }
       chapters.push({ ...ch, key: `chapter:${ch.id}`, kind: "chapters", id: ch.id, colour: b.colour, book: b.title, book_id: b.id, chapter: ch.title, chapter_id: ch.id, line: null, lineIds: ids, count: ch.lines.length, practice: ch.practice });
     }
@@ -82,9 +85,9 @@ function sortValue(r: Row, key: SortKey): number | string | null {
     case "last_slip":
       return r.last_slip;
     case "trouble":
-      return r.line ? (r.line.trouble_spot ? r.line.trouble_spot.slips : null) : null;
+      return hasEvidence(r.evidence) && r.evidence.trouble_spot ? r.evidence.trouble_spot.slips : null;
     case "tested":
-      return r.line ? (r.line.decisions_total === 0 ? null : fraction(r.line.tested, r.line.decisions_total)) : null;
+      return hasEvidence(r.evidence) ? fraction(r.evidence.tested, r.evidence.decisions_total) : null;
     case "score":
       return r.score;
     case "faithful":

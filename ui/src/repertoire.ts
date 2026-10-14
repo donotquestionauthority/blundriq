@@ -332,9 +332,10 @@ export interface TroubleSpot {
   slips: number;
   opportunities: number;
 }
-/** The first try of one load, from its move trace, compact: `[verdict, through, failed at]` — what
- *  it reproduced (an own move), where it failed, or that it could not be read. */
-export type RecentTry = ["ok" | "fail" | "unknown", number | null, number | null];
+/** The first try of one load, from its move trace, compact: `[verdict, through, failed at, complete]`
+ *  — what it reproduced (an own move), where it failed, or that it could not be read; `complete` is
+ *  the whole line reproduced, decided by the classifier from the puzzle's own plies. */
+export type RecentTry = ["ok" | "fail" | "unknown", number | null, number | null, boolean];
 /** Loads of a line's puzzle, and how the first attempt of each load went (core/puzzles/stats.py). */
 export interface PracticeNumbers {
   loads: number;
@@ -352,18 +353,25 @@ export interface ReportLine extends ReportTally {
   book_id: number;
   chapter_id: number;
   practice: PracticeNumbers;
-  /** The line's decisions in ply order, and three separate numbers — because board-level evidence
-   *  has holes: how many are tested, the deepest tested, and the continuously tested successful prefix. */
+  /** The newest five loads' first tries, newest first; `unknown_loads` over every load. */
+  recent: RecentTry[];
+  unknown_loads: number;
+}
+/** What a line's boards say, from the second read: the decisions in ply order and three separate
+ *  numbers — because board-level evidence has holes: how many are tested, the deepest tested, and
+ *  the continuously tested successful prefix. */
+export interface LineEvidence {
+  /** Up to the last tested or contested decision; the untested tail is `decisions_total` minus its length. */
   decisions: LineDecision[];
   decisions_total: number;
   tested: number;
   deepest_tested: number | null;
   correct_through: number | null;
   trouble_spot: TroubleSpot | null;
-  /** The newest five loads' first tries, newest first; `unknown_loads` over every load. */
-  recent: RecentTry[];
-  unknown_loads: number;
 }
+/** A line none of whose decisions was reached is sent as its count alone. */
+export type LineEvidenceOrCount = LineEvidence | { decisions_total: number };
+export const hasEvidence = (e: LineEvidenceOrCount | undefined): e is LineEvidence => e !== undefined && "decisions" in e;
 export interface ReportChapter extends ReportTally {
   id: number;
   title: string;
@@ -501,11 +509,21 @@ export interface ReportScope {
 export interface ReportResponse {
   lines: { books: ReportBook[]; drill_max_lines: number };
   gaps: { white: GapsResponse; black: GapsResponse };
-  decisions: { rows: DecisionRow[]; contested: ContestedBoard[]; unknown_loads: number };
   scope: ReportScope;
 }
-/** The whole report in one read: the lines table, both colours' gaps and the decisions, over the
- *  last `games` analysable games (the server's default and clamp when null). */
-export const getReport = (timeClass: string, games: number | null = null) =>
-  api.get<ReportResponse>(`/repertoire/report?time_class=${encodeURIComponent(timeClass)}${games === null ? "" : `&games=${games}`}`);
+/** The second read, for the same scope: the decisions and each line's evidence (`lines` keyed by
+ *  line id as strings, as JSON keys are). */
+export interface DecisionsResponse {
+  rows: DecisionRow[];
+  contested: ContestedBoard[];
+  unknown_loads: number;
+  lines: Record<string, LineEvidenceOrCount>;
+  scope: ReportScope;
+}
+const scopeQuery = (timeClass: string, games: number | null) => `time_class=${encodeURIComponent(timeClass)}${games === null ? "" : `&games=${games}`}`;
+/** The report's first read: the lines table and both colours' gaps over the last `games`
+ *  analysable games (the server's default and clamp when null). */
+export const getReport = (timeClass: string, games: number | null = null) => api.get<ReportResponse>(`/repertoire/report?${scopeQuery(timeClass, games)}`);
+/** The report's second read, issued with the first: the decision evidence for the same scope. */
+export const getReportDecisions = (timeClass: string, games: number | null = null) => api.get<DecisionsResponse>(`/repertoire/report/decisions?${scopeQuery(timeClass, games)}`);
 export const reportPath = () => "/repertoire/report";

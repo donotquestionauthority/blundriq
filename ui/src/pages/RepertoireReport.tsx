@@ -9,8 +9,8 @@ import { LineWalkthrough } from "../components/PositionCard/LineReaderPanel";
 import { fmtCp } from "../engine/eval";
 import { useApi } from "../hooks/useApi";
 import { useMediaQuery } from "../hooks/useMediaQuery";
-import { getReport } from "../repertoire";
-import type { ContestedBoard, DecisionRow, GapCard, GapsResponse, LineDecision, PreparedRow, RecentTry, ReportLine, ReportTally } from "../repertoire";
+import { getReport, getReportDecisions, hasEvidence } from "../repertoire";
+import type { ContestedBoard, DecisionRow, GapCard, GapsResponse, LineDecision, LineEvidenceOrCount, PreparedRow, RecentTry, ReportLine, ReportTally } from "../repertoire";
 import { DECISION_SORT_KEYS, decisionKey, decisionLineCount, decisionLines as linesOf, filterDecisions, filterRows, flatten, medianDepth, SORT_KEYS, sortDecisions, sortRows, TABLE_VIEWS, VIEWS } from "./reportRows";
 import type { DecisionSortKey, Dir, Filters, Row, SortKey, TableView, View } from "./reportRows";
 import { SQUARES } from "../utils/board";
@@ -37,26 +37,31 @@ function whoLeft(t: ReportTally): string {
   return parts.join(" · ");
 }
 
+/** How the second read stands: its cells show `…` until it lands and `–` if it failed. */
+type Evidence = "pending" | "ready" | "failed";
+const PENDING = "…";
+
 /** "Move 7 · missed 6 of 8": the line's decision with the most slips (its own population: every
  *  in-scope game that reached the board, whichever line the matcher attached it to). */
-const troubleText = (l: ReportLine) => (l.trouble_spot ? `Move ${l.trouble_spot.own_move} ${l.trouble_spot.move} · missed ${l.trouble_spot.slips} of ${l.trouble_spot.opportunities}` : null);
+const troubleText = (e: LineEvidenceOrCount | undefined, state: Evidence) => (state === "pending" ? PENDING : hasEvidence(e) && e.trouble_spot ? `Move ${e.trouble_spot.own_move} ${e.trouble_spot.move} · missed ${e.trouble_spot.slips} of ${e.trouble_spot.opportunities}` : null);
 /** "5 of 9 · correct through move 3": decisions with any opportunity, and the continuously tested
- *  successful prefix — the one number the word "through" is used for. */
-function testedText(l: ReportLine): string {
-  if (l.decisions_total === 0) return "–";
-  const through = l.correct_through === null ? null : `correct through move ${l.correct_through}`;
-  return through ? `${l.tested} of ${l.decisions_total} · ${through}` : `${l.tested} of ${l.decisions_total}`;
+ *  successful prefix — the one number the word "through" is used for. A line sent as its count
+ *  alone had no decision reached: "0 of n · all untested". */
+function testedText(e: LineEvidenceOrCount | undefined, state: Evidence): string {
+  if (state === "pending") return PENDING;
+  if (e === undefined) return "–";
+  if (!hasEvidence(e)) return e.decisions_total === 0 ? "–" : `0 of ${e.decisions_total} · all untested`;
+  const through = e.correct_through === null ? null : `correct through move ${e.correct_through}`;
+  return through ? `${e.tested} of ${e.decisions_total} · ${through}` : `${e.tested} of ${e.decisions_total}`;
 }
 const tryMark = ([verdict]: RecentTry) => (verdict === "ok" ? "✓" : verdict === "fail" ? "✗" : "?");
 /** "✓ ✗ ✓ · newest: right up to move 9" — the newest five loads' first tries, newest first, and what
- *  the newest one tested. The segment the solver showed plays no part: the trace is the evidence. */
+ *  the newest one tested. The segment the solver showed plays no part: the trace is the evidence,
+ *  and whether it was the whole line is the trace's own fact (`complete`), from the first read. */
 function recentText(l: ReportLine): string {
   if (l.recent.length === 0) return "no practice yet";
-  const [verdict, upTo, failedAt] = l.recent[0];
-  // The whole line is reproduced when the newest trace reached the line's last decision — its own
-  // move number, not a count, so a chapter rooted at a tabiya reads right too.
-  const last = l.decisions.length > 0 ? l.decisions[l.decisions.length - 1][1] : null;
-  const extent = verdict === "ok" ? (upTo !== null && last !== null && upTo >= last ? "whole line" : `right up to move ${upTo ?? "?"}`) : verdict === "fail" ? `failed at move ${failedAt ?? "?"}` : "unreadable";
+  const [verdict, upTo, failedAt, complete] = l.recent[0];
+  const extent = verdict === "ok" ? (complete ? "whole line" : `right up to move ${upTo ?? "?"}`) : verdict === "fail" ? `failed at move ${failedAt ?? "?"}` : "unreadable";
   return `${l.recent.map(tryMark).join(" ")} · newest: ${extent}`;
 }
 
@@ -134,12 +139,14 @@ const where = (r: Row, bookFiltered: boolean) => (bookFiltered ? r.chapter : `${
 
 const stateText = ([, , , state, opportunities, slips]: LineDecision) => (state === "untested" ? "untested" : state === "contested" ? "contested — not counted" : state === "clean" ? `✓ ${opportunities} of ${opportunities}` : `✗ missed ${slips} of ${opportunities}`);
 
-/** A line's decisions in ply order, so a hole in the evidence is visible rather than implied. */
-function Decisions({ l }: { l: ReportLine }) {
-  if (l.decisions.length === 0) return <p className="text-xs text-zinc-500">This line has no decision of yours.</p>;
+/** A line's decisions in ply order, so a hole in the evidence is visible rather than implied; a
+ *  line sent as its count alone says so. */
+function Decisions({ e }: { e: LineEvidenceOrCount }) {
+  if (!hasEvidence(e)) return <p className="text-xs text-zinc-500" data-testid="line-decisions">{e.decisions_total === 0 ? "This line has no decision of yours." : `None of its ${e.decisions_total} decisions was reached in these games.`}</p>;
+  const tail = e.decisions_total - e.decisions.length;
   return (
     <ol className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs" data-testid="line-decisions">
-      {l.decisions.map((d) => (
+      {e.decisions.map((d) => (
         <li key={d[0]} className={d[3] === "slipped" ? "text-red-700 dark:text-red-400" : d[3] === "clean" ? "" : "text-zinc-500"}>
           <span className="font-mono">
             {d[1]}. {d[2]}
@@ -147,11 +154,12 @@ function Decisions({ l }: { l: ReportLine }) {
           {stateText(d)}
         </li>
       ))}
+      {tail > 0 && <li className="text-zinc-500">then {tail} untested</li>}
     </ol>
   );
 }
 
-function Cell({ r, col, expanded, onExpand }: { r: Row; col: ColKey; expanded: boolean; onExpand: () => void }) {
+function Cell({ r, col, expanded, onExpand, evidence }: { r: Row; col: ColKey; expanded: boolean; onExpand: () => void; evidence: Evidence }) {
   switch (col) {
     case "colour":
       return <>{r.colour === "white" ? "White" : "Black"}</>;
@@ -169,7 +177,7 @@ function Cell({ r, col, expanded, onExpand }: { r: Row; col: ColKey; expanded: b
           <Title r={r} />
           <p className="text-xs text-zinc-500">
             {whoLeft(r)}
-            {r.line.decisions_total > 0 && (
+            {r.evidence !== undefined && r.evidence.decisions_total > 0 && (
               <>
                 {whoLeft(r) ? " · " : ""}
                 <button type="button" aria-expanded={expanded} onClick={onExpand} className="underline">
@@ -193,9 +201,9 @@ function Cell({ r, col, expanded, onExpand }: { r: Row; col: ColKey; expanded: b
     case "last_slip":
       return <>{day(r.last_slip)}</>;
     case "trouble":
-      return <span className="whitespace-nowrap">{r.line ? (troubleText(r.line) ?? "–") : null}</span>;
+      return <span className="whitespace-nowrap">{r.line ? (troubleText(r.evidence, evidence) ?? "–") : null}</span>;
     case "tested":
-      return <span className="whitespace-nowrap">{r.line ? testedText(r.line) : null}</span>;
+      return <span className="whitespace-nowrap">{r.line ? testedText(r.evidence, evidence) : null}</span>;
     case "score":
       return <>{scoreText(r.score)}</>;
     case "faithful":
@@ -215,7 +223,7 @@ function Cell({ r, col, expanded, onExpand }: { r: Row; col: ColKey; expanded: b
 
 /** A row on a phone: the name, where it sits, who left, and the numbers in one wrapping strip. A
  *  tap on the + queues the line for a drill (and takes it out again). */
-function RowCard({ r, queued, bookFiltered, onToggle }: { r: Row; queued: boolean; bookFiltered: boolean; onToggle: () => void }) {
+function RowCard({ r, queued, bookFiltered, onToggle, evidence }: { r: Row; queued: boolean; bookFiltered: boolean; onToggle: () => void; evidence: Evidence }) {
   const [open, setOpen] = useState(false);
   // The book is named unless the Book filter already names it on every card.
   const place = r.kind === "lines" ? where(r, bookFiltered) : r.kind === "chapters" && !bookFiltered ? r.book : null;
@@ -253,19 +261,19 @@ function RowCard({ r, queued, bookFiltered, onToggle }: { r: Row; queued: boolea
           </p>
           {r.line && (
             <p className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-zinc-500">
-              {troubleText(r.line) && stat("trouble spot", troubleText(r.line), colTitle("trouble"))}
-              {stat("tested", testedText(r.line), colTitle("tested"))}
+              {troubleText(r.evidence, evidence) && stat("trouble spot", troubleText(r.evidence, evidence), colTitle("trouble"))}
+              {stat("tested", testedText(r.evidence, evidence), colTitle("tested"))}
               {stat("practice", recentText(r.line), colTitle("recent"))}
-              {r.line.decisions_total > 0 && (
+              {r.evidence !== undefined && r.evidence.decisions_total > 0 && (
                 <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="underline">
                   {open ? "hide decisions" : "decisions"}
                 </button>
               )}
             </p>
           )}
-          {open && r.line && (
+          {open && r.evidence !== undefined && (
             <div className="mt-1">
-              <Decisions l={r.line} />
+              <Decisions e={r.evidence} />
             </div>
           )}
         </div>
@@ -302,7 +310,7 @@ function DecisionLines({ d, lines, queue, onToggle }: { d: DecisionRow; lines: L
   const [walk, setWalk] = useState<Walk | null>(null);
   const open = (id: number, ply: number) => walk !== null && walk.id === id && walk.ply === ply;
   // The own move number of a ply, for the label: the line's decision at that ply carries it.
-  const moveAt = (row: Row, ply: number) => row.line?.decisions.find((dec) => dec[0] === ply)?.[1];
+  const moveAt = (row: Row, ply: number) => (hasEvidence(row.evidence) ? row.evidence.decisions.find((dec) => dec[0] === ply)?.[1] : undefined);
   return (
     <div className="space-y-2 text-xs" data-testid="decision-lines">
       <p className="text-zinc-500">
@@ -499,6 +507,12 @@ export default function RepertoireReport() {
   // One read for the whole page: the lines table, both colours' gaps and the decisions, over the
   // scope the URL names (the server clamps it to the analysis window and says what it used).
   const report = useApi(() => getReport(timeClass, games), [timeClass, games]);
+  // The second read, issued with the first: the decision evidence for the same scope. The table
+  // paints from the first; these cells show `…` until this lands, `–` if it fails, and a late
+  // answer for a previous scope is stale and not shown (isStale: the deps that produced the data).
+  const decisionsRead = useApi(() => getReportDecisions(timeClass, games), [timeClass, games]);
+  const decisionsData = decisionsRead.data && !decisionsRead.isStale ? decisionsRead.data : null;
+  const evidenceState: Evidence = decisionsData ? "ready" : decisionsRead.error && !decisionsRead.isLoading ? "failed" : "pending";
   const lines = report.data?.lines ?? null;
   const scope = report.data?.scope ?? null;
   // A stale scope in the URL (the window shrank, or a hand-typed number) is rewritten to what the
@@ -515,7 +529,7 @@ export default function RepertoireReport() {
   const queueIds = useDrillQueue();
   const queue = useMemo(() => new Set(queueIds), [queueIds]);
 
-  const flat = useMemo(() => (lines ? flatten(lines.books) : null), [lines]);
+  const flat = useMemo(() => (lines ? flatten(lines.books, decisionsData?.lines) : null), [lines, decisionsData]);
   const drillMax = lines?.drill_max_lines ?? 50;
   const tableView: TableView = view === "decisions" ? "lines" : view;
   // The lines the filters leave, in the table's order: what "shown" means for every view. A
@@ -533,7 +547,7 @@ export default function RepertoireReport() {
   const titles = useMemo(() => new Map((flat?.lines ?? []).map((r) => [r.id, r.line?.title ?? ""])), [flat]);
 
   // The decisions view: the boards, filtered through their lines, in Study order by default.
-  const decisionRows = useMemo(() => (report.data ? sortDecisions(filterDecisions(report.data.decisions.rows, shownLineSet), decisionSort, dir) : []), [report.data, shownLineSet, decisionSort, dir]);
+  const decisionRows = useMemo(() => (decisionsData ? sortDecisions(filterDecisions(decisionsData.rows, shownLineSet), decisionSort, dir) : []), [decisionsData, shownLineSet, decisionSort, dir]);
 
   const shownLineIds = useMemo(() => shownLines.map((r) => r.id), [shownLines]);
   const allShownQueued = shownLineIds.length > 0 && shownLineIds.every((id) => queue.has(id));
@@ -726,17 +740,28 @@ export default function RepertoireReport() {
               {listedCount < shownCount ? `, first ${listedCount} listed` : ""}
             </span>
           </div>
-          {view === "decisions" && report.data && (
+          {evidenceState === "failed" && view !== "decisions" && (
+            <p role="alert" className="mb-2 text-xs text-red-600 dark:text-red-400">
+              The decisions could not be read ({decisionsRead.error}); the Trouble spot and Tested columns are empty.
+            </p>
+          )}
+          {view === "decisions" && decisionsData && (
             <div className="mb-2 space-y-2">
               <p className="text-xs text-zinc-500">
                 A decision is a board where your repertoire prescribes a move; its games are every game in scope that reached the board — matched to the line, to another, or to none — so these are not the Games column's games. One board is one row, however many lines run through it.
-                {report.data.decisions.unknown_loads > 0 ? ` ${report.data.decisions.unknown_loads} practice ${report.data.decisions.unknown_loads === 1 ? "load" : "loads"} could not be read and count nowhere.` : ""}
+                {decisionsData.unknown_loads > 0 ? ` ${decisionsData.unknown_loads} practice ${decisionsData.unknown_loads === 1 ? "load" : "loads"} could not be read and count nowhere.` : ""}
               </p>
-              <Contested boards={report.data.decisions.contested} titles={titles} />
+              <Contested boards={decisionsData.contested} titles={titles} />
             </div>
           )}
           {view === "decisions" ? (
-            decisionRows.length === 0 ? (
+            evidenceState === "pending" ? (
+              <p className="text-sm text-zinc-500" data-testid="decisions-loading">Loading the decisions…</p>
+            ) : evidenceState === "failed" ? (
+              <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+                The decisions could not be read: {decisionsRead.error}
+              </p>
+            ) : decisionRows.length === 0 ? (
               <p className="text-sm text-zinc-500">No decision of yours was reached in these games.</p>
             ) : wide ? (
               <div className={`overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800 ${report.isStale ? "opacity-60" : ""}`}>
@@ -870,15 +895,15 @@ export default function RepertoireReport() {
                         </td>
                         {columns.map((c) => (
                           <td key={c.key} className={`px-1.5 py-1.5 ${c.numeric ? "text-right tabular-nums" : ""} ${c.key === "line" || c.key === "book" || c.key === "chapter" ? "" : "whitespace-nowrap"}`}>
-                            <Cell r={r} col={c.key} expanded={open} onExpand={() => toggleExpanded(r.key)} />
+                            <Cell r={r} col={c.key} expanded={open} onExpand={() => toggleExpanded(r.key)} evidence={evidenceState} />
                           </td>
                         ))}
                       </tr>,
-                      open && r.line ? (
+                      open && r.evidence !== undefined ? (
                         <tr key={`${r.key}:decisions`} className="bg-zinc-50 dark:bg-zinc-900/40">
                           <td />
                           <td colSpan={columns.length} className="px-1.5 py-2">
-                            <Decisions l={r.line} />
+                            <Decisions e={r.evidence} />
                           </td>
                         </tr>
                       ) : null,
@@ -890,7 +915,7 @@ export default function RepertoireReport() {
           ) : (
             <ul className={`rounded-lg border border-zinc-200 dark:border-zinc-800 ${report.isStale ? "opacity-60" : ""}`} data-testid="report-cards" data-view={view}>
               {listedRows.map((r) => (
-                <RowCard key={r.key} r={r} queued={isQueued(r)} bookFiltered={filters.book !== null} onToggle={() => toggleRow(r)} />
+                <RowCard key={r.key} r={r} queued={isQueued(r)} bookFiltered={filters.book !== null} onToggle={() => toggleRow(r)} evidence={evidenceState} />
               ))}
             </ul>
           )}

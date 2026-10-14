@@ -180,9 +180,13 @@ def test_the_line_report_route(client: TestClient) -> None:
     assert client.get("/repertoire/report", params={"games": 5000}).json()["scope"]["games"] == 1000
     assert client.get("/repertoire/report", params={"games": 250}).json()["scope"]["games"] == 250
     assert client.get("/repertoire/report", params={"games": "abc"}).status_code == 422
-    rows = out["decisions"]["rows"]
+    assert "decisions" not in out and line["recent"] == [] and "trouble_spot" not in line  # the second read's
+    view = client.get("/repertoire/report/decisions", params={"time_class": "all"}).json()
+    rows = view["rows"]
     assert rows and all(r["lines"] and r["lines"][0][1] for r in rows) and "board" not in rows[0]
-    assert line["trouble_spot"]["own_move"] == 3 and line["recent"] == []
+    assert view["lines"][str(line["id"])]["trouble_spot"]["own_move"] == 3 and view["scope"]["games"] == 500
+    assert client.get("/repertoire/report/decisions", params={"games": 5000}).json()["scope"]["games"] == 1000
+    assert client.get("/repertoire/report/decisions", params={"time_class": "nope"}).status_code == 422
     empty = {"no_book": False, "prepared": [], "gaps": [], "prefill_plies": 10, "max_plies": 60}
     assert out["gaps"]["white"] == {
         "colour": "white",

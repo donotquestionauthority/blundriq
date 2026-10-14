@@ -71,6 +71,7 @@ class Load:
     line_id: int
     at: datetime | None
     verdict: str  # OK | FAIL | UNKNOWN
+    complete: bool  # OK and the trace reproduced every player ply of the puzzle: the whole line
     reached: list[tuple[str, bool]]  # (canonical board, success) per decision the trace reached, in order
     through: int | None  # the own-move number of the last decision the trace reproduced; None for UNKNOWN
     failed_at: int | None  # the own-move number of the failed decision; FAIL only
@@ -118,11 +119,15 @@ def _same_move(fen: str, token: str, expected: str) -> bool | None:
     return given == wanted
 
 
-def classify(puzzle: Puzzle, moves_played: str | None) -> tuple[str, list[tuple[str, bool]], int | None, int | None]:
-    """`(verdict, reached, through, failed_at)` for one trace against its puzzle."""
+def classify(
+    puzzle: Puzzle, moves_played: str | None
+) -> tuple[str, list[tuple[str, bool]], int | None, int | None, bool]:
+    """`(verdict, reached, through, failed_at, complete)` for one trace against its puzzle;
+    `complete` is the whole line reproduced — every player ply of the puzzle — decided here from
+    the trace and the puzzle's own plies, never from a count or a line's decision list."""
     trace = [m.strip() for m in (moves_played or "").split(",") if m.strip()]
     if not trace or len(trace) > len(puzzle.player_plies):
-        return UNKNOWN, [], None, None
+        return UNKNOWN, [], None, None, False
     reached: list[tuple[str, bool]] = []
     through: int | None = None
     for j, token in enumerate(trace):
@@ -137,14 +142,14 @@ def classify(puzzle: Puzzle, moves_played: str | None) -> tuple[str, list[tuple[
             continue
         same = _same_move(fen, token, expected)
         if same is None:
-            return UNKNOWN, [], None, None
+            return UNKNOWN, [], None, None, False
         if same:
             reached.append((board_key, True))
             through = own_move
             continue
         reached.append((board_key, False))
-        return FAIL, reached, through, own_move
-    return OK, reached, through, None
+        return FAIL, reached, through, own_move, False
+    return OK, reached, through, None, len(trace) == len(puzzle.player_plies)
 
 
 def read(conn: Connection[Any], line_ids: list[int]) -> list[Load]:
@@ -161,21 +166,21 @@ def read(conn: Connection[Any], line_ids: list[int]) -> list[Load]:
         puzzle = puzzles.get(int(r["puzzle_id"]))
         if puzzle is None:
             continue
-        verdict, reached, through, failed_at = classify(puzzle, r["moves_played"])
-        out.append(Load(int(r["line_id"]), r["attempt_at"], verdict, reached, through, failed_at))
+        verdict, reached, through, failed_at, complete = classify(puzzle, r["moves_played"])
+        out.append(Load(int(r["line_id"]), r["attempt_at"], verdict, complete, reached, through, failed_at))
     return out
 
 
 def recent_by_line(loads: list[Load]) -> dict[int, Row]:
-    """{line_id: {"recent": [[verdict, through, failed_at]] newest first (RECENT at most),
-    "unknown": n}} — the strip and the count of loads whose trace did not replay."""
+    """{line_id: {"recent": [[verdict, through, failed_at, complete]] newest first (RECENT at
+    most), "unknown": n}} — the strip and the count of loads whose trace did not replay."""
     out: dict[int, Row] = {}
     for ld in loads:
         row = out.setdefault(ld.line_id, {"recent": [], "unknown": 0})
         if ld.verdict == UNKNOWN:
             row["unknown"] += 1
         if len(row["recent"]) < RECENT:
-            row["recent"].append([ld.verdict, ld.through, ld.failed_at])
+            row["recent"].append([ld.verdict, ld.through, ld.failed_at, ld.complete])
     return out
 
 

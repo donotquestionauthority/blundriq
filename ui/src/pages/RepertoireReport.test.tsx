@@ -3,7 +3,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import RepertoireReport, { PAGE } from "./RepertoireReport";
 import { decisionKey, decisionLineCount, decisionLines, filterDecisions, filterRows, flatten, sortDecisions, sortRows } from "./reportRows";
-import type { DecisionRow, GapCard, GapsResponse, PracticeNumbers, ReportBook, ReportLine, ReportResponse, ReportTally } from "../repertoire";
+import type { DecisionRow, DecisionsResponse, GapCard, GapsResponse, LineEvidenceOrCount, PracticeNumbers, ReportBook, ReportLine, ReportResponse, ReportTally } from "../repertoire";
 import { readQueue, resetQueueForTests } from "../utils/drillQueue";
 import pageSource from "./RepertoireReport?raw";
 
@@ -33,7 +33,7 @@ vi.mock("../components/AddLineModal", () => ({
   ),
 }));
 
-type Reply = { status: number; body: unknown };
+type Reply = { status: number; body: unknown; wait?: Promise<void> };
 function stubFetch(routes: Record<string, (query: URLSearchParams) => Reply>) {
   const calls: Array<{ path: string; query: URLSearchParams }> = [];
   vi.stubGlobal(
@@ -45,6 +45,7 @@ function stubFetch(routes: Record<string, (query: URLSearchParams) => Reply>) {
       const h = routes[rawPath];
       if (!h) return { ok: false, status: 404, statusText: "Not Found", json: async () => ({ detail: "no route" }) };
       const r = h(call.query);
+      if (r.wait) await r.wait;
       return { ok: r.status < 400, status: r.status, statusText: String(r.status), json: async () => r.body };
     }),
   );
@@ -80,24 +81,21 @@ const line = (over: Partial<ReportLine> = {}): ReportLine => ({
   book_id: 1,
   chapter_id: 1,
   practice: practice(),
-  decisions: [
-    [0, 1, "e4", "clean", 3, 0],
-    [2, 2, "Nf3", "clean", 3, 0],
-    [4, 3, "Bc4", "slipped", 3, 1],
-  ],
-  decisions_total: 3,
-  tested: 3,
-  deepest_tested: 3,
-  correct_through: 2,
-  trouble_spot: { own_move: 3, move: "Bc4", slips: 1, opportunities: 3 },
   recent: [
-    ["ok", 3, null],
-    ["fail", 2, 3],
+    ["ok", 3, null, true],
+    ["fail", 2, 3, false],
   ],
   unknown_loads: 0,
   ...over,
 });
-const untested = (): Partial<ReportLine> => ({ decisions: [[0, 1, "e4", "untested", 0, 0]], decisions_total: 1, tested: 0, deepest_tested: null, correct_through: null, trouble_spot: null, recent: [], unknown_loads: 0 });
+/** The second read's evidence for the fixture lines: Main (id 1) tested with a trouble spot,
+ *  Evans (id 2) never reached (its count alone), Line C (id 3) like Main. */
+const evidence = (): Record<string, LineEvidenceOrCount> => ({
+  "1": { decisions: [[0, 1, "e4", "clean", 3, 0], [2, 2, "Nf3", "clean", 3, 0], [4, 3, "Bc4", "slipped", 3, 1]], decisions_total: 3, tested: 3, deepest_tested: 3, correct_through: 2, trouble_spot: { own_move: 3, move: "Bc4", slips: 1, opportunities: 3 } },
+  "2": { decisions_total: 1 },
+  "3": { decisions: [[1, 1, "d5", "slipped", 9, 5]], decisions_total: 3, tested: 1, deepest_tested: 1, correct_through: null, trouble_spot: { own_move: 1, move: "d5", slips: 5, opportunities: 9 } },
+});
+const untested = (): Partial<ReportLine> => ({ recent: [], unknown_loads: 0 });
 const decision = (over: Partial<DecisionRow> = {}): DecisionRow => ({
   colour: "white",
   own_move: 3,
@@ -175,13 +173,27 @@ const card = (over: Partial<GapCard> = {}): GapCard => ({
   ...over,
 });
 const gaps = (colour: "white" | "black", over: Partial<GapsResponse> = {}): GapsResponse => ({ colour, no_book: false, prepared: [], gaps: [], destinations: colour === "white" ? [{ id: 1, title: "Giuoco", book_id: 1, book: "Italian" }] : [], prefill_plies: 10, max_plies: 60, ...over });
-/** The one read: the lines, both colours' gaps, the decisions and the scope the server used. */
+const SCOPE = { games: 500, limit: 1000, options: [100, 250, 500, 1000] };
+/** The first read: the lines, both colours' gaps and the scope the server used. */
 const reportBody = (b: ReportBook[] = books(), white: Partial<GapsResponse> = {}, black: Partial<GapsResponse> = {}, drillMax = 50, extra: Partial<ReportResponse> = {}): ReportResponse => ({
   lines: { books: b, drill_max_lines: drillMax },
   gaps: { white: gaps("white", white), black: gaps("black", black) },
-  decisions: { rows: [decision(), decision({ colour: "black", own_move: 1, move: "d5", opportunities: 9, slips: 5, most_played: "e5", last_slip: "2026-10-12T10:00:00+00:00", lines: [[1, [3]]], pick: 3, practice: { failed: 0, of: 0 } })], contested: [], unknown_loads: 0 },
-  scope: { games: 500, limit: 1000, options: [100, 250, 500, 1000] },
+  scope: SCOPE,
   ...extra,
+});
+/** The second read: the decisions and each line's evidence for the same scope. */
+const decisionsBody = (extra: Partial<DecisionsResponse> = {}): DecisionsResponse => ({
+  rows: [decision(), decision({ colour: "black", own_move: 1, move: "d5", opportunities: 9, slips: 5, most_played: "e5", last_slip: "2026-10-12", lines: [[1, [3]]], pick: 3, practice: { failed: 0, of: 0 } })],
+  contested: [],
+  unknown_loads: 0,
+  lines: evidence(),
+  scope: SCOPE,
+  ...extra,
+});
+/** Both routes answering at once, the common case of these tests. */
+const bothRoutes = (body: ReportResponse = reportBody(), view: DecisionsResponse = decisionsBody()) => ({
+  "/repertoire/report": () => ({ status: 200, body }),
+  "/repertoire/report/decisions": () => ({ status: 200, body: view }),
 });
 
 function Location() {
@@ -228,19 +240,29 @@ describe("the rows", () => {
     expect(sortRows(flat.lines, "study", "desc").map((r) => r.id)).toEqual([3, 1, 2]);
     const tied = flat.lines.map((r) => ({ ...r, left_by_me: 1 }));
     expect(sortRows(tied, "study", "desc").map((r) => r.id)).toEqual([3, 1, 2]); // 10-12, 10-09, null
-    expect(sortRows(flat.lines, "trouble", "desc").map((r) => r.id)).toEqual([1, 3, 2]); // Evans has none: last
-    expect(sortRows(flat.lines, "tested", "desc").map((r) => r.id)).toEqual([1, 3, 2]);
+    // The decision keys sort on the second read's evidence: null for every row until it lands.
+    expect(sortRows(flat.lines, "trouble", "desc").map((r) => r.id)).toEqual([2, 1, 3]); // all null: the tie-break (book › chapter › title)
+    const withEvidence = flatten(books(), evidence()).lines;
+    expect(sortRows(withEvidence, "trouble", "desc").map((r) => r.id)).toEqual([3, 1, 2]); // 5 slips, 1, none (last)
+    expect(sortRows(withEvidence, "tested", "desc").map((r) => r.id)).toEqual([1, 3, 2]); // 3/3 and 1/1 tie by the tie-break; the count-only line last
     expect(sortRows(flat.lines, "last_slip", "asc").map((r) => r.id)).toEqual([1, 3, 2]);
   });
 
   it("a repeated board keeps the line's own move numbers, so a short trace is not the whole line", async () => {
-    const knights = line({ id: 7, title: "Knights", decisions: [[0, 1, "Nf3", "clean", 1, 0], [2, 2, "Ng1", "clean", 1, 0], [4, 3, "Nf3", "clean", 1, 0], [6, 4, "g3", "untested", 0, 0]], decisions_total: 4, tested: 3, deepest_tested: 3, correct_through: 3, trouble_spot: null, recent: [["ok", 1, null]], depth_total: 4 });
-    stubFetch({ "/repertoire/report": () => ({ status: 200, body: reportBody([{ ...books()[0], chapters: [{ ...books()[0].chapters[0], lines: [knights] }] }]) }) });
-    renderPage();
+    // "whole line" is the trace's own fact (complete), not a comparison with any count or list: the
+    // same `through` with complete true reads "whole line"; the Tested cell comes from the second read.
+    const knights = line({ id: 7, title: "Knights", recent: [["ok", 1, null, false]], depth_total: 4 });
+    const whole = line({ id: 8, title: "Whole", recent: [["ok", 1, null, true]], depth_total: 4 });
+    stubFetch(bothRoutes(reportBody([{ ...books()[0], chapters: [{ ...books()[0].chapters[0], lines: [knights, whole] }] }]), decisionsBody({ rows: [], lines: { "7": { decisions: [[0, 1, "Nf3", "clean", 1, 0], [2, 2, "Ng1", "clean", 1, 0], [4, 3, "Nf3", "clean", 1, 0], [6, 4, "g3", "untested", 0, 0]], decisions_total: 4, tested: 3, deepest_tested: 3, correct_through: 3, trouble_spot: null }, "8": { decisions_total: 2 } } })));
+    renderPage("/repertoire/report?sort=line&dir=asc");
     await screen.findByTestId("report-table");
-    const row = screen.getAllByTestId("report-row-lines")[0];
-    expect(within(row).getAllByRole("cell")[15].textContent).toBe("✓ · newest: right up to move 1");
-    expect(within(row).getAllByRole("cell")[9].textContent).toBe("3 of 4 · correct through move 3");
+    const rows = screen.getAllByTestId("report-row-lines");
+    await waitFor(() => expect(within(rows[0]).getAllByRole("cell")[9].textContent).toBe("3 of 4 · correct through move 3"));
+    expect(within(rows[0]).getAllByRole("cell")[15].textContent).toBe("✓ · newest: right up to move 1");
+    expect(within(rows[1]).getAllByRole("cell")[15].textContent).toBe("✓ · newest: whole line");
+    expect(within(rows[1]).getAllByRole("cell")[9].textContent).toBe("0 of 2 · all untested"); // sent as its count alone
+    fireEvent.click(within(rows[1]).getByRole("button", { name: "decisions" }));
+    expect(screen.getByTestId("line-decisions").textContent).toBe("None of its 2 decisions was reached in these games.");
   });
 
   it("a line that reaches the board twice is one line with two occurrences", () => {
@@ -272,15 +294,13 @@ describe("the page's words", () => {
     // "through it/the board" (the lines a board sits on); the only template is the prefix's.
     const through = strings.filter((t) => /\bthrough\b/i.test(t) && !/walk through|through it|through the|through this board|runs? through|run through|correct through move/i.test(t) && t !== "through" && !t.includes("${through}") && !t.includes(".through"));
     expect(through).toEqual([]);
-    expect(pageSource).toContain("`correct through move ${l.correct_through}`");
+    expect(pageSource).toContain("`correct through move ${e.correct_through}`");
   });
 });
 
 describe("the line report page", () => {
   it("shows one flat table ordered by games with the book and chapter on each row, the practice numbers, the custom chip, and sorts on a header", async () => {
-    const calls = stubFetch({
-      "/repertoire/report": () => ({ status: 200, body: reportBody() }),
-    });
+    const calls = stubFetch(bothRoutes());
     renderPage();
     const table = await screen.findByTestId("report-table");
     expect(table).toHaveAttribute("data-view", "lines");
@@ -291,6 +311,7 @@ describe("the line report page", () => {
     expect(cells(1).slice(1, 5)).toEqual(["White", "Italian", "Giuoco", expect.stringContaining("Main")]);
     expect(cells(1)[5]).toBe("32–0–1");
     // Games, Slips and Last slip side by side; the trouble spot and the tested count with their denominators.
+    await waitFor(() => expect(cells(1)[8]).toBe("Move 3 Bc4 · missed 1 of 3")); // the second read landed
     expect(cells(1).slice(6, 10)).toEqual(["1", "2026-10-09", "Move 3 Bc4 · missed 1 of 3", "3 of 3 · correct through move 2"]);
     expect(cells(1).slice(10, 15)).toEqual(["67%", "67%", "3 of 3", "5", "3 ✓ · 2 ✗"]);
     expect(cells(1)[15]).toBe("✓ ✗ · newest: whole line");
@@ -299,7 +320,7 @@ describe("the line report page", () => {
     expect(within(rows[1]).getByText(/newest: whole line/)).toBeInTheDocument();
     expect(cells(1)).toHaveLength(17);
     expect(cells(2)[8]).toBe("–"); // no trouble spot
-    expect(cells(2)[9]).toBe("0 of 1"); // untested: no "through"
+    expect(cells(2)[9]).toBe("0 of 1 · all untested"); // sent as its count alone: no "through"
     expect(cells(2)[15]).toBe("no practice yet");
     expect(within(rows[1]).queryByText(/You left at your move/)).toBeNull(); // the boundary-slip display gave way to the trouble spot
     // The line's decisions expand under the row, holes visible.
@@ -307,6 +328,10 @@ describe("the line report page", () => {
     expect(screen.getByTestId("line-decisions").textContent).toBe("1. e4 ✓ 3 of 32. Nf3 ✓ 3 of 33. Bc4 ✗ missed 1 of 3");
     fireEvent.click(within(rows[1]).getByRole("button", { name: "hide decisions" }));
     expect(screen.queryByTestId("line-decisions")).toBeNull();
+    // An untested tail is a count; a hole stays listed (a decisions-level fact, rendered here).
+    fireEvent.click(within(rows[0]).getByRole("button", { name: "decisions" }));
+    expect(screen.getByTestId("line-decisions").textContent).toBe("1. d5 ✗ missed 5 of 9then 2 untested");
+    fireEvent.click(within(rows[0]).getByRole("button", { name: "hide decisions" }));
     expect(within(rows[2]).getByText("custom")).toBeInTheDocument();
     expect(within(rows[2]).getByText("shared")).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: /Games/ })).toHaveAttribute("aria-sort", "descending");
@@ -324,9 +349,7 @@ describe("the line report page", () => {
   });
 
   it("the chapter and book views, the filters, select all shown, and Drill in the table's order", async () => {
-    stubFetch({
-      "/repertoire/report": () => ({ status: 200, body: reportBody() }),
-    });
+    stubFetch(bothRoutes());
     renderPage();
     await screen.findByTestId("report-table");
     fireEvent.click(screen.getByRole("tab", { name: "By chapter" }));
@@ -365,9 +388,7 @@ describe("the line report page", () => {
   });
 
   it("the book filter narrows the chapter filter; the origin filter; the state round-trips through the URL", async () => {
-    stubFetch({
-      "/repertoire/report": () => ({ status: 200, body: reportBody() }),
-    });
+    stubFetch(bothRoutes());
     renderPage("/repertoire/report?view=chapters&sort=book&dir=asc&book=1&colour=white");
     await screen.findByTestId("report-table");
     expect(screen.getByTestId("report-table")).toHaveAttribute("data-view", "chapters");
@@ -386,9 +407,7 @@ describe("the line report page", () => {
   });
 
   it("a container row and Select all shown reach only the lines the filters leave; the queue keeps what a filter later hides", async () => {
-    stubFetch({
-      "/repertoire/report": () => ({ status: 200, body: reportBody() }),
-    });
+    stubFetch(bothRoutes());
     renderPage("/repertoire/report?view=chapters&origin=manual");
     await screen.findByTestId("report-table");
     // Origin applies to lines: the Giuoco chapter row stands for Evans alone.
@@ -417,9 +436,7 @@ describe("the line report page", () => {
   });
 
   it("the queue is this tab's: it is in sessionStorage, and page state alone when storage throws", async () => {
-    stubFetch({
-      "/repertoire/report": () => ({ status: 200, body: reportBody() }),
-    });
+    stubFetch(bothRoutes());
     const { unmount } = renderPage();
     await screen.findByTestId("report-table");
     fireEvent.click(screen.getByLabelText("Select Main"));
@@ -436,8 +453,10 @@ describe("the line report page", () => {
   });
 
   it("the scope: the server's effective games are shown, the options come from it, a stale URL is rewritten, and every read carries it", async () => {
+    const scopeOf = (q: URLSearchParams) => ({ games: Math.min(Number(q.get("games") ?? 500), 1000), limit: 1000, options: [100, 250, 500, 1000] });
     const calls = stubFetch({
-      "/repertoire/report": (q) => ({ status: 200, body: reportBody(books(), {}, {}, 50, { scope: { games: Math.min(Number(q.get("games") ?? 500), 1000), limit: 1000, options: [100, 250, 500, 1000] } }) }),
+      "/repertoire/report": (q) => ({ status: 200, body: reportBody(books(), {}, {}, 50, { scope: scopeOf(q) }) }),
+      "/repertoire/report/decisions": (q) => ({ status: 200, body: decisionsBody({ scope: scopeOf(q) }) }),
     });
     renderPage("/repertoire/report?games=5000");
     await screen.findByTestId("report-table");
@@ -454,13 +473,12 @@ describe("the line report page", () => {
     expect(within(screen.getAllByLabelText("Games")[1]).getAllByRole("option").map((o) => o.textContent)).toEqual(["Last 60", "Last 100", "Last 250", "Last 500", "All (1000)"]);
     // The rewritten URL re-read once at the effective scope (a stale URL only), then the choice, then the second page.
     expect(calls.filter((c) => c.path === "/repertoire/report").map((c) => c.query.get("games"))).toEqual(["5000", "1000", "250", "60"]);
+    expect(calls.filter((c) => c.path === "/repertoire/report/decisions").map((c) => c.query.get("games"))).toEqual(["5000", "1000", "250", "60"]); // issued with the first, every time
   });
 
   it("a drill over the cap is refused on the page", async () => {
     const many: ReportBook[] = [{ ...books()[0], chapters: [{ ...books()[0].chapters[0], lines: Array.from({ length: 51 }, (_, i) => line({ id: 100 + i, title: `L${i}` })) }] }];
-    stubFetch({
-      "/repertoire/report": () => ({ status: 200, body: reportBody(many) }),
-    });
+    stubFetch(bothRoutes(reportBody(many), decisionsBody({ rows: [], lines: {} })));
     renderPage();
     await screen.findByTestId("report-table");
     fireEvent.click(screen.getByLabelText("Select all shown"));
@@ -483,7 +501,7 @@ describe("the line report page", () => {
         const [, q] = url.replace(/^.*\/api/, "").split("?");
         const tc = new URLSearchParams(q).get("time_class");
         if (tc === "focus") await slow;
-        const body = reportBody(tc === "focus" ? books() : []);
+        const body = url.includes("/decisions") ? decisionsBody({ rows: [], lines: {} }) : reportBody(tc === "focus" ? books() : []);
         return { ok: true, status: 200, statusText: "200", json: async () => body };
       }),
     );
@@ -496,10 +514,93 @@ describe("the line report page", () => {
   });
 
 
-  it("the Sort control sorts like a header: text ascending, numbers descending, the arrow flips", async () => {
+  it("progressive loading: the table paints, sorts and queues before the decisions land; the cells fill when they do", async () => {
+    let release: (() => void) | null = null;
+    const slow = new Promise<void>((r) => {
+      release = r;
+    });
     stubFetch({
       "/repertoire/report": () => ({ status: 200, body: reportBody() }),
+      "/repertoire/report/decisions": () => ({ status: 200, body: decisionsBody(), wait: slow }),
     });
+    renderPage();
+    await screen.findByTestId("report-table");
+    const rows = screen.getAllByTestId("report-row-lines");
+    const cells = (i: number) => within(rows[i]).getAllByRole("cell").map((c) => c.textContent);
+    expect(cells(1)[8]).toBe("…");
+    expect(cells(1)[9]).toBe("…");
+    expect(cells(1)[15]).toBe("✓ ✗ · newest: whole line"); // the strip is the first read's
+    expect(within(rows[1]).queryByRole("button", { name: "decisions" })).toBeNull();
+    // Usable now: Study order, the queue, the drill.
+    fireEvent.change(screen.getByLabelText("Sort"), { target: { value: "study" } });
+    expect(firstCells(4).map((c) => /^(Evans|Main|Line C)/.exec(c ?? "")?.[1])).toEqual(["Line C", "Main", "Evans"]);
+    fireEvent.click(screen.getByLabelText("Select Main"));
+    expect(screen.getByTestId("queued-count").textContent).toBe("1 queued");
+    expect(screen.getByRole("button", { name: "Drill queue" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("tab", { name: "By decision" }));
+    expect(screen.getByTestId("decisions-loading")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "By line" }));
+    release!();
+    await waitFor(() => expect(within(screen.getAllByTestId("report-row-lines")[1]).getAllByRole("cell")[8].textContent).toBe("Move 3 Bc4 · missed 1 of 3"));
+    expect(within(screen.getAllByTestId("report-row-lines")[1]).getByRole("button", { name: "decisions" })).toBeInTheDocument();
+    expect(readQueue()).toEqual([1]);
+  });
+
+  it("progressive loading: the decisions answering first, and failing, leave the table whole", async () => {
+    let release: (() => void) | null = null;
+    const slow = new Promise<void>((r) => {
+      release = r;
+    });
+    stubFetch({
+      "/repertoire/report": () => ({ status: 200, body: reportBody(), wait: slow }),
+      "/repertoire/report/decisions": () => ({ status: 200, body: decisionsBody() }),
+    });
+    const first = renderPage();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByTestId("report-table")).toBeNull(); // nothing to paint without the lines
+    release!();
+    await screen.findByTestId("report-table");
+    expect(within(screen.getAllByTestId("report-row-lines")[1]).getAllByRole("cell")[8].textContent).toBe("Move 3 Bc4 · missed 1 of 3"); // filled at once
+    first.unmount();
+    vi.unstubAllGlobals();
+    stubFetch({
+      "/repertoire/report": () => ({ status: 200, body: reportBody() }),
+      "/repertoire/report/decisions": () => ({ status: 500, body: { detail: "boom" } }),
+    });
+    renderPage();
+    await screen.findByTestId("report-table");
+    await screen.findByRole("alert");
+    const rows = screen.getAllByTestId("report-row-lines");
+    expect(rows).toHaveLength(3);
+    expect(within(rows[1]).getAllByRole("cell")[8].textContent).toBe("–");
+    expect(within(rows[1]).getAllByRole("cell")[9].textContent).toBe("–");
+    expect(screen.getByRole("alert").textContent).toContain("The decisions could not be read");
+    fireEvent.click(screen.getByLabelText("Select Main"));
+    expect(screen.getByRole("button", { name: "Drill queue" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("tab", { name: "By decision" }));
+    expect(screen.getByRole("alert").textContent).toContain("The decisions could not be read");
+  });
+
+  it("progressive loading: a late decisions answer for a previous scope is never shown with the current rows", async () => {
+    let release: (() => void) | null = null;
+    const slow = new Promise<void>((r) => {
+      release = r;
+    });
+    stubFetch({
+      "/repertoire/report": (q) => ({ status: 200, body: reportBody(books(), {}, {}, 50, { scope: { ...SCOPE, games: Number(q.get("games") ?? 500) } }) }),
+      "/repertoire/report/decisions": (q) => (q.get("games") === "250" ? { status: 200, body: decisionsBody({ rows: [], lines: { "1": { decisions_total: 3 } }, scope: { ...SCOPE, games: 250 } }) } : { status: 200, body: decisionsBody(), wait: slow }),
+    });
+    renderPage();
+    await screen.findByTestId("report-table");
+    fireEvent.change(screen.getByLabelText("Games"), { target: { value: "250" } });
+    await waitFor(() => expect(within(screen.getAllByTestId("report-row-lines")[1]).getAllByRole("cell")[9].textContent).toBe("0 of 3 · all untested"));
+    release!(); // the 500-games evidence lands late: stale, not applied
+    await new Promise((r) => setTimeout(r, 0));
+    expect(within(screen.getAllByTestId("report-row-lines")[1]).getAllByRole("cell")[9].textContent).toBe("0 of 3 · all untested");
+  });
+
+  it("the Sort control sorts like a header: text ascending, numbers descending, the arrow flips", async () => {
+    stubFetch(bothRoutes());
     renderPage();
     await screen.findByTestId("report-table");
     expect(within(screen.getByLabelText("Sort")).getAllByRole("option").map((o) => o.textContent)).toEqual(["Study order", "Colour", "Book", "Chapter", "Line", "Games", "Slips", "Last slip", "Trouble spot", "Tested", "Score", "Faithful", "Depth", "Loads", "First try", "Last played"]);
@@ -516,9 +617,7 @@ describe("the line report page", () => {
   });
 
   it("Study order: slips, then the latest slip, then the tie-break; it sticks in the URL and is offered in every view", async () => {
-    stubFetch({
-      "/repertoire/report": () => ({ status: 200, body: reportBody() }),
-    });
+    stubFetch(bothRoutes());
     renderPage();
     await screen.findByTestId("report-table");
     fireEvent.change(screen.getByLabelText("Sort"), { target: { value: "study" } });
@@ -533,18 +632,19 @@ describe("the line report page", () => {
   });
 
   it("the Decisions expansion: a line reaching the board twice is one entry with a walk-through per occurrence, switched directly", async () => {
-    const knights = line({ id: 1, title: "Knights", decisions: [[0, 1, "Nf3", "clean", 1, 0], [2, 2, "Ng1", "clean", 1, 0], [4, 3, "Nf3", "clean", 1, 0]], decisions_total: 3, tested: 3, deepest_tested: 3, correct_through: 3, trouble_spot: null });
-    stubFetch({
-      "/repertoire/report": () => ({
-        status: 200,
-        body: reportBody([{ ...books()[0], chapters: [{ ...books()[0].chapters[0], lines: [knights, line({ id: 2, title: "Short" })] }] }], {}, {}, 50, {
-          decisions: { rows: [decision({ own_move: 1, move: "Nf3", opportunities: 1, slips: 0, most_played: null, lines: [[0, [1, 2]], [4, [1]]], pick: 1 })], contested: [], unknown_loads: 0 },
+    const knights = line({ id: 1, title: "Knights" });
+    stubFetch(
+      bothRoutes(
+        reportBody([{ ...books()[0], chapters: [{ ...books()[0].chapters[0], lines: [knights, line({ id: 2, title: "Short" })] }] }]),
+        decisionsBody({
+          rows: [decision({ own_move: 1, move: "Nf3", opportunities: 1, slips: 0, most_played: null, lines: [[0, [1, 2]], [4, [1]]], pick: 1 })],
+          lines: { "1": { decisions: [[0, 1, "Nf3", "clean", 1, 0], [2, 2, "Ng1", "clean", 1, 0], [4, 3, "Nf3", "clean", 1, 0]], decisions_total: 3, tested: 3, deepest_tested: 3, correct_through: 3, trouble_spot: null }, "2": { decisions_total: 2 } },
         }),
-      }),
-    });
+      ),
+    );
     renderPage("/repertoire/report?view=decisions");
     await screen.findByTestId("report-table");
-    const row = screen.getAllByTestId("report-row-decisions")[0];
+    const row = (await screen.findAllByTestId("report-row-decisions"))[0];
     fireEvent.click(within(row).getByRole("button", { name: "2 lines" }));
     const lines = screen.getByTestId("decision-lines");
     expect(lines.textContent).toContain("One decision · 2 lines.");
@@ -562,23 +662,20 @@ describe("the line report page", () => {
   });
 
   it("the Decisions view: one row per board in Study order, the lines beneath, the pick queued with +, a walk-through, the contested notice, and the filters through the lines", async () => {
-    stubFetch({
-      "/repertoire/report": () => ({
-        status: 200,
-        body: reportBody(books(), {}, {}, 50, {
-          decisions: {
-            rows: [decision(), decision({ colour: "black", own_move: 1, move: "d5", opportunities: 9, slips: 5, most_played: "e5", last_slip: "2026-10-12T10:00:00+00:00", lines: [[1, [3]]], pick: 3, practice: { failed: 0, of: 0 } })],
-            contested: [{ colour: "white", fen: "x w KQkq - 0 3", own_move: 3, alternatives: [{ move: "c4", line_ids: [1] }, { move: "g3", line_ids: [2] }], line_ids: [1, 2] }],
-            unknown_loads: 1,
-          },
+    stubFetch(
+      bothRoutes(
+        reportBody(),
+        decisionsBody({
+          contested: [{ colour: "white", fen: "x w KQkq - 0 3", own_move: 3, alternatives: [{ move: "c4", line_ids: [1] }, { move: "g3", line_ids: [2] }], line_ids: [1, 2] }],
+          unknown_loads: 1,
         }),
-      }),
-    });
+      ),
+    );
     renderPage();
     await screen.findByTestId("report-table");
     fireEvent.click(screen.getByRole("tab", { name: "By decision" }));
     expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?view=decisions");
-    expect(screen.getByTestId("report-table")).toHaveAttribute("data-view", "decisions");
+    await waitFor(() => expect(screen.getByTestId("report-table")).toHaveAttribute("data-view", "decisions"));
     expect(screen.getByLabelText("Sort")).toHaveValue("study");
     expect(screen.getByText("2 decisions shown")).toBeInTheDocument();
     expect(screen.getByText(/1 practice load could not be read/)).toBeInTheDocument();
@@ -628,9 +725,7 @@ describe("the line report page", () => {
 
   it("lists the first page and reveals more; a control change starts the listing over; the drill and Select all shown see every shown line", async () => {
     const many: ReportBook[] = [{ ...books()[0], chapters: [{ ...books()[0].chapters[0], lines: Array.from({ length: 205 }, (_, i) => line({ id: 100 + i, title: `L${i}`, games: 300 - i })) }] }];
-    stubFetch({
-      "/repertoire/report": () => ({ status: 200, body: reportBody(many, {}, {}, 500) }),
-    });
+    stubFetch(bothRoutes(reportBody(many, {}, {}, 500), decisionsBody({ rows: [], lines: {} })));
     renderPage();
     await screen.findByTestId("report-table");
     expect(PAGE).toBe(200);
@@ -656,9 +751,7 @@ describe("the line report page", () => {
   }, 20_000); // 200 rows rendered several times in jsdom: slow, not a race
 
   it("a sort the view does not offer falls back to games, and a view change drops it from the URL", async () => {
-    stubFetch({
-      "/repertoire/report": () => ({ status: 200, body: reportBody() }),
-    });
+    stubFetch(bothRoutes());
     renderPage("/repertoire/report?view=books&sort=depth&dir=asc");
     await screen.findByTestId("report-table");
     expect(screen.getByLabelText("Sort")).toHaveValue("games");
@@ -673,9 +766,7 @@ describe("the line report page", () => {
 
   it("on a phone the rows are cards with the same selection, the numbers in one strip and no table", async () => {
     vi.stubGlobal("matchMedia", (q: string) => ({ matches: false, media: q, addEventListener: () => {}, removeEventListener: () => {} }));
-    stubFetch({
-      "/repertoire/report": () => ({ status: 200, body: reportBody() }),
-    });
+    stubFetch(bothRoutes());
     renderPage();
     const cards = await screen.findByTestId("report-cards");
     expect(screen.queryByTestId("report-table")).toBeNull();
@@ -685,7 +776,7 @@ describe("the line report page", () => {
     expect(rows[1].textContent).toContain("White · Italian › Giuoco");
     expect(rows[1].textContent).toContain("1 slips");
     expect(rows[1].textContent).toContain("2026-10-09 last slip");
-    expect(rows[1].textContent).toContain("Move 3 Bc4 · missed 1 of 3 trouble spot");
+    await waitFor(() => expect(rows[1].textContent).toContain("Move 3 Bc4 · missed 1 of 3 trouble spot"));
     expect(rows[1].textContent).toContain("3 of 3 · correct through move 2 tested");
     expect(rows[1].textContent).toContain("✓ ✗ · newest: whole line practice");
     expect(rows[1].textContent).toContain("3 (2–0–1) games");
@@ -717,6 +808,7 @@ describe("the line report page", () => {
 
   it("shows the gaps for the colour with more of them, Add to repertoire only with a stem, Prepared but not played, and the no-book notice", async () => {
     stubFetch({
+      "/repertoire/report/decisions": () => ({ status: 200, body: decisionsBody({ rows: [], lines: {} }) }),
       "/repertoire/report": () => ({
         status: 200,
         body: reportBody(
@@ -748,6 +840,7 @@ describe("the line report page", () => {
   it("opens the modal with the card and the server's constants; a save marks the card and re-reads the report in the same turn; a cancel reads nothing", async () => {
     let saved = false;
     const calls = stubFetch({
+      "/repertoire/report/decisions": () => ({ status: 200, body: decisionsBody({ rows: [], lines: { "42": { decisions_total: 3 } } }) }),
       "/repertoire/report": () => ({ status: 200, body: reportBody(saved ? [{ ...books()[0], chapters: [{ ...books()[0].chapters[0], lines: [line({ id: 42, title: "Added line", games: 0, origin: "manual" })] }] }] : [], { gaps: [card()] }) }),
     });
     renderPage();

@@ -60,8 +60,11 @@ def _load(
 
 
 def _report(conn: psycopg.Connection[DictRow]) -> Row:
+    """Both reads, the second's rows under `decisions` (the strip is in the first)."""
     conn.commit()
-    return report.full(conn, Settings(), time_class="all")
+    out = report.full(conn, Settings(), time_class="all")
+    out["decisions"] = report.decisions_view(conn, Settings(), time_class="all")
+    return out
 
 
 def _line(out: Row, title: str) -> Row:
@@ -101,14 +104,16 @@ def _italian() -> practice.Puzzle:
 def test_a_trace_is_classified_by_what_it_reproduces(
     trace: str | None, verdict: str, oks: list[bool], through: int | None, failed_at: int | None
 ) -> None:
-    got_verdict, reached, got_through, got_failed = practice.classify(_italian(), trace)
+    got_verdict, reached, got_through, got_failed, complete = practice.classify(_italian(), trace)
     assert (got_verdict, [ok for _, ok in reached], got_through, got_failed) == (verdict, oks, through, failed_at)
+    assert complete == (got_verdict == practice.OK and len(reached) == 3)
 
 
 def test_the_reverse_alias_pair_is_a_success_too() -> None:
     stored = ["Ngf3", "d5", "g3", "c6"]
     puzzle = practice.Puzzle("white", spine(None, stored), stored, [0, 2])
-    assert practice.classify(puzzle, "Nf3,g3")[0] == practice.OK
+    assert practice.classify(puzzle, "Nf3,g3")[0] == practice.OK and practice.classify(puzzle, "Nf3,g3")[4] is True
+    assert practice.classify(puzzle, "Nf3")[4] is False  # right, but one decision short of the line
     assert practice.classify(puzzle, "Nf3,Nc3")[:2] == (
         practice.FAIL,
         [
@@ -138,7 +143,13 @@ def test_the_strip_is_the_newest_five_first_tries_with_the_tested_extent(clean: 
         _load(clean, 10, trace, solved=solved, minutes_ago=i)
     out = _report(clean)
     ln = _line(out, "Main")
-    assert ln["recent"] == [["ok", 3, None], ["fail", 1, 2], ["ok", 2, None], ["unknown", None, None], ["ok", 3, None]]
+    assert ln["recent"] == [
+        ["ok", 3, None, True],
+        ["fail", 1, 2, False],
+        ["ok", 2, None, False],
+        ["unknown", None, None, False],
+        ["ok", 3, None, True],
+    ]
     assert ln["unknown_loads"] == 1 and ln["practice"] == {"loads": 6, "first_right": 3, "first_wrong": 3}
     assert out["decisions"]["unknown_loads"] == 1
 
@@ -233,6 +244,63 @@ def test_a_load_that_reaches_a_board_twice_counts_once_there(clean: psycopg.Conn
     out = _report(clean)
     assert _practice_at(out, 1) == {"failed": 1, "of": 5}  # five distinct loads, each once
     assert [r[0] for r in _line(out, "Knights")["recent"]] == ["ok", "fail", "ok", "ok", "ok"]
+
+
+def test_whole_line_is_the_traces_fact_on_a_tabiya_rooted_line(clean: psycopg.Connection[DictRow]) -> None:
+    """Two two-decision lines, one rooted at move 9 and one at move 10, each with a trace that
+    reproduced its decisions up to move 10: `through` is 10 for both; only `complete` tells the
+    first (the whole line) from the second (one decision short), with no game evidence at all."""
+    _seed(clean)
+    nine = spine(
+        None,
+        ["d4", "Nf6", "c4", "e6", "Nf3", "d5", "g3", "Be7", "Bg2", "O-O", "O-O", "dxc4", "Qc2", "a6", "Qxc4", "b5"],
+    )[-1]  # White to move at move 9
+    ten = spine(
+        None,
+        [
+            "d4",
+            "Nf6",
+            "c4",
+            "e6",
+            "Nf3",
+            "d5",
+            "g3",
+            "Be7",
+            "Bg2",
+            "O-O",
+            "O-O",
+            "dxc4",
+            "Qc2",
+            "a6",
+            "Qxc4",
+            "b5",
+            "Qc2",
+            "Bb7",
+        ],
+    )[-1]  # move 10
+    h.chapter(clean, 2, 1, "At nine")
+    h.chapter(clean, 3, 1, "At ten")
+    clean.execute("UPDATE chapters SET root_fen = %s WHERE id = 2", (nine,))
+    clean.execute("UPDATE chapters SET root_fen = %s WHERE id = 3", (ten,))
+    h.line(clean, 1, 2, "Nine", ["Qc2", "Bb7", "Bd2", "Nbd7"], fens=spine(nine, ["Qc2", "Bb7", "Bd2", "Nbd7"]))
+    h.line(clean, 2, 3, "Ten", ["Bd2", "Nbd7", "Ba5", "Rc8"], fens=spine(ten, ["Bd2", "Nbd7", "Ba5", "Rc8"]))
+    for pid, lid, moves, root in (
+        (10, 1, ["Qc2", "Bb7", "Bd2", "Nbd7"], nine),
+        (20, 2, ["Bd2", "Nbd7", "Ba5", "Rc8"], ten),
+    ):
+        clean.execute(
+            "INSERT INTO puzzles (id, fen, solution_line, solution_fen_sequence, source_types, color, player_id,"
+            " is_repertoire, repertoire_line_id) VALUES (%s, %s, %s::jsonb, %s::jsonb, ARRAY['deviation'], 'w', %s, TRUE, %s)",
+            (pid, root, json.dumps(moves), json.dumps(spine(root, moves)), PLAYER_ID, lid),
+        )
+    _load(clean, 10, "Qc2,Bd2", solved=True, minutes_ago=1)  # both decisions: moves 9 and 10 — the whole line
+    _load(clean, 20, "Bd2", solved=True, minutes_ago=1)  # move 10 only; move 11 untested
+    out = _report(clean)
+    assert _line(out, "Nine")["recent"] == [["ok", 10, None, True]]
+    assert _line(out, "Ten")["recent"] == [["ok", 10, None, False]]
+    assert out["decisions"]["lines"][1] == {"decisions_total": 2} and out["decisions"]["lines"][2] == {
+        "decisions_total": 2
+    }
 
 
 def test_fewer_than_five_eligible_loads_report_their_real_number(clean: psycopg.Connection[DictRow]) -> None:
