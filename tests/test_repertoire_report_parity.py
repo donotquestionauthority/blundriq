@@ -88,6 +88,9 @@ def _reference(rows: list[Row]) -> tuple[dict[str, dict[int, Row]], dict[int, Ro
             slip = {"own_move": own, "expected": exp, "played": pl, "count": n}
         depth = Counter(int(r["own"]) for r in rs)
         last = max((r["played_at"] for r in rs if r["played_at"] is not None), default=None)
+        last_slip = max(
+            (r["played_at"] for r in rs if r["status"] == "me" and r["played_at"] is not None), default=None
+        )
         scopes[scope][sid] = {
             "games": len(rs),
             "wins": wins,
@@ -102,6 +105,7 @@ def _reference(rows: list[Row]) -> tuple[dict[str, dict[int, Row]], dict[int, Ro
             "depth_reached": {str(k): v for k, v in sorted(depth.items())},
             "slip": slip,
             "last_played": last.isoformat() if last else None,
+            "last_slip": last_slip.isoformat() if last_slip else None,
             "shared": scope == "line"
             and all(len(lines_of_game[(int(r["chapter_id"]), int(r["gid"]))]) > 1 for r in rs),
         }
@@ -271,7 +275,7 @@ def test_the_sql_reduction_equals_the_python_reference_where_collations_disagree
     )
     clean.commit()
 
-    scopes, gap_games = report._reduced(clean, Settings(), "all")
+    scopes, gap_games = report._reduced(clean, Settings(), "all", Settings().analysis_game_limit)
     ref_scopes, ref_gaps = _reference(_raw_rows(clean))
     for scope in scopes:
         for sid in sorted(set(scopes[scope]) | set(ref_scopes[scope])):

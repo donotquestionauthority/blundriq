@@ -53,6 +53,15 @@ line (`visibility.repertoire_scopes`); the practice numbers per line are `core.p
 A gap card carries `stem`, the representative game's own moves from the start to the gap board,
 re-rendered and checked to reach it, which is what a line added from the card opens with; the
 chapters such a line may go into are sent once per colour (`core.repertoire.lines`).
+
+**Scope.** The read describes the player's most recent `games` analysable games (`scope`): the
+request's number, 500 when it names none, never more than `analysis_game_limit` — the matcher's
+window, so every game in scope has been matched; the options offered are the fixed steps below
+the limit and the limit itself. The practice numbers are not game-scoped.
+
+**Decisions and practice** (`core.repertoire.decisions`, `core.repertoire.practice`) add to each
+line what the player did at every board the line prescribes a move at, and how its puzzle's
+recent first tries went; the Decisions view is the same evidence grouped by board.
 """
 
 from __future__ import annotations
@@ -76,8 +85,9 @@ from core.constants import (
     REPORT_PREFILL_PLIES,
 )
 from core.puzzles import serve, stats, visibility
+from core.repertoire import decisions as decisions_mod
 from core.repertoire import lines as lines_by_hand
-from core.repertoire import read
+from core.repertoire import practice, read
 from core.settings import Settings
 
 Row = dict[str, Any]
@@ -285,16 +295,31 @@ def reduce_status(statuses: list[str]) -> str:
     return min(statuses, key=lambda s: _PRECEDENCE[s])
 
 
-def _window_params(config: Settings, time_class: str) -> tuple[dict[str, Any], str]:
-    return {"pid": PLAYER_ID, "window": config.analysis_game_limit}, time_class_sql(
-        "cg", time_class, config.time_class_focus
-    )
+SCOPE_DEFAULT = 500
+SCOPE_MIN = 50
+SCOPE_STEPS = (100, 250, 500)
 
 
-def _reduced(conn: Connection[Any], config: Settings, time_class: str) -> tuple[dict[str, dict[int, Row]], list[Row]]:
+def scope(config: Settings, games: int | None) -> Row:
+    """`{"games": effective, "limit", "options"}`: the request's `games` clamped to the analysis
+    window, SCOPE_DEFAULT when absent or below SCOPE_MIN; the options are the steps below the
+    limit and the limit itself (the "All" of the page)."""
+    limit = int(config.analysis_game_limit)
+    wanted = SCOPE_DEFAULT if games is None or games < SCOPE_MIN else games
+    options = [o for o in SCOPE_STEPS if o < limit] + [limit]
+    return {"games": min(wanted, limit), "limit": limit, "options": options}
+
+
+def _window_params(config: Settings, time_class: str, games: int) -> tuple[dict[str, Any], str]:
+    return {"pid": PLAYER_ID, "window": games}, time_class_sql("cg", time_class, config.time_class_focus)
+
+
+def _reduced(
+    conn: Connection[Any], config: Settings, time_class: str, games: int
+) -> tuple[dict[str, dict[int, Row]], list[Row]]:
     """One statement: `{"line" | "chapter" | "book": {id: summary}}` and the gap games (a row per
     game whose representative over every attached line is `opponent`, with that line as context)."""
-    params, tc = _window_params(config, time_class)
+    params, tc = _window_params(config, time_class, games)
     sql = _REPORT_SQL.format(window=window_cte(), analysable=analysable_sql("cg"), time_class=tc)
     for setting in READ_SETTINGS:
         conn.execute(setting)
@@ -311,6 +336,18 @@ def _reduced(conn: Connection[Any], config: Settings, time_class: str) -> tuple[
     for (scope, sid), rows in compact.items():
         scopes[scope][sid] = _summary(rows)
     return scopes, gap_games
+
+
+def _decisions(conn: Connection[Any], config: Settings, time_class: str, games: int) -> list[decisions_mod.Decision]:
+    """The decisions statement under the reduction's session settings (two large CTE scans joined,
+    the same planner), nested loops back on afterwards for the gap lookups."""
+    for setting in READ_SETTINGS:
+        conn.execute(setting)
+    try:
+        return decisions_mod.read(conn, config, time_class=time_class, games=games)
+    finally:
+        for setting in READ_SETTINGS_AFTER:
+            conn.execute(setting)
 
 
 def _iso(v: Any) -> str | None:
@@ -340,6 +377,9 @@ def _summary(rows: list[Row]) -> Row:
         slip = {"own_move": own_move, "expected": expected, "played": played, "count": count}
     me = by_status.get(ME, 0)
     played_at = max((r["last_played"] for r in rows if r["last_played"] is not None), default=None)
+    last_slip = max(
+        (r["last_played"] for r in rows if r["status"] == ME and r["last_played"] is not None), default=None
+    )
     return {
         "games": games,
         "wins": wins,
@@ -354,6 +394,7 @@ def _summary(rows: list[Row]) -> Row:
         "depth_reached": {str(k): v for k, v in sorted(depth.items())},
         "slip": slip,
         "last_played": _iso(played_at),
+        "last_slip": _iso(last_slip),
         "shared": all(bool(r["shared"]) for r in rows),  # NULL on a chapter or book row, dropped by `_lines`
     }
 
@@ -372,6 +413,7 @@ _EMPTY: Row = {
     "depth_reached": {},
     "slip": None,
     "last_played": None,
+    "last_slip": None,
     "shared": False,
 }
 
@@ -407,12 +449,32 @@ WHERE rl.active
 """
 
 
-def _lines(conn: Connection[Any], scopes: dict[str, dict[int, Row]]) -> Row:
-    """`{"books": [...], "drill_max_lines"}`: book › chapter › line rows with games, results, depth,
-    faithfulness, the slip and the practice numbers, every level ordered most games first (then
-    most recent, then name). Every effectively-active line is a row, with zero games when no game
-    in the window reached it, so a line just added can be found and drilled. A line and a chapter
-    carry the ids of what holds them; the titles are on the holder, once."""
+def _rank(lines_: dict[int, Row], chapters: dict[int, Row], books: dict[int, Row]) -> dict[int, int]:
+    """The report's tie-break order over lines — book › chapter › line title by code point, then
+    id — as a rank per line id (the decisions' pick and the ordering share it)."""
+    order = sorted(
+        lines_,
+        key=lambda lid: (
+            str(books[int(lines_[lid]["book_id"])]["title"]),
+            str(chapters[int(lines_[lid]["chapter_id"])]["title"]),
+            str(lines_[lid]["title"]),
+            lid,
+        ),
+    )
+    return {lid: i for i, lid in enumerate(order)}
+
+
+def _lines(
+    conn: Connection[Any], scopes: dict[str, dict[int, Row]], decisions: list[decisions_mod.Decision] | None = None
+) -> tuple[Row, Row]:
+    """`({"books": [...], "drill_max_lines"}, decisions view)`: book › chapter › line rows with
+    games, results, depth, faithfulness, the slip, the practice numbers and, from the decisions,
+    what each line's boards say (`tested`, `deepest_tested`, `correct_through`, `trouble_spot`,
+    `decisions`) and the recent first tries of its puzzle (`recent`, `unknown_loads`); every level
+    ordered most games first (then most recent, then name). Every effectively-active line is a
+    row, with zero games when no game in the window reached it, so a line just added can be found
+    and drilled. A line and a chapter carry the ids of what holds them; the titles are on the
+    holder, once. The decisions view is `_decision_rows`."""
     books: dict[int, Row] = {}
     chapters: dict[int, Row] = {}
     lines_: dict[int, Row] = {}
@@ -430,8 +492,15 @@ def _lines(conn: Connection[Any], scopes: dict[str, dict[int, Row]]) -> Row:
             "chapter_id": cid,
             "book_id": bid,
             "depth_total": own_moves(int(r["len"]), colour),
+            "len": int(r["len"]),
         }
-    practice = stats.by_line(conn, list(lines_))
+    practice_totals = stats.by_line(conn, list(lines_))
+    loads = practice.read(conn, list(lines_))
+    recent = practice.recent_by_line(loads)
+    decisions = decisions or []
+    per_line = decisions_mod.by_line(decisions)
+    colour_of_line = {lid: str(books[int(ln["book_id"])]["color"]) for lid, ln in lines_.items()}
+    rank = _rank(lines_, chapters, books)
     chapters_of: dict[int, list[Row]] = defaultdict(list)
     for ch in chapters.values():
         chapters_of[int(ch["book_id"])].append(ch)
@@ -439,8 +508,8 @@ def _lines(conn: Connection[Any], scopes: dict[str, dict[int, Row]]) -> Row:
     for ln in lines_.values():
         lines_of[int(ln["chapter_id"])].append(ln)
 
-    def finish(scope: str, row: Row) -> Row:
-        return {**row, **scopes[scope].get(int(row["id"]), _EMPTY)}
+    def finish(scope_: str, row: Row) -> Row:
+        return {**row, **scopes[scope_].get(int(row["id"]), _EMPTY)}
 
     def summed(rows_: list[Row]) -> dict[str, int]:
         out = stats.empty()
@@ -457,8 +526,13 @@ def _lines(conn: Connection[Any], scopes: dict[str, dict[int, Row]]) -> Row:
             cid = int(ch["id"])
             out_lines: list[Row] = []
             for ln in lines_of[cid]:
-                row = finish("line", ln)
-                row["practice"] = practice.get(int(ln["id"]), stats.empty())
+                lid = int(ln["id"])
+                row = finish("line", {k: v for k, v in ln.items() if k != "len"})
+                row["practice"] = practice_totals.get(lid, stats.empty())
+                row.update(decisions_mod.line_evidence(lid, per_line.get(lid, [])))
+                rec = recent.get(lid, {"recent": [], "unknown": 0})
+                row["recent"] = rec["recent"]
+                row["unknown_loads"] = rec["unknown"]
                 out_lines.append(row)
             out_lines = _ordered(out_lines, "title")
             crow = finish("chapter", dict(ch))
@@ -471,30 +545,108 @@ def _lines(conn: Connection[Any], scopes: dict[str, dict[int, Row]]) -> Row:
         brow.update(colour=colour, chapters=out_chapters, practice=summed(out_chapters))
         out_books.append(brow)
     out_books = _ordered(out_books, "title")
-    return {"books": out_books, "drill_max_lines": DRILL_MAX_LINES}
+    line_games = {lid: int(scopes["line"].get(lid, _EMPTY)["games"]) for lid in lines_}
+    line_len = {lid: int(ln["len"]) for lid, ln in lines_.items()}
+    view = _decision_rows(decisions, loads, colour_of_line, line_games, line_len, rank)
+    return {"books": out_books, "drill_max_lines": DRILL_MAX_LINES}, view
 
 
-def full(conn: Connection[Any], config: Settings, *, time_class: str) -> Row:
-    """The whole report for one time class (`eligibility.TIME_CLASSES`): `{"lines": _lines(),
-    "gaps": {"white": _gaps(), "black": _gaps()}}`, from one reduction of the per-line rows and
-    one scope count."""
-    scopes, gap_games = _reduced(conn, config, time_class)
-    line_counts = _line_counts(conn, config)
+def _decision_rows(
+    decisions: list[decisions_mod.Decision],
+    loads: list[practice.Load],
+    colour_of_line: dict[int, str],
+    line_games: dict[int, int],
+    line_len: dict[int, int],
+    rank: dict[int, int],
+) -> Row:
+    """`{"rows": [...], "contested": [...], "unknown_loads": n}`: one row per decision with an
+    opportunity in scope — the move, missed k of n, the most played move, the last slip, the lines
+    through it grouped by the ply they reach it at (`[[ply, [line ids]], ...]`, rank order within),
+    the line a Drill queues, and the recent first tries that reached it — in Study order (most
+    slips, latest slip, lowest move, colour); a row's identity for the page is the board, which its
+    first line and that line's ply name without a FEN or a hash per row; the contested boards for
+    the notice; and how many loads' traces did not replay."""
+    by_board = practice.by_decision(loads, colour_of_line)
+    rows: list[Row] = []
+    contested: list[Row] = []
+    for d in decisions:
+        if d.contested:
+            contested.append(
+                {
+                    "colour": d.colour,
+                    "fen": d.fen,
+                    "own_move": d.own_move,
+                    "alternatives": d.alternatives,
+                    "line_ids": d.line_ids,
+                }
+            )
+            continue
+        if d.opportunities == 0:
+            continue
+        by_ply: dict[int, list[int]] = {}
+        for lid, ply, _ in sorted(d.occurrences, key=lambda t: (rank.get(t[0], 1 << 30), t[0], t[1])):
+            if lid not in by_ply.setdefault(ply, []):
+                by_ply[ply].append(lid)
+        rows.append(
+            {
+                "colour": d.colour,
+                "own_move": d.own_move,
+                "move": d.move,
+                "unreadable": d.unreadable,
+                "opportunities": d.opportunities,
+                "slips": d.slips,
+                "most_played": d.most_played,
+                "last_slip": _iso(d.last_slip),
+                "last_played": _iso(d.last_played),
+                "lines": [[ply, ids] for ply, ids in sorted(by_ply.items())],
+                "pick": decisions_mod.pick(d, line_games, line_len, rank),
+                "practice": by_board.get((d.colour, d.board), {"failed": 0, "of": 0}),
+            }
+        )
+    rows.sort(
+        key=lambda r: (
+            -int(r["slips"]),
+            -(datetime.fromisoformat(r["last_slip"]).timestamp() if r["last_slip"] else float("-inf")),
+            int(r["own_move"]),
+            str(r["colour"]),
+        )
+    )
     return {
-        "lines": _lines(conn, scopes),
-        "gaps": {c: _gaps(conn, config, time_class, c, gap_games, line_counts) for c in ("white", "black")},
+        "rows": rows,
+        "contested": contested,
+        "unknown_loads": sum(1 for ld in loads if ld.verdict == practice.UNKNOWN),
     }
 
 
-def lines(conn: Connection[Any], config: Settings, *, time_class: str) -> Row:
+def full(conn: Connection[Any], config: Settings, *, time_class: str, games: int | None = None) -> Row:
+    """The whole report for one time class (`eligibility.TIME_CLASSES`) and scope: `{"lines":
+    _lines(), "gaps": {"white": _gaps(), "black": _gaps()}, "decisions": _decision_rows(), "scope":
+    scope()}`, from one reduction of the per-line rows, one decisions read and one scope count."""
+    sc = scope(config, games)
+    n = int(sc["games"])
+    scopes, gap_games = _reduced(conn, config, time_class, n)
+    decisions = _decisions(conn, config, time_class, n)
+    line_counts = _line_counts(conn, config)
+    lines_, view = _lines(conn, scopes, decisions)
+    return {
+        "lines": lines_,
+        "gaps": {c: _gaps(conn, config, time_class, c, gap_games, line_counts, n) for c in ("white", "black")},
+        "decisions": view,
+        "scope": sc,
+    }
+
+
+def lines(conn: Connection[Any], config: Settings, *, time_class: str, games: int | None = None) -> Row:
     """The lines half of `full`, computed alone (the tests' convenience; the API reads `full`)."""
-    return _lines(conn, _reduced(conn, config, time_class)[0])
+    n = int(scope(config, games)["games"])
+    return _lines(conn, _reduced(conn, config, time_class, n)[0], _decisions(conn, config, time_class, n))[0]
 
 
-def gaps(conn: Connection[Any], config: Settings, *, time_class: str, colour: str) -> Row:
+def gaps(conn: Connection[Any], config: Settings, *, time_class: str, colour: str, games: int | None = None) -> Row:
     """One colour's half of `full`'s gaps, computed alone (the tests' convenience)."""
-    _, gap_games = _reduced(conn, config, time_class)
-    return _gaps(conn, config, time_class, colour, gap_games, _line_counts(conn, config))
+    n = int(scope(config, games)["games"])
+    _, gap_games = _reduced(conn, config, time_class, n)
+    return _gaps(conn, config, time_class, colour, gap_games, _line_counts(conn, config), n)
 
 
 # --- gaps -------------------------------------------------------------------------
@@ -668,7 +820,7 @@ def _kind_b(
     line_counts: dict[int, int],
 ) -> tuple[list[Row], list[Row]]:
     """(prepared-but-not-played rows, uncovered gap cards) from the unmatched games."""
-    _, tc = _window_params(config, time_class)
+    _, tc = _window_params(config, time_class, int(params["window"]))
     gap_ply = 0 if colour == "white" else 1
     sql = _UNMATCHED_SQL.format(window=window_cte(), analysable=analysable_sql("cg"), time_class=tc)
     rows = [
@@ -747,6 +899,7 @@ def _gaps(
     colour: str,
     gap_games: list[Row],
     line_counts: dict[int, int],
+    games: int,
 ) -> Row:
     """`{"colour", "no_book", "prepared": [...], "gaps": [...], "destinations": [...]}` for one
     colour: the boards after the opponent left a line (kind A) and the uncovered first boards of
@@ -754,7 +907,7 @@ def _gaps(
     games whose board the repertoire covers; `no_book` (White only) when no White line is
     effectively active; the chapters a line added from a card may go into, once; and
     `prefill_plies`, how much of a card's engine line a new line opens with."""
-    params, _ = _window_params(config, time_class)
+    params, _ = _window_params(config, time_class, games)
     # As White every line starts at the start position, so with no effectively active White line
     # every White game is unmatched and "uncovered" at the start: that is one fact, not a card per
     # first move. As Black an uncovered first move is a gap whether or not a Black line is active.

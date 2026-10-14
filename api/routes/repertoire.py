@@ -57,13 +57,18 @@ assert set(TimeClass.__args__) == set(TIME_CLASSES)  # the route's literal is th
 
 
 @router.get("/report")
-def line_report(time_class: TimeClass = Query("focus")) -> dict[str, Any]:
-    """`{"lines": {books, drill_max_lines}, "gaps": {"white", "black"}}`: book › chapter › line rows
-    with games, results, depth, faithfulness and the practice numbers, most games first; and per
-    colour the boards where the player's games left the repertoire by the opponent's hand or never
-    found a book, the prepared-but-not-played rows, and the chapters a new line may go into."""
+def line_report(
+    time_class: TimeClass = Query("focus"), games: int | None = Query(None, ge=0, le=100000)
+) -> dict[str, Any]:
+    """`{"lines": {books, drill_max_lines}, "gaps": {"white", "black"}, "decisions", "scope"}`: book
+    › chapter › line rows with games, results, depth, faithfulness, the practice numbers, what the
+    player did at each board the line prescribes a move at and the puzzle's recent first tries, most
+    games first; per colour the boards where the player's games left the repertoire by the
+    opponent's hand or never found a book, the prepared-but-not-played rows, and the chapters a new
+    line may go into; the same evidence grouped by board; and the effective scope — the last `games`
+    analysable games, 500 by default, never more than the analysis window (`report.scope`)."""
     with db.transaction() as conn:
-        return report.full(conn, settings.load(conn), time_class=time_class)
+        return report.full(conn, settings.load(conn), time_class=time_class, games=games)
 
 
 @router.get("/similar")

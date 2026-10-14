@@ -173,6 +173,16 @@ def test_the_line_report_route(client: TestClient) -> None:
     assert out["lines"]["drill_max_lines"] == 50
     assert client.get("/repertoire/report").json()["lines"]["books"][0]["games"] == 2  # focus: rapid games count
     assert client.get("/repertoire/report", params={"time_class": "nope"}).status_code == 422
+    # The scope: absent and 0 are the default, a number above the window is the window, the
+    # effective number comes back with the options; the decisions view and its key shape ride along.
+    assert out["scope"] == {"games": 500, "limit": 1000, "options": [100, 250, 500, 1000]}
+    assert client.get("/repertoire/report", params={"games": 0}).json()["scope"]["games"] == 500
+    assert client.get("/repertoire/report", params={"games": 5000}).json()["scope"]["games"] == 1000
+    assert client.get("/repertoire/report", params={"games": 250}).json()["scope"]["games"] == 250
+    assert client.get("/repertoire/report", params={"games": "abc"}).status_code == 422
+    rows = out["decisions"]["rows"]
+    assert rows and all(r["lines"] and r["lines"][0][1] for r in rows) and "board" not in rows[0]
+    assert line["trouble_spot"]["own_move"] == 3 and line["recent"] == []
     empty = {"no_book": False, "prepared": [], "gaps": [], "prefill_plies": 10, "max_plies": 60}
     assert out["gaps"]["white"] == {
         "colour": "white",
