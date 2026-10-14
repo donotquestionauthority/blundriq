@@ -1,4 +1,5 @@
 import { configure, fireEvent, render, screen, within } from "@testing-library/react";
+import { readQueue, resetQueueForTests } from "../utils/drillQueue";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Practice from "./Practice";
@@ -114,6 +115,7 @@ const failLine = () => {
 describe("Practice: a drill", () => {
   beforeEach(() => {
     window.localStorage.clear();
+    resetQueueForTests([901, 902, 903]);
     _resetProbesForTests();
     _resetUnsavedAttemptForTests();
     _resetRemovalsForTests();
@@ -175,6 +177,7 @@ describe("Practice: a drill", () => {
     fireEvent.click(screen.getByText("Finish →"));
     const done = await screen.findByTestId("drill-done");
     expect(done.textContent).toContain("3 lines drilled · first try right 2 · wrong 1");
+    expect(readQueue()).toEqual([]); // the report's queue is drilled: cleared here, at Done
     expect(screen.getByRole("link", { name: "Back to the report" })).toHaveAttribute("href", "/repertoire/report");
     // Drill again: the same list, new loads, the tally from zero.
     fireEvent.click(screen.getByText("Drill again"));
@@ -210,6 +213,7 @@ describe("Practice: a drill", () => {
     await vi.waitFor(() => expect(screen.getByRole("link", { name: "Stop" })).toHaveAttribute("aria-disabled", "false"));
     fireEvent.click(screen.getByRole("link", { name: "Stop" }));
     expect(await screen.findByText("report page")).toBeInTheDocument();
+    expect(readQueue()).toEqual([901, 902, 903]); // a Stop before Done keeps the queue
     Object.defineProperty(navigator, "locks", { value: undefined, configurable: true });
   });
 
@@ -222,6 +226,7 @@ describe("Practice: a drill", () => {
     const empty = await screen.findByTestId("drill-empty");
     expect(within(empty).getByText("None of the chosen lines is active.")).toBeInTheDocument();
     expect(within(empty).getByRole("link", { name: "Back to the report" })).toHaveAttribute("href", "/repertoire/report");
+    expect(readQueue()).toEqual([901, 902, 903]); // a serve that skipped every line keeps the queue to look at
   });
 
   it("a drill parameter that is not a list of ids is the ordinary queue", async () => {

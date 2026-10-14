@@ -8,6 +8,7 @@ import { disownUnsavedAttempt, getUnsavedAttempt, holdUnsavedAttempt, isUnsavedA
 import { PuzzleEngine } from "../components/PuzzleEngine";
 import { getDrill, getPuzzleById, getPuzzles, getRepertoireScopes, isRotationPuzzle, LAST_N_OPTIONS, recordAttempt, skipPuzzle } from "../practice";
 import { reportPath } from "../repertoire";
+import { clearQueue } from "../utils/drillQueue";
 import type { PlayablePuzzlePayload, PracticeType, Puzzle, RepertoireScopeBook, PuzzleGameLink, PuzzleSrs, SrsFilter, SrsLevel } from "../practice";
 import { enqueue as enqueueAttempt, hasPendingAttempt, hasPendingAttemptForPuzzle, initQueueTriggers, isQueueModeAvailable, markCompleted as markAttemptCompleted, type PendingAttempt } from "../utils/attemptQueue";
 import { RepertoireScopeFilter } from "../components/RepertoireScopeFilter";
@@ -604,6 +605,11 @@ function DrillMode({ lineIds, onAttemptRecorded, onNavigationLock }: { lineIds: 
   }, [navigationBlocked, onNavigationLock]);
 
   const done = data !== null && data !== undefined && cursor >= puzzles.length;
+  // Done is when the report's drill queue has been drilled: it clears here, not when the drill was
+  // served, so a Stop before the end and a serve that skipped every line keep the queue.
+  useEffect(() => {
+    if (done && puzzles.length > 0) clearQueue();
+  }, [done, puzzles.length]);
   const right = Object.values(firsts).filter(Boolean).length;
   const wrong = Object.values(firsts).filter((v) => !v).length;
   const stop = (

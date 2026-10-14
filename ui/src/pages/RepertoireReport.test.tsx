@@ -1,12 +1,17 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import RepertoireReport, { PAGE } from "./RepertoireReport";
-import { filterRows, flatten, sortRows } from "./reportRows";
-import type { GapCard, GapsResponse, PracticeNumbers, ReportBook, ReportLine, ReportTally } from "../repertoire";
+import { decisionKey, filterDecisions, filterRows, flatten, sortDecisions, sortRows } from "./reportRows";
+import type { DecisionRow, GapCard, GapsResponse, PracticeNumbers, ReportBook, ReportLine, ReportResponse, ReportTally } from "../repertoire";
+import { readQueue, resetQueueForTests } from "../utils/drillQueue";
+import pageSource from "./RepertoireReport?raw";
 
 vi.mock("react-chessboard", () => ({
   Chessboard: ({ options }: { options: { id?: string; position?: string } }) => <div data-testid="board" data-id={options.id} data-position={options.position} />,
+}));
+vi.mock("../components/PositionCard/LineReaderPanel", () => ({
+  LineWalkthrough: ({ lineId, initialPly }: { lineId: number; initialPly?: number }) => <div data-testid="walkthrough" data-line={lineId} data-ply={initialPly} />,
 }));
 vi.mock("../components/AddLineModal", () => ({
   AddLineModal: ({ card, destinations, prefillPlies, maxPlies, onClose, onAdded }: { card: GapCard; destinations: { id: number }[]; prefillPlies: number; maxPlies: number; onClose: () => void; onAdded: (r: { id: number }) => void }) => (
@@ -61,6 +66,7 @@ const tally = (over: Partial<ReportTally> = {}): ReportTally => ({
   depth_reached: { "2": 1, "3": 2 },
   slip: { own_move: 3, expected: "Bc4", played: "d4", count: 1 },
   last_played: "2026-10-10T10:00:00+00:00",
+  last_slip: "2026-10-09T10:00:00+00:00",
   ...over,
 });
 const line = (over: Partial<ReportLine> = {}): ReportLine => ({
@@ -74,6 +80,37 @@ const line = (over: Partial<ReportLine> = {}): ReportLine => ({
   book_id: 1,
   chapter_id: 1,
   practice: practice(),
+  decisions: [
+    [0, 1, "e4", "clean", 3, 0],
+    [2, 2, "Nf3", "clean", 3, 0],
+    [4, 3, "Bc4", "slipped", 3, 1],
+  ],
+  decisions_total: 3,
+  tested: 3,
+  deepest_tested: 3,
+  correct_through: 2,
+  trouble_spot: { own_move: 3, move: "Bc4", slips: 1, opportunities: 3 },
+  recent: [
+    ["ok", 3, null],
+    ["fail", 2, 3],
+  ],
+  unknown_loads: 0,
+  ...over,
+});
+const untested = (): Partial<ReportLine> => ({ decisions: [[0, 1, "e4", "untested", 0, 0]], decisions_total: 1, tested: 0, deepest_tested: null, correct_through: null, trouble_spot: null, recent: [], unknown_loads: 0 });
+const decision = (over: Partial<DecisionRow> = {}): DecisionRow => ({
+  colour: "white",
+  own_move: 3,
+  move: "Bc4",
+  unreadable: false,
+  opportunities: 8,
+  slips: 6,
+  most_played: "Bb5",
+  last_slip: "2026-10-09T10:00:00+00:00",
+  last_played: "2026-10-10T10:00:00+00:00",
+  lines: [[4, [1, 2]]],
+  pick: 2,
+  practice: { failed: 2, of: 5 },
   ...over,
 });
 const books = (): ReportBook[] => [
@@ -93,7 +130,7 @@ const books = (): ReportBook[] => [
         practice: practice({ loads: 5, first_right: 3, first_wrong: 2 }),
         lines: [
           line({ practice: practice({ loads: 5, first_right: 3, first_wrong: 2 }) }),
-          line({ id: 2, title: "Evans", shared: true, slip: null, left_by_me: 0, faithful: 3, games: 1, score: 1, origin: "manual", last_played: "2026-10-11T10:00:00+00:00" }),
+          line({ id: 2, title: "Evans", shared: true, slip: null, left_by_me: 0, faithful: 3, games: 1, score: 1, origin: "manual", last_played: "2026-10-11T10:00:00+00:00", last_slip: null, ...untested() }),
         ],
       },
     ],
@@ -112,7 +149,7 @@ const books = (): ReportBook[] => [
         title: "Qa5",
         book_id: 2,
         practice: practice(),
-        lines: [line({ id: 3, title: "Line C", games: 9, score: 0.4, faithful: 4, book_id: 2, chapter_id: 2, slip: null, left_by_me: 5 })],
+        lines: [line({ id: 3, title: "Line C", games: 9, score: 0.4, faithful: 4, book_id: 2, chapter_id: 2, slip: null, left_by_me: 5, last_slip: "2026-10-12T10:00:00+00:00" })],
       },
     ],
   },
@@ -138,8 +175,14 @@ const card = (over: Partial<GapCard> = {}): GapCard => ({
   ...over,
 });
 const gaps = (colour: "white" | "black", over: Partial<GapsResponse> = {}): GapsResponse => ({ colour, no_book: false, prepared: [], gaps: [], destinations: colour === "white" ? [{ id: 1, title: "Giuoco", book_id: 1, book: "Italian" }] : [], prefill_plies: 10, max_plies: 60, ...over });
-/** The one read: the lines and both colours' gaps. */
-const reportBody = (b: ReportBook[] = books(), white: Partial<GapsResponse> = {}, black: Partial<GapsResponse> = {}, drillMax = 50) => ({ lines: { books: b, drill_max_lines: drillMax }, gaps: { white: gaps("white", white), black: gaps("black", black) } });
+/** The one read: the lines, both colours' gaps, the decisions and the scope the server used. */
+const reportBody = (b: ReportBook[] = books(), white: Partial<GapsResponse> = {}, black: Partial<GapsResponse> = {}, drillMax = 50, extra: Partial<ReportResponse> = {}): ReportResponse => ({
+  lines: { books: b, drill_max_lines: drillMax },
+  gaps: { white: gaps("white", white), black: gaps("black", black) },
+  decisions: { rows: [decision(), decision({ colour: "black", own_move: 1, move: "d5", opportunities: 9, slips: 5, most_played: "e5", last_slip: "2026-10-12T10:00:00+00:00", lines: [[1, [3]]], pick: 3, practice: { failed: 0, of: 0 } })], contested: [], unknown_loads: 0 },
+  scope: { games: 500, limit: 1000, options: [100, 250, 500, 1000] },
+  ...extra,
+});
 
 function Location() {
   const loc = useLocation();
@@ -157,6 +200,7 @@ const renderPage = (initial = "/repertoire/report") =>
   );
 const firstCells = (col: number) => screen.getAllByTestId(/^report-row-/).map((r) => within(r).getAllByRole("cell")[col].textContent);
 
+beforeEach(() => resetQueueForTests());
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -180,6 +224,48 @@ describe("the rows", () => {
     expect(filterRows(flat.books, { colour: null, book: 2, chapter: 2, origin: "manual" }).map((r) => r.id)).toEqual([2]);
     expect(flat.chapters[0].lineIds).toEqual([1, 2]);
     expect(flat.books[0].lineIds).toEqual([1, 2]);
+    // Study order: slips, then the latest slip (nulls last), then the tie-break; the new keys sort.
+    expect(sortRows(flat.lines, "study", "desc").map((r) => r.id)).toEqual([3, 1, 2]);
+    const tied = flat.lines.map((r) => ({ ...r, left_by_me: 1 }));
+    expect(sortRows(tied, "study", "desc").map((r) => r.id)).toEqual([3, 1, 2]); // 10-12, 10-09, null
+    expect(sortRows(flat.lines, "trouble", "desc").map((r) => r.id)).toEqual([1, 3, 2]); // Evans has none: last
+    expect(sortRows(flat.lines, "tested", "desc").map((r) => r.id)).toEqual([1, 3, 2]);
+    expect(sortRows(flat.lines, "last_slip", "asc").map((r) => r.id)).toEqual([1, 3, 2]);
+  });
+
+  it("a repeated board keeps the line's own move numbers, so a short trace is not the whole line", async () => {
+    const knights = line({ id: 7, title: "Knights", decisions: [[0, 1, "Nf3", "clean", 1, 0], [2, 2, "Ng1", "clean", 1, 0], [4, 3, "Nf3", "clean", 1, 0], [6, 4, "g3", "untested", 0, 0]], decisions_total: 4, tested: 3, deepest_tested: 3, correct_through: 3, trouble_spot: null, recent: [["ok", 1, null]], depth_total: 4 });
+    stubFetch({ "/repertoire/report": () => ({ status: 200, body: reportBody([{ ...books()[0], chapters: [{ ...books()[0].chapters[0], lines: [knights] }] }]) }) });
+    renderPage();
+    await screen.findByTestId("report-table");
+    const row = screen.getAllByTestId("report-row-lines")[0];
+    expect(within(row).getAllByRole("cell")[15].textContent).toBe("✓ · newest: right up to move 1");
+    expect(within(row).getAllByRole("cell")[9].textContent).toBe("3 of 4 · correct through move 3");
+  });
+
+  it("decisions: Study order is most missed then latest slip; a decision is shown when any of its lines is", () => {
+    const a = decision({ move: "a", slips: 2, last_slip: "2026-10-01T00:00:00+00:00", own_move: 2 });
+    const b = decision({ move: "b", slips: 2, last_slip: "2026-10-05T00:00:00+00:00", own_move: 4 });
+    const c = decision({ move: "c", slips: 3, last_slip: null, own_move: 1, lines: [[0, [9]]] });
+    expect(sortDecisions([a, b, c], "study", "desc").map((d) => d.move)).toEqual(["c", "b", "a"]);
+    expect(sortDecisions([a, b, c], "move", "asc").map((d) => d.move)).toEqual(["c", "a", "b"]);
+    expect(sortDecisions([a, b, c], "last_slip", "desc").map((d) => d.move)).toEqual(["b", "a", "c"]); // null last
+    expect(filterDecisions([a, b, c], new Set([2])).map((d) => d.move)).toEqual(["a", "b"]);
+    expect(filterDecisions([a, b, c], new Set([7])).map((d) => d.move)).toEqual([]);
+    expect(decisionKey(a)).toBe("white:4:1"); // the board: the first line through it, at its ply
+  });
+});
+
+describe("the page's words", () => {
+  it("calls a departure a slip and never a mistake, shows no accuracy, and says 'through' only of the continuous prefix", () => {
+    const strings = [...pageSource.matchAll(/"([^"\n]*)"|'([^'\n]*)'|`([^`\n]*)`|>([^<>{}\n]+)</g)].map((m) => m[1] ?? m[2] ?? m[3] ?? m[4]);
+    const words = strings.filter((t) => /mistake|accuracy|accurate|blunder/i.test(t) && !t.startsWith("../")); // imports aside
+    expect(words).toEqual([]);
+    // Every "through" in page text is the continuous prefix ("correct through move N"), a walk-through, or
+    // "through it/the board" (the lines a board sits on); the only template is the prefix's.
+    const through = strings.filter((t) => /\bthrough\b/i.test(t) && !/walk through|through it|through the|through this board|runs? through|run through|correct through move/i.test(t) && t !== "through" && !t.includes("${through}") && !t.includes(".through"));
+    expect(through).toEqual([]);
+    expect(pageSource).toContain("`correct through move ${l.correct_through}`");
   });
 });
 
@@ -197,9 +283,23 @@ describe("the line report page", () => {
     expect(cells(0).slice(1, 5)).toEqual(["Black", "Scandi", "Qa5", expect.stringContaining("Line C")]);
     expect(cells(1).slice(1, 5)).toEqual(["White", "Italian", "Giuoco", expect.stringContaining("Main")]);
     expect(cells(1)[5]).toBe("32–0–1");
-    expect(cells(1).slice(6, 11)).toEqual(["67%", "67%", "3 of 3", "5", "3 ✓ · 2 ✗"]);
-    expect(cells(1)).toHaveLength(12);
-    expect(within(rows[1]).getByText(/You left at your move 3 in 1 of 1/)).toBeInTheDocument();
+    // Games, Slips and Last slip side by side; the trouble spot and the tested count with their denominators.
+    expect(cells(1).slice(6, 10)).toEqual(["1", "2026-10-09", "Move 3 Bc4 · missed 1 of 3", "3 of 3 · correct through move 2"]);
+    expect(cells(1).slice(10, 15)).toEqual(["67%", "67%", "3 of 3", "5", "3 ✓ · 2 ✗"]);
+    expect(cells(1)[15]).toBe("✓ ✗ · newest: whole line");
+    // "whole line" is judged against the line's last decision's own move number, which a line
+    // that reaches a board twice (or a chapter rooted at a tabiya) keeps as its own.
+    expect(within(rows[1]).getByText(/newest: whole line/)).toBeInTheDocument();
+    expect(cells(1)).toHaveLength(17);
+    expect(cells(2)[8]).toBe("–"); // no trouble spot
+    expect(cells(2)[9]).toBe("0 of 1"); // untested: no "through"
+    expect(cells(2)[15]).toBe("no practice yet");
+    expect(within(rows[1]).queryByText(/You left at your move/)).toBeNull(); // the boundary-slip display gave way to the trouble spot
+    // The line's decisions expand under the row, holes visible.
+    fireEvent.click(within(rows[1]).getByRole("button", { name: "decisions" }));
+    expect(screen.getByTestId("line-decisions").textContent).toBe("1. e4 ✓ 3 of 32. Nf3 ✓ 3 of 33. Bc4 ✗ missed 1 of 3");
+    fireEvent.click(within(rows[1]).getByRole("button", { name: "hide decisions" }));
+    expect(screen.queryByTestId("line-decisions")).toBeNull();
     expect(within(rows[2]).getByText("custom")).toBeInTheDocument();
     expect(within(rows[2]).getByText("shared")).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: /Games/ })).toHaveAttribute("aria-sort", "descending");
@@ -210,7 +310,7 @@ describe("the line report page", () => {
     expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?dir=desc&sort=score");
     expect(firstCells(4).map((t) => /^(Evans|Main|Line C)/.exec(t ?? "")?.[1])).toEqual(["Evans", "Main", "Line C"]);
     expect(screen.queryByRole("link", { name: /Drill/ })).toBeNull();
-    expect(calls.filter((c) => c.path === "/repertoire/report").map((c) => c.query.get("time_class"))).toEqual(["focus"]);
+    expect(calls.filter((c) => c.path === "/repertoire/report").map((c) => [c.query.get("time_class"), c.query.get("games")])).toEqual([["focus", null]]);
     fireEvent.change(screen.getByLabelText("Time class"), { target: { value: "all" } });
     await waitFor(() => expect(calls.filter((c) => c.path === "/repertoire/report").map((c) => c.query.get("time_class"))).toEqual(["focus", "all"]));
     expect(screen.getByTestId("location").textContent).toContain("time_class=all");
@@ -226,7 +326,7 @@ describe("the line report page", () => {
     expect(screen.getByTestId("report-table")).toHaveAttribute("data-view", "chapters");
     let rows = screen.getAllByTestId("report-row-chapters");
     expect(rows.map((r) => within(r).getAllByRole("cell")[3].textContent)).toEqual(["Qa5(1 lines)", "Giuoco(2 lines)"]);
-    expect(within(rows[1]).getAllByRole("cell").slice(7, 9).map((c) => c.textContent)).toEqual(["5", "3 ✓ · 2 ✗"]);
+    expect(within(rows[1]).getAllByRole("cell").slice(9, 11).map((c) => c.textContent)).toEqual(["5", "3 ✓ · 2 ✗"]);
     expect(screen.queryByLabelText("Origin")).toBeNull();
     fireEvent.click(screen.getByRole("tab", { name: "By book" }));
     rows = screen.getAllByTestId("report-row-books");
@@ -238,18 +338,23 @@ describe("the line report page", () => {
     expect(screen.getAllByTestId("report-row-lines")).toHaveLength(2);
     expect(screen.getByText("2 lines shown")).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("Select all shown"));
-    expect(screen.getByRole("button", { name: "Drill 2 lines" })).toBeEnabled();
+    expect(screen.getByTestId("queued-count").textContent).toBe("2 queued");
+    expect(screen.getByRole("button", { name: "Drill queue" })).toBeEnabled();
     fireEvent.change(screen.getByLabelText("Colour"), { target: { value: "" } });
     expect(screen.getAllByTestId("report-row-lines")).toHaveLength(3);
     expect(screen.getByLabelText("Select Line C")).not.toBeChecked();
     expect(screen.getByLabelText("Select all shown")).not.toBeChecked();
-    // Sort by score ascending puts Main before Evans; the drill follows the table.
+    // Sorting changes nothing about the drill: the queue keeps the order the lines were added in
+    // (Select all shown added them in the table's order of that moment: Main, then Evans).
     fireEvent.click(screen.getByRole("button", { name: /Score/ }));
     fireEvent.click(screen.getByRole("button", { name: /Score/ }));
     expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?sort=score&dir=asc");
-    fireEvent.click(screen.getByRole("button", { name: "Drill 2 lines" }));
-    expect(screen.getByTestId("location").textContent).toBe("/practice?drill=1,2");
+    fireEvent.click(screen.getByLabelText("Select Line C"));
+    expect(readQueue()).toEqual([1, 2, 3]);
+    fireEvent.click(screen.getByRole("button", { name: "Drill queue" }));
+    expect(screen.getByTestId("location").textContent).toBe("/practice?drill=1,2,3");
     expect(screen.getByText("practice page")).toBeInTheDocument();
+    expect(readQueue()).toEqual([1, 2, 3]); // cleared by Done on the Practice page, not by the serve
   });
 
   it("the book filter narrows the chapter filter; the origin filter; the state round-trips through the URL", async () => {
@@ -273,7 +378,7 @@ describe("the line report page", () => {
     expect(within(screen.getByLabelText("Chapter")).getAllByRole("option").map((o) => o.textContent)).toEqual(["All chapters", "Italian › Giuoco", "Scandi › Qa5"]);
   });
 
-  it("a container row and Select all shown reach only the lines the filters leave", async () => {
+  it("a container row and Select all shown reach only the lines the filters leave; the queue keeps what a filter later hides", async () => {
     stubFetch({
       "/repertoire/report": () => ({ status: 200, body: reportBody() }),
     });
@@ -281,18 +386,67 @@ describe("the line report page", () => {
     await screen.findByTestId("report-table");
     // Origin applies to lines: the Giuoco chapter row stands for Evans alone.
     fireEvent.click(screen.getByLabelText("Select Giuoco"));
-    expect(screen.getByRole("button", { name: "Drill 1 line" })).toBeEnabled();
+    expect(screen.getByTestId("queued-count").textContent).toBe("1 queued");
     fireEvent.click(screen.getByRole("tab", { name: "By line" }));
     expect(screen.getAllByTestId("report-row-lines")).toHaveLength(1);
     expect(screen.getByLabelText("Select Evans")).toBeChecked();
     fireEvent.change(screen.getByLabelText("Origin"), { target: { value: "" } });
     expect(screen.getByLabelText("Select Main")).not.toBeChecked();
-    expect(screen.getByRole("button", { name: "Drill 1 line" })).toBeEnabled();
-    // Hiding a checked line takes it out of the drill; showing it again brings it back.
+    // Hiding a queued line no longer takes it out of the drill (the player's ruling over the earlier
+    // derived selection): the queue is what the player assembled, whatever the table shows now.
     fireEvent.change(screen.getByLabelText("Colour"), { target: { value: "black" } });
-    expect(screen.getByRole("button", { name: "Drill 0 lines" })).toBeDisabled();
+    expect(screen.getByTestId("queued-count").textContent).toBe("1 queued");
+    expect(screen.getByRole("button", { name: "Drill queue" })).toBeEnabled();
+    fireEvent.click(screen.getByLabelText("Select Line C"));
+    expect(readQueue()).toEqual([2, 3]);
+    fireEvent.click(screen.getByRole("tab", { name: "By chapter" }));
     fireEvent.change(screen.getByLabelText("Colour"), { target: { value: "" } });
-    expect(screen.getByRole("button", { name: "Drill 1 line" })).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("Time class"), { target: { value: "blitz" } });
+    await screen.findByTestId("report-table");
+    expect(readQueue()).toEqual([2, 3]);
+    fireEvent.click(screen.getByText("Clear"));
+    expect(readQueue()).toEqual([]);
+    expect(screen.getByRole("button", { name: "Drill queue" })).toBeDisabled();
+  });
+
+  it("the queue is this tab's: it is in sessionStorage, and page state alone when storage throws", async () => {
+    stubFetch({
+      "/repertoire/report": () => ({ status: 200, body: reportBody() }),
+    });
+    const { unmount } = renderPage();
+    await screen.findByTestId("report-table");
+    fireEvent.click(screen.getByLabelText("Select Main"));
+    expect(JSON.parse(sessionStorage.getItem("report-drill-queue") ?? "[]")).toEqual([1]);
+    unmount();
+    renderPage();
+    await screen.findByTestId("report-table");
+    expect(screen.getByLabelText("Select Main")).toBeChecked(); // a round trip within the tab keeps it
+    const broken = { getItem: () => { throw new Error("no storage"); }, setItem: () => { throw new Error("no storage"); } };
+    vi.stubGlobal("sessionStorage", broken);
+    fireEvent.click(screen.getByLabelText("Select Evans"));
+    expect(readQueue()).toEqual([1, 2]); // the module keeps it for the visit
+    expect(screen.getByTestId("queued-count").textContent).toBe("2 queued");
+  });
+
+  it("the scope: the server's effective games are shown, the options come from it, a stale URL is rewritten, and every read carries it", async () => {
+    const calls = stubFetch({
+      "/repertoire/report": (q) => ({ status: 200, body: reportBody(books(), {}, {}, 50, { scope: { games: Math.min(Number(q.get("games") ?? 500), 1000), limit: 1000, options: [100, 250, 500, 1000] } }) }),
+    });
+    renderPage("/repertoire/report?games=5000");
+    await screen.findByTestId("report-table");
+    await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?games=1000"));
+    expect(screen.getByLabelText("Games")).toHaveValue("1000");
+    expect(within(screen.getByLabelText("Games")).getAllByRole("option").map((o) => o.textContent)).toEqual(["Last 100", "Last 250", "Last 500", "All (1000)"]);
+    expect(screen.getByText(/Your last 1000 analysable games \(the whole analysis window\); practice is not scoped\./)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Games"), { target: { value: "250" } });
+    await waitFor(() => expect(screen.getByLabelText("Games")).toHaveValue("250"));
+    expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?games=250");
+    // A number the server honoured but does not offer is listed as its own option.
+    renderPage("/repertoire/report?games=60");
+    await waitFor(() => expect(screen.getAllByLabelText("Games")[1]).toHaveValue("60"));
+    expect(within(screen.getAllByLabelText("Games")[1]).getAllByRole("option").map((o) => o.textContent)).toEqual(["Last 60", "Last 100", "Last 250", "Last 500", "All (1000)"]);
+    // The rewritten URL re-read once at the effective scope (a stale URL only), then the choice, then the second page.
+    expect(calls.filter((c) => c.path === "/repertoire/report").map((c) => c.query.get("games"))).toEqual(["5000", "1000", "250", "60"]);
   });
 
   it("a drill over the cap is refused on the page", async () => {
@@ -303,10 +457,12 @@ describe("the line report page", () => {
     renderPage();
     await screen.findByTestId("report-table");
     fireEvent.click(screen.getByLabelText("Select all shown"));
-    expect(screen.getByRole("button", { name: "Drill 51 lines" })).toBeDisabled();
+    expect(screen.getByTestId("queued-count").textContent).toBe("51 queued");
+    expect(screen.getByRole("button", { name: "Drill queue" })).toBeDisabled();
     expect(screen.getByText("50 at most")).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("Select L0"));
-    expect(screen.getByRole("button", { name: "Drill 50 lines" })).toBeEnabled();
+    expect(screen.getByTestId("queued-count").textContent).toBe("50 queued");
+    expect(screen.getByRole("button", { name: "Drill queue" })).toBeEnabled();
   });
 
   it("drops a late answer for the previous time class", async () => {
@@ -339,7 +495,7 @@ describe("the line report page", () => {
     });
     renderPage();
     await screen.findByTestId("report-table");
-    expect(within(screen.getByLabelText("Sort")).getAllByRole("option").map((o) => o.textContent)).toEqual(["Colour", "Book", "Chapter", "Line", "Games", "Score", "Faithful", "Depth", "Loads", "First try", "Last played"]);
+    expect(within(screen.getByLabelText("Sort")).getAllByRole("option").map((o) => o.textContent)).toEqual(["Study order", "Colour", "Book", "Chapter", "Line", "Games", "Slips", "Last slip", "Trouble spot", "Tested", "Score", "Faithful", "Depth", "Loads", "First try", "Last played"]);
     fireEvent.change(screen.getByLabelText("Sort"), { target: { value: "line" } });
     expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?sort=line&dir=asc");
     expect(firstCells(4).map((c) => /^(Evans|Main|Line C)/.exec(c ?? "")?.[1])).toEqual(["Evans", "Line C", "Main"]);
@@ -349,7 +505,85 @@ describe("the line report page", () => {
     expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?sort=first_right&dir=desc");
     expect(screen.getByRole("columnheader", { name: /First try/ })).toHaveAttribute("aria-sort", "descending");
     fireEvent.click(screen.getByRole("tab", { name: "By book" }));
-    expect(within(screen.getByLabelText("Sort")).getAllByRole("option").map((o) => o.textContent)).toEqual(["Colour", "Book", "Games", "Score", "Faithful", "Loads", "First try", "Last played"]);
+    expect(within(screen.getByLabelText("Sort")).getAllByRole("option").map((o) => o.textContent)).toEqual(["Study order", "Colour", "Book", "Games", "Slips", "Last slip", "Score", "Faithful", "Loads", "First try", "Last played"]);
+  });
+
+  it("Study order: slips, then the latest slip, then the tie-break; it sticks in the URL and is offered in every view", async () => {
+    stubFetch({
+      "/repertoire/report": () => ({ status: 200, body: reportBody() }),
+    });
+    renderPage();
+    await screen.findByTestId("report-table");
+    fireEvent.change(screen.getByLabelText("Sort"), { target: { value: "study" } });
+    expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?sort=study&dir=desc");
+    expect(firstCells(4).map((c) => /^(Evans|Main|Line C)/.exec(c ?? "")?.[1])).toEqual(["Line C", "Main", "Evans"]); // 5, 1, 0 slips
+    expect(screen.getByRole("columnheader", { name: /Slips/ })).toHaveAttribute("aria-sort", "none"); // a preset, not a column
+    fireEvent.click(screen.getByRole("tab", { name: "By chapter" }));
+    expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?sort=study&dir=desc&view=chapters");
+    expect(screen.getByLabelText("Sort")).toHaveValue("study");
+    // Both chapters have one slip on the same day: the tie-break (book) decides.
+    expect(screen.getAllByTestId("report-row-chapters").map((r) => within(r).getAllByRole("cell")[3].textContent)).toEqual(["Giuoco(2 lines)", "Qa5(1 lines)"]);
+  });
+
+  it("the Decisions view: one row per board in Study order, the lines beneath, the pick queued with +, a walk-through, the contested notice, and the filters through the lines", async () => {
+    stubFetch({
+      "/repertoire/report": () => ({
+        status: 200,
+        body: reportBody(books(), {}, {}, 50, {
+          decisions: {
+            rows: [decision(), decision({ colour: "black", own_move: 1, move: "d5", opportunities: 9, slips: 5, most_played: "e5", last_slip: "2026-10-12T10:00:00+00:00", lines: [[1, [3]]], pick: 3, practice: { failed: 0, of: 0 } })],
+            contested: [{ colour: "white", fen: "x w KQkq - 0 3", own_move: 3, alternatives: [{ move: "c4", line_ids: [1] }, { move: "g3", line_ids: [2] }], line_ids: [1, 2] }],
+            unknown_loads: 1,
+          },
+        }),
+      }),
+    });
+    renderPage();
+    await screen.findByTestId("report-table");
+    fireEvent.click(screen.getByRole("tab", { name: "By decision" }));
+    expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?view=decisions");
+    expect(screen.getByTestId("report-table")).toHaveAttribute("data-view", "decisions");
+    expect(screen.getByLabelText("Sort")).toHaveValue("study");
+    expect(screen.getByText("2 decisions shown")).toBeInTheDocument();
+    expect(screen.getByText(/1 practice load could not be read/)).toBeInTheDocument();
+    const notice = screen.getByTestId("contested-notice");
+    expect(notice.textContent).toContain("2 continuations at 1 board reached by transposition — that board is not counted");
+    fireEvent.click(within(notice).getByRole("button", { name: "Show" }));
+    expect(notice.textContent).toContain("White, move 3: c4 in Main; g3 in Evans");
+    const rows = screen.getAllByTestId("report-row-decisions");
+    const cells = (i: number) => within(rows[i]).getAllByRole("cell").map((c) => c.textContent);
+    expect(cells(0).slice(1)).toEqual(["White", "3. Bc4", "6 of 8 75%", "Bb5", "2026-10-09", "2 lines", "2 ✗ of 5", "2026-10-10"]);
+    expect(cells(1).slice(1)).toEqual(["Black", "1. d5", "5 of 9 56%", "e5", "2026-10-12", "1 line", "not yet reached", "2026-10-10"]);
+    // The + queues the decision's pick (Evans, id 2), named on the control.
+    const plus = within(rows[0]).getByRole("button", { name: "Add to the drill queue: Evans" });
+    expect(plus).toHaveAttribute("title", "Drills Italian › Giuoco › Evans");
+    fireEvent.click(plus);
+    expect(readQueue()).toEqual([2]);
+    expect(screen.getByTestId("queued-count").textContent).toBe("1 queued");
+    // The expansion: both lines, the pick marked, a checkbox each, a walk-through at the decision's ply + 1.
+    fireEvent.click(within(rows[0]).getByRole("button", { name: "2 lines" }));
+    const lines = screen.getByTestId("decision-lines");
+    expect(lines.textContent).toContain("One decision · 2 lines. failed here in 2 of the last 5 first tries that reached it.");
+    expect(within(lines).getAllByRole("checkbox").map((c) => (c as HTMLInputElement).checked)).toEqual([false, true]);
+    expect(within(lines).getByText("drill pick")).toBeInTheDocument();
+    fireEvent.click(within(lines).getByLabelText("Queue Main"));
+    expect(readQueue()).toEqual([2, 1]);
+    fireEvent.click(within(lines).getAllByRole("button", { name: "walk through" })[0]);
+    expect(screen.getByTestId("walkthrough")).toHaveAttribute("data-line", "1");
+    expect(screen.getByTestId("walkthrough")).toHaveAttribute("data-ply", "5");
+    // Sorting by move ascending puts Black's move 1 first; the filters apply through the lines.
+    fireEvent.change(screen.getByLabelText("Sort"), { target: { value: "move" } });
+    expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?view=decisions&sort=move&dir=asc");
+    expect(screen.getAllByTestId("report-row-decisions")[0].textContent).toContain("1. d5");
+    fireEvent.change(screen.getByLabelText("Colour"), { target: { value: "white" } });
+    expect(screen.getAllByTestId("report-row-decisions")).toHaveLength(1);
+    fireEvent.change(screen.getByLabelText("Origin"), { target: { value: "manual" } });
+    expect(screen.getAllByTestId("report-row-decisions")).toHaveLength(1); // Evans is custom and runs through the board
+    fireEvent.change(screen.getByLabelText("Colour"), { target: { value: "black" } });
+    expect(screen.getByText("No decision of yours was reached in these games.")).toBeInTheDocument();
+    // Back to the lines: the decisions' sort key is not one of theirs, so it is dropped.
+    fireEvent.click(screen.getByRole("tab", { name: "By line" }));
+    expect(screen.getByTestId("location").textContent).toBe("/repertoire/report?colour=black&origin=manual");
   });
 
   it("lists the first page and reveals more; a control change starts the listing over; the drill and Select all shown see every shown line", async () => {
@@ -363,7 +597,7 @@ describe("the line report page", () => {
     expect(screen.getAllByTestId("report-row-lines")).toHaveLength(PAGE);
     expect(screen.getByText("205 lines shown, first 200 listed")).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("Select all shown"));
-    expect(screen.getByRole("button", { name: "Drill 205 lines" })).toBeEnabled();
+    expect(screen.getByTestId("queued-count").textContent).toBe("205 queued");
     fireEvent.click(screen.getByRole("button", { name: "Show 5 more (5 left)" }));
     expect(screen.getAllByTestId("report-row-lines")).toHaveLength(205);
     expect(screen.queryByRole("button", { name: /Show .* more/ })).toBeNull();
@@ -409,7 +643,11 @@ describe("the line report page", () => {
     const rows = screen.getAllByTestId("report-row-lines");
     expect(rows).toHaveLength(3);
     expect(rows[1].textContent).toContain("White · Italian › Giuoco");
-    expect(within(rows[1]).getByText(/You left at your move 3 in 1 of 1/)).toBeInTheDocument();
+    expect(rows[1].textContent).toContain("1 slips");
+    expect(rows[1].textContent).toContain("2026-10-09 last slip");
+    expect(rows[1].textContent).toContain("Move 3 Bc4 · missed 1 of 3 trouble spot");
+    expect(rows[1].textContent).toContain("3 of 3 · correct through move 2 tested");
+    expect(rows[1].textContent).toContain("✓ ✗ · newest: whole line practice");
     expect(rows[1].textContent).toContain("3 (2–0–1) games");
     expect(rows[1].textContent).toContain("67% score");
     expect(rows[1].textContent).toContain("3 of 3 depth");
@@ -417,13 +655,19 @@ describe("the line report page", () => {
     expect(rows[1].textContent).toContain("3 ✓ · 2 ✗ first try");
     expect(rows[1].textContent).toContain("2026-10-10 last");
     expect(within(rows[2]).getByText("custom")).toBeInTheDocument();
-    fireEvent.click(screen.getByLabelText("Select Main"));
-    expect(screen.getByRole("button", { name: "Drill 1 line" })).toBeEnabled();
+    // The + queues the line; a second tap takes it out; the decisions expand on the card.
+    const plus = within(rows[1]).getByRole("button", { name: "Add to the drill queue: Main" });
+    fireEvent.click(plus);
+    expect(readQueue()).toEqual([1]);
+    expect(within(rows[1]).getByRole("button", { name: "Remove from the drill queue: Main" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("queued-count").textContent).toBe("1 queued");
+    fireEvent.click(within(rows[1]).getByRole("button", { name: "decisions" }));
+    expect(within(rows[1]).getByTestId("line-decisions")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Sort"), { target: { value: "score" } });
     expect(screen.getAllByTestId("report-row-lines")[0].textContent).toContain("Evans");
     fireEvent.click(screen.getByRole("tab", { name: "By chapter" }));
     const chapters = screen.getAllByTestId("report-row-chapters");
-    expect(chapters.map((c) => c.textContent?.slice(0, 30))).toEqual(["Giuoco(2 lines)White · Italian", "Qa5(1 lines)Black · Scandi9 (2"]); // still by score
+    expect(chapters.map((c) => c.textContent?.slice(1, 31))).toEqual(["Giuoco(2 lines)White · Italian", "Qa5(1 lines)Black · Scandi9 (2"]); // still by score; the + comes first
     expect(chapters[0].textContent).not.toContain("depth");
     fireEvent.change(screen.getByLabelText("Book"), { target: { value: "1" } });
     fireEvent.click(screen.getByRole("tab", { name: "By line" }));
@@ -489,6 +733,7 @@ describe("the line report page", () => {
     await waitFor(() => expect(calls.filter((c) => c.path === "/repertoire/report").length).toBe(before + 1));
     await screen.findByLabelText("Select Added line");
     fireEvent.click(screen.getByLabelText("Select Added line"));
-    expect(screen.getByRole("button", { name: "Drill 1 line" })).toBeEnabled();
+    expect(readQueue()).toEqual([42]);
+    expect(screen.getByRole("button", { name: "Drill queue" })).toBeEnabled();
   });
 });

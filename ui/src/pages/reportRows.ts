@@ -1,18 +1,22 @@
 /** The line report's row model: one flat shape for the line, chapter and book views, with the
  *  sort and the filters the page applies to it. Pure functions, kept out of the page so the page
  *  file only exports components. */
-import type { PracticeNumbers, ReportBook, ReportLine, ReportTally } from "../repertoire";
+import type { DecisionRow, PracticeNumbers, ReportBook, ReportLine, ReportTally } from "../repertoire";
 
-export type View = "lines" | "chapters" | "books";
-export type SortKey = "colour" | "book" | "chapter" | "line" | "games" | "score" | "faithful" | "depth" | "loads" | "first_right" | "last_played";
+/** The three table views over the lines, and the decisions view over the boards. */
+export type View = "lines" | "chapters" | "books" | "decisions";
+export type TableView = Exclude<View, "decisions">;
+/** `study` is the Study order preset: slips, then the latest slip, then the tie-break. */
+export type SortKey = "study" | "colour" | "book" | "chapter" | "line" | "games" | "slips" | "last_slip" | "trouble" | "tested" | "score" | "faithful" | "depth" | "loads" | "first_right" | "last_played";
 export type Dir = "asc" | "desc";
-export const VIEWS: View[] = ["lines", "chapters", "books"];
-export const SORT_KEYS: SortKey[] = ["colour", "book", "chapter", "line", "games", "score", "faithful", "depth", "loads", "first_right", "last_played"];
+export const VIEWS: View[] = ["lines", "chapters", "books", "decisions"];
+export const TABLE_VIEWS: TableView[] = ["lines", "chapters", "books"];
+export const SORT_KEYS: SortKey[] = ["study", "colour", "book", "chapter", "line", "games", "slips", "last_slip", "trouble", "tested", "score", "faithful", "depth", "loads", "first_right", "last_played"];
 
 /** One row of any view: a line, a chapter or a book, with the ids of the lines it stands for. */
 export interface Row extends ReportTally {
   key: string;
-  kind: View;
+  kind: TableView;
   id: number;
   colour: "white" | "black";
   book: string;
@@ -73,6 +77,14 @@ function sortValue(r: Row, key: SortKey): number | string | null {
       return r.line?.title ?? "";
     case "games":
       return r.games;
+    case "slips":
+      return r.left_by_me;
+    case "last_slip":
+      return r.last_slip;
+    case "trouble":
+      return r.line ? (r.line.trouble_spot ? r.line.trouble_spot.slips : null) : null;
+    case "tested":
+      return r.line ? (r.line.decisions_total === 0 ? null : fraction(r.line.tested, r.line.decisions_total)) : null;
     case "score":
       return r.score;
     case "faithful":
@@ -85,26 +97,96 @@ function sortValue(r: Row, key: SortKey): number | string | null {
       return r.practice.first_right;
     case "last_played":
       return r.last_played;
+    case "study":
+      return null; // composite: see sortRows
   }
 }
+
+/** Nulls last in either direction; equal values fall through. */
+function compare(va: number | string | null, vb: number | string | null, sign: number): number {
+  if (va === null && vb !== null) return 1;
+  if (vb === null && va !== null) return -1;
+  if (va !== null && vb !== null && va !== vb) return (va < vb ? -1 : 1) * sign;
+  return 0;
+}
+
+const tieBreak = (ta: readonly (string | number)[], tb: readonly (string | number)[]) => {
+  for (let i = 0; i < ta.length; i++) {
+    if (ta[i] !== tb[i]) return ta[i] < tb[i] ? -1 : 1;
+  }
+  return 0;
+};
+
+/** The keys a composite sort compares in turn; a plain key is itself. Study order is slips, then
+ *  the latest slip, then the tie-break (book › chapter › line › id). */
+const keysOf = (key: SortKey): SortKey[] => (key === "study" ? ["slips", "last_slip"] : [key]);
 
 export function sortRows(rows: Row[], key: SortKey, dir: Dir): Row[] {
   const sign = dir === "asc" ? 1 : -1;
   const tie = (r: Row) => [r.book, r.chapter ?? "", r.line?.title ?? "", r.id] as const;
+  const keys = keysOf(key);
   return [...rows].sort((a, b) => {
-    const va = sortValue(a, key);
-    const vb = sortValue(b, key);
-    if (va === null && vb !== null) return 1;
-    if (vb === null && va !== null) return -1;
-    if (va !== null && vb !== null && va !== vb) return (va < vb ? -1 : 1) * sign;
-    const ta = tie(a);
-    const tb = tie(b);
-    for (let i = 0; i < ta.length; i++) {
-      if (ta[i] !== tb[i]) return ta[i] < tb[i] ? -1 : 1;
+    for (const k of keys) {
+      const c = compare(sortValue(a, k), sortValue(b, k), sign);
+      if (c !== 0) return c;
     }
-    return 0;
+    return tieBreak(tie(a), tie(b));
   });
 }
+
+// --- the decisions view ---------------------------------------------------------------------
+
+export type DecisionSortKey = "study" | "colour" | "move" | "missed" | "opportunities" | "most_played" | "last_slip" | "lines" | "practice" | "last_played";
+export const DECISION_SORT_KEYS: DecisionSortKey[] = ["study", "colour", "move", "missed", "opportunities", "most_played", "last_slip", "lines", "practice", "last_played"];
+
+function decisionValue(r: DecisionRow, key: DecisionSortKey): number | string | null {
+  switch (key) {
+    case "colour":
+      return r.colour;
+    case "move":
+      return r.own_move;
+    case "missed":
+      return r.slips;
+    case "opportunities":
+      return r.opportunities;
+    case "most_played":
+      return r.most_played;
+    case "last_slip":
+      return r.last_slip;
+    case "lines":
+      return r.lines.reduce((n, [, ids]) => n + ids.length, 0);
+    case "practice":
+      return r.practice.of === 0 ? null : r.practice.failed;
+    case "last_played":
+      return r.last_played;
+    case "study":
+      return null;
+  }
+}
+
+/** Study order for decisions: most slips, latest slip, then the lowest move and the colour. */
+export function sortDecisions(rows: DecisionRow[], key: DecisionSortKey, dir: Dir): DecisionRow[] {
+  const sign = dir === "asc" ? 1 : -1;
+  const keys: DecisionSortKey[] = key === "study" ? ["missed", "last_slip"] : [key];
+  return [...rows].sort((a, b) => {
+    for (const k of keys) {
+      const c = compare(decisionValue(a, k), decisionValue(b, k), sign);
+      if (c !== 0) return c;
+    }
+    return tieBreak([a.own_move, a.colour, decisionKey(a)], [b.own_move, b.colour, decisionKey(b)]);
+  });
+}
+
+/** A decision is shown when any line through it is among the shown lines (the filters apply
+ *  through the lines). */
+export const filterDecisions = (rows: DecisionRow[], shownLines: Set<number>) => rows.filter((r) => r.lines.some(([, ids]) => ids.some((id) => shownLines.has(id))));
+/** A decision's identity for the page: the board, named by the first line through it and that
+ *  line's ply there (a line has one board per ply), so expansions survive a re-read of the same
+ *  boards and never attach to another. */
+export const decisionKey = (r: DecisionRow) => `${r.colour}:${r.lines[0]?.[0] ?? 0}:${r.lines[0]?.[1][0] ?? 0}`;
+/** The lines through a decision as (id, ply) pairs, in the server's order. */
+export const decisionLines = (r: DecisionRow): { line_id: number; ply: number }[] => r.lines.flatMap(([ply, ids]) => ids.map((line_id) => ({ line_id, ply })));
+export const decisionLineCount = (r: DecisionRow) => r.lines.reduce((n, [, ids]) => n + ids.length, 0);
 
 export interface Filters {
   colour: "white" | "black" | null;
