@@ -403,7 +403,7 @@ def test_migration_014_leaves_every_line_course_every_puzzle_undrilled_and_every
         )
         c.execute("INSERT INTO puzzle_attempts (puzzle_id, player_id, solved) VALUES (1, %s, TRUE)", (PLAYER_ID,))
         c.commit()
-        assert schema.upgrade(c)[-1] == 14
+        assert 14 in schema.upgrade(c)
         assert c.execute("SELECT origin FROM repertoire_lines").fetchone()["origin"] == "course"  # type: ignore[index]
         assert c.execute("SELECT drilled_at FROM puzzles").fetchone()["drilled_at"] is None  # type: ignore[index]
         assert c.execute("SELECT attempt_seq FROM puzzle_attempts").fetchone()["attempt_seq"] is None  # type: ignore[index]

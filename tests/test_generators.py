@@ -11,6 +11,7 @@ from typing import Any
 
 import psycopg
 import pytest
+from psycopg import sql
 from psycopg.rows import DictRow
 
 from core.constants import PLAYER_ID
@@ -772,3 +773,149 @@ def test_a_hand_made_puzzle_survives_a_missed_mate_too(clean: psycopg.Connection
     assert [(p["id"], p["source_types"], p["active"]) for p in puzzles] == [(custom_id, ["custom"], True)]
     level = clean.execute("SELECT level FROM player_puzzle_state WHERE puzzle_id = %s", (custom_id,)).fetchone()
     assert level and level["level"] == "rook"
+
+
+# --- the worklist decides on the server, with _as_list's tolerance ----------------------------
+
+
+def _practice_rows(conn: psycopg.Connection[DictRow]) -> list[tuple[Any, ...]]:
+    """Every puzzle, SRS and attempt row: what an unchanged line must leave exactly as it was."""
+    out: list[tuple[Any, ...]] = []
+    for q in (
+        "SELECT id, fen, solution_line, solution_fen_sequence, active, title, updated_at FROM puzzles ORDER BY id",
+        "SELECT puzzle_id, level FROM player_puzzle_state ORDER BY puzzle_id",
+        "SELECT id, puzzle_id, solved FROM puzzle_attempts ORDER BY id",
+    ):
+        out.extend(tuple(r.values()) for r in conn.execute(q).fetchall())
+    return out
+
+
+def _progress_rows(conn: psycopg.Connection[DictRow], puzzle_id: int) -> None:
+    conn.execute(
+        "INSERT INTO player_puzzle_state (player_id, puzzle_id, level) VALUES (%s, %s, 'rook')", (PLAYER_ID, puzzle_id)
+    )
+    conn.execute(
+        "INSERT INTO puzzle_attempts (puzzle_id, player_id, solved) VALUES (%s, %s, true)", (puzzle_id, PLAYER_ID)
+    )
+
+
+def _as_json_string(conn: psycopg.Connection[DictRow], table: str, column: str, value: Any, where: str) -> None:
+    """Store `value` the way an older row did: as a jsonb string holding JSON text."""
+    conn.execute(
+        sql.SQL("UPDATE {} SET {} = to_jsonb(%s::text) WHERE {}").format(
+            sql.Identifier(table),
+            sql.Identifier(column),
+            sql.SQL(where),  # type: ignore[arg-type]  # test literal
+        ),
+        (json.dumps(value),),
+    )
+
+
+def test_a_string_encoded_legacy_line_generates_and_is_unchanged_until_it_changes(
+    clean: psycopg.Connection[DictRow],
+) -> None:
+    _player(clean)
+    _line(clean)
+    _deviation(clean, 1)
+    _deviation(clean, 2)
+    # `moves` is the one line column an older row could hold as JSON text: the generated
+    # position keys refuse a `fen_sequence` that is not an array at the write.
+    _as_json_string(clean, "repertoire_lines", "moves", ["Nf3", "Nc6"], "id = 1")
+    assert repertoire.generate(clean, _config())["created"] == 1
+    row = _puzzles(clean)[0]
+    assert row["solution_line"] == ["Nf3", "Nc6"] and row["fen"] == TABIYA
+    _progress_rows(clean, row["id"])
+    before = _practice_rows(clean)
+    assert repertoire.generate(clean, _config())["unchanged"] == 1
+    assert _practice_rows(clean) == before
+    _as_json_string(clean, "repertoire_lines", "moves", ["d4", "d5"], "id = 1")
+    clean.execute(
+        "UPDATE repertoire_lines SET fen_sequence = %s::jsonb WHERE id = 1", (json.dumps([TABIYA, START, AFTER_E4]),)
+    )
+    stats = repertoire.generate(clean, _config())
+    assert stats["rebuilt"] == 1 and stats["srs_reset"] == 1
+    assert _puzzles(clean)[0]["solution_line"] == ["d4", "d5"]
+
+
+def test_a_stored_solution_as_a_json_string_equal_to_the_line_is_unchanged(clean: psycopg.Connection[DictRow]) -> None:
+    _player(clean)
+    _line(clean)
+    _deviation(clean, 1)
+    _deviation(clean, 2)
+    repertoire.generate(clean, _config())
+    puzzle_id = _puzzles(clean)[0]["id"]
+    _progress_rows(clean, puzzle_id)
+    _as_json_string(clean, "puzzles", "solution_line", ["Nf3", "Nc6"], f"id = {puzzle_id}")
+    _as_json_string(clean, "puzzles", "solution_fen_sequence", [TABIYA, AFTER_E4, START], f"id = {puzzle_id}")
+    before = _practice_rows(clean)
+    stats = repertoire.generate(clean, _config())
+    assert stats["unchanged"] == 1 and stats["rebuilt"] == 0 and stats["srs_reset"] == 0
+    assert _practice_rows(clean) == before
+
+
+@pytest.mark.parametrize("stored", ["not JSON", {"a": 1}], ids=["invalid-json-text", "json-object"])
+def test_a_stored_solution_that_is_not_a_list_drifts_and_is_rebuilt_without_an_exception(
+    clean: psycopg.Connection[DictRow], stored: Any
+) -> None:
+    _player(clean)
+    _line(clean)
+    _deviation(clean, 1)
+    _deviation(clean, 2)
+    repertoire.generate(clean, _config())
+    puzzle_id = _puzzles(clean)[0]["id"]
+    _progress_rows(clean, puzzle_id)
+    if isinstance(stored, str):
+        clean.execute("UPDATE puzzles SET solution_line = to_jsonb(%s::text) WHERE id = %s", (stored, puzzle_id))
+    else:
+        clean.execute("UPDATE puzzles SET solution_line = %s::jsonb WHERE id = %s", (json.dumps(stored), puzzle_id))
+    attempts = clean.execute("SELECT id, puzzle_id, solved FROM puzzle_attempts ORDER BY id").fetchall()
+    stats = repertoire.generate(clean, _config())
+    assert stats["rebuilt"] == 1 and stats["srs_reset"] == 1
+    assert _puzzles(clean)[0]["solution_line"] == ["Nf3", "Nc6"]
+    assert clean.execute("SELECT id, puzzle_id, solved FROM puzzle_attempts ORDER BY id").fetchall() == attempts
+
+
+def test_a_line_whose_moves_are_a_json_object_is_a_bad_line_that_keeps_progress(
+    clean: psycopg.Connection[DictRow],
+) -> None:
+    _player(clean)
+    _line(clean)
+    _deviation(clean, 1)
+    _deviation(clean, 2)
+    repertoire.generate(clean, _config())
+    puzzle_id = _puzzles(clean)[0]["id"]
+    _progress_rows(clean, puzzle_id)
+    clean.execute("UPDATE repertoire_lines SET moves = '{\"a\": 1}'::jsonb WHERE id = 1")
+    stats = repertoire.generate(clean, _config())
+    assert stats["skipped_bad_line"] == 1 and stats["deactivated"] == 1 and stats["srs_reset"] == 0
+    assert _puzzles(clean)[0]["active"] is False
+    assert clean.execute("SELECT level FROM player_puzzle_state").fetchone()["level"] == "rook"  # type: ignore[index]
+
+
+def _worklist_rows(conn: psycopg.Connection[DictRow]) -> list[dict[str, Any]]:
+    config = _config()
+    return conn.execute(
+        repertoire._WORKLIST,  # type: ignore[reportPrivateUsage]
+        {
+            "pid": PLAYER_ID,
+            "window": config.deviations_default_last_n_games,
+            "min_occurrences": config.deviation_puzzle_min_occurrences,
+        },
+    ).fetchall()
+
+
+def test_the_steady_state_and_a_retitle_fetch_no_line_payload(clean: psycopg.Connection[DictRow]) -> None:
+    """The hourly cost of the generator is ids, flags and titles: a line's moves and FENs come
+    back only for a line that will be written."""
+    _player(clean)
+    _line(clean)
+    _line(clean, line_id=2, moves=["e4", "e5"], fens=[START, AFTER_E4, TABIYA])  # below the gate: never written
+    _deviation(clean, 1)
+    _deviation(clean, 2)
+    rows = _worklist_rows(clean)
+    assert [(r["line_id"], r["moves"] is not None) for r in rows] == [(1, True), (2, False)]
+    repertoire.generate(clean, _config())
+    assert all(r["moves"] is None and r["fen_sequence"] is None for r in _worklist_rows(clean))
+    clean.execute("UPDATE chapters SET title = 'Renamed' WHERE id = 1")
+    assert all(r["moves"] is None for r in _worklist_rows(clean))
+    assert repertoire.generate(clean, _config())["retitled"] == 1

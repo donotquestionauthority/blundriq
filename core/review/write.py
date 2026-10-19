@@ -92,15 +92,28 @@ def delete_outside(conn: Connection[Any], keep_ids: list[int]) -> int:
     return cur.rowcount
 
 
-def record_state(conn: Connection[Any], unknown: int, window_games: int) -> None:
-    """The run's honesty count and window size, one row."""
+def count_outside(conn: Connection[Any], keep_ids: list[int]) -> int:
+    """How many rows `delete_outside` would drop: the failed run's summary, without the delete."""
+    row = conn.execute(
+        "SELECT count(*) AS n FROM review_events WHERE player_id = %(pid)s AND chess_game_id <> ALL(%(ids)s::bigint[])",
+        {"pid": PLAYER_ID, "ids": keep_ids},
+    ).fetchone()
+    return int(row["n"]) if row else 0
+
+
+def record_state(conn: Connection[Any], unknown: int, window_games: int, fingerprint: str) -> None:
+    """The run's honesty count, window size and the generation's proof, one row. `fingerprint_at`
+    is the same `now()` as `computed_at`: the fingerprint is proof of this generation and of no
+    other, so a writer that moves `computed_at` without it (an older client) leaves no proof."""
     conn.execute(
         """
-        INSERT INTO review_detection_state (player_id, config_version, unknown_candidates, window_games)
-        VALUES (%(pid)s, %(cv)s, %(unknown)s, %(games)s)
+        INSERT INTO review_detection_state
+            (player_id, config_version, unknown_candidates, window_games, fingerprint, fingerprint_at)
+        VALUES (%(pid)s, %(cv)s, %(unknown)s, %(games)s, %(fp)s, now())
         ON CONFLICT (player_id) DO UPDATE
         SET config_version = EXCLUDED.config_version, unknown_candidates = EXCLUDED.unknown_candidates,
-            window_games = EXCLUDED.window_games, computed_at = now()
+            window_games = EXCLUDED.window_games, computed_at = now(),
+            fingerprint = EXCLUDED.fingerprint, fingerprint_at = now()
         """,
-        {"pid": PLAYER_ID, "cv": REVIEW_CONFIG_VERSION, "unknown": unknown, "games": window_games},
+        {"pid": PLAYER_ID, "cv": REVIEW_CONFIG_VERSION, "unknown": unknown, "games": window_games, "fp": fingerprint},
     )

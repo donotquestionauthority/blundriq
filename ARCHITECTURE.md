@@ -31,14 +31,17 @@ Chess.com / Lichess APIs
         │                 sessionStorage, in the order added, cleared when the drill reaches Done)
         │                 pipeline srs-maintain un-retires mastered puzzles whose pattern recurs
         │
-        └─► pipeline review ──► review_events (the whole window retagged hourly, per-game replace, under the
-                                 review lock then the repertoire lock; regenerated, never migrated)
+        └─► pipeline review ──► review_events (the whole window retagged, per-game replace, under the review
+                                 lock then the repertoire lock; regenerated, never migrated; a run whose
+                                 inputs are the published generation's — core/review/window.py's fingerprint,
+                                 proven by review_detection_state — reads and writes nothing)
             pipeline position-evals ──► position_evals (score and best move per board before and after the player's
                                  opening decisions, rebuilt from a game's prefix and analysed as the
                                  canonical board; terminal boards from the board itself; 40 an hour)
             pipeline review-snapshot ──► review_snapshots (the Review page's position sections for every
                                  time class and opening, last in the chain; the page uses a row only while
-                                 its fingerprint still matches the data and settings, else computes)
+                                 its fingerprint still matches the data and settings, else computes; the build
+                                 skips a time class whose stored rows are complete and carry that fingerprint)
 
   Blunders (api) reads blunders by board ──► dismissed_blunder_fens; explain ──► ai_explanation_cache, ai_calls;
            create puzzle ──► puzzles (tagged 'custom', which no generator displaces)

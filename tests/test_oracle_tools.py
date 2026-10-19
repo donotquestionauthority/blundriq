@@ -261,7 +261,7 @@ def test_the_review_oracle_separates_exact_parity_from_positions_the_old_detecto
     plant_event(clean, 1, 4, ctx["fen_sequence"][4])
     plant_event(clean, 2, 0, small["fen_sequence"][0])
     plant_event(clean, 3, 4, ctx["fen_sequence"][4])
-    write.record_state(clean, 0, 2)  # the new side's state: two analysable games in the window
+    write.record_state(clean, 0, 2, "fp")  # the new side's state: two analysable games in the window
     clean.commit()
     real_state = q.old_review_state
     reads: list[int] = []
@@ -320,7 +320,7 @@ def test_the_review_oracle_fails_on_a_missing_game_a_wrong_unknown_total_or_a_mi
     ctx = qh_ctx()
     analysed_game(clean, 1, ctx)
     plant_event(clean, 1, 4, ctx["fen_sequence"][4])
-    write.record_state(clean, 33, 1)
+    write.record_state(clean, 33, 1, "fp")
     clean.commit()
     assert diff_review.main() == 0
     # the second read of a query is the scratch side: same rows, the game itself missing

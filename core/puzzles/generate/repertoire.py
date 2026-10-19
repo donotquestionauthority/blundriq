@@ -59,6 +59,27 @@ WHERE p.repertoire_line_id = rl.id AND p.is_repertoire = TRUE AND p.active = TRU
   AND (rl.active = FALSE OR ch.active = FALSE OR bk.active = FALSE)
 """
 
+
+# `_as_list` as SQL, `arr(x)`: an array stays; a string is parsed only when it is valid JSON by
+# PostgreSQL's rules (no NaN, no NUL escape — none of which a move or FEN list can hold) and kept
+# only when it parses to an array; anything else is NULL; nothing raises. The cast is
+# the THEN of a CASE whose condition cannot fail on any jsonb (PostgreSQL orders the arms of a
+# CASE, never the operands of an AND), so a stored "not JSON" is NULL, not an error.
+def _arr(column: str) -> str:
+    parsed = f"CASE WHEN pg_input_is_valid({column} #>> '{{}}', 'jsonb') THEN ({column} #>> '{{}}')::jsonb END"
+    return (
+        f"CASE WHEN jsonb_typeof({column}) = 'array' THEN {column}"
+        f" WHEN jsonb_typeof({column}) = 'string' THEN"
+        f" (SELECT CASE WHEN jsonb_typeof(p) = 'array' THEN p END FROM (SELECT {parsed} AS p) AS parsed)"
+        f" END"
+    )
+
+
+# One row per effectively-active line with the decision the generator makes, made where the
+# data is: `usable` (the bad-line test), `drifted` (the stored puzzle no longer matches the
+# line), whether the line passes the deviation gate, and the line's payload — `moves` and
+# `fen_sequence`, normalised — only for a line that will be written. The stored solution
+# columns are compared here and never selected; in the steady state no row carries a payload.
 _WORKLIST = cast(
     LiteralString,
     f"""
@@ -76,20 +97,41 @@ line_events AS (
     JOIN windowed w ON w.chess_game_id = grr.chess_game_id
     WHERE grr.player_id = %(pid)s AND grr.deviation_by = 'me'
     GROUP BY grl.line_id
+),
+norm AS (
+    SELECT rl.id AS line_id, rl.line_name, bk.color, bk.title AS book_title, ch.title AS chapter_title,
+           COALESCE(ev.games, 0) AS event_count,
+           pz.id AS existing_id, pz.active AS existing_active, pz.fen AS existing_fen, pz.title AS existing_title,
+           pz.drilled_at AS existing_drilled_at,
+           {_arr("rl.moves")} AS moves, {_arr("rl.fen_sequence")} AS fens,
+           {_arr("pz.solution_line")} AS stored_moves, {_arr("pz.solution_fen_sequence")} AS stored_fens
+    FROM repertoire_lines rl
+    JOIN chapters ch ON ch.id = rl.chapter_id
+    JOIN books bk ON bk.id = ch.book_id
+    LEFT JOIN line_events ev ON ev.line_id = rl.id
+    LEFT JOIN puzzles pz ON pz.repertoire_line_id = rl.id
+    WHERE bk.player_id = %(pid)s AND rl.active = TRUE AND ch.active = TRUE AND bk.active = TRUE
+),
+decided AS (
+    SELECT n.*,
+           (n.moves IS NOT NULL AND n.fens IS NOT NULL AND jsonb_array_length(n.fens) > 0
+            AND jsonb_array_length(n.fens) = jsonb_array_length(n.moves) + 1) AS usable,
+           n.fens ->> 0 AS fresh_fen,
+           (n.existing_id IS NOT NULL
+            AND (n.existing_fen IS DISTINCT FROM n.fens ->> 0
+                 OR n.stored_moves IS DISTINCT FROM n.moves
+                 OR n.stored_fens IS DISTINCT FROM n.fens)) AS drifted,
+           (n.event_count >= %(min_occurrences)s OR n.existing_drilled_at IS NOT NULL) AS gated_in
+    FROM norm n
 )
-SELECT rl.id AS line_id, rl.line_name, rl.moves, rl.fen_sequence, bk.color,
-       bk.title AS book_title, ch.title AS chapter_title,
-       COALESCE(ev.games, 0) AS event_count,
-       pz.id AS existing_id, pz.active AS existing_active, pz.fen AS existing_fen, pz.title AS existing_title,
-       pz.drilled_at AS existing_drilled_at,
-       pz.solution_line AS existing_solution_line,
-       pz.solution_fen_sequence AS existing_solution_fen_sequence
-FROM repertoire_lines rl
-JOIN chapters ch ON ch.id = rl.chapter_id
-JOIN books bk ON bk.id = ch.book_id
-LEFT JOIN line_events ev ON ev.line_id = rl.id
-LEFT JOIN puzzles pz ON pz.repertoire_line_id = rl.id
-WHERE bk.player_id = %(pid)s AND rl.active = TRUE AND ch.active = TRUE AND bk.active = TRUE
+SELECT d.line_id, d.line_name, d.color, d.book_title, d.chapter_title, d.event_count,
+       d.existing_id, d.existing_active, d.existing_title, d.existing_drilled_at,
+       d.usable, d.fresh_fen, d.drifted, d.gated_in,
+       CASE WHEN d.usable AND d.gated_in AND (d.existing_id IS NULL OR d.drifted OR NOT d.existing_active)
+            THEN d.moves END AS moves,
+       CASE WHEN d.usable AND d.gated_in AND (d.existing_id IS NULL OR d.drifted OR NOT d.existing_active)
+            THEN d.fens END AS fen_sequence
+FROM decided d
 """,
 )
 
@@ -160,7 +202,11 @@ def generate(conn: Connection[Any], config: Settings) -> dict[str, int]:
         stats.orphaned = cur.rowcount
         cur.execute(
             _WORKLIST,
-            {"pid": PLAYER_ID, "window": config.deviations_default_last_n_games},
+            {
+                "pid": PLAYER_ID,
+                "window": config.deviations_default_last_n_games,
+                "min_occurrences": config.deviation_puzzle_min_occurrences,
+            },
         )
         rows = cur.fetchall()
     stats.lines = len(rows)
@@ -172,9 +218,7 @@ def generate(conn: Connection[Any], config: Settings) -> dict[str, int]:
 
     for row in rows:
         existing_id = row["existing_id"]
-        moves = _as_list(row["moves"])
-        fens = _as_list(row["fen_sequence"])
-        if moves is None or fens is None or not fens or len(fens) != len(moves) + 1:
+        if not row["usable"]:
             # The line itself is unusable. Stop serving its puzzle, but leave the
             # player's SRS state alone: a re-import can make the line valid again.
             stats.skipped_bad_line += 1
@@ -182,19 +226,14 @@ def generate(conn: Connection[Any], config: Settings) -> dict[str, int]:
                 to_deactivate.append(int(existing_id))
             continue
 
-        if int(row["event_count"]) < config.deviation_puzzle_min_occurrences and row["existing_drilled_at"] is None:
+        if not row["gated_in"]:
             if existing_id is not None and row["existing_active"]:
                 to_deactivate.append(int(existing_id))
             continue
 
-        fresh_fen = str(fens[0])
+        fresh_fen = str(row["fresh_fen"])
         title = f"{row['book_title']} › {row['chapter_title']} › {row['line_name']}"
-        drifted = existing_id is not None and (
-            str(row["existing_fen"]) != fresh_fen
-            or _as_list(row["existing_solution_line"]) != moves
-            or _as_list(row["existing_solution_fen_sequence"]) != fens
-        )
-        if existing_id is not None and not drifted:
+        if existing_id is not None and not row["drifted"]:
             if row["existing_active"]:
                 # A renamed book or chapter is a label, not a new lesson: no reset.
                 if row["existing_title"] != title:
@@ -209,6 +248,8 @@ def generate(conn: Connection[Any], config: Settings) -> dict[str, int]:
             stats.rebuilt += 1
             to_reset.append(int(existing_id))
 
+        moves = row["moves"]
+        fens = row["fen_sequence"]
         upserts.append(
             {
                 "fen": fresh_fen,

@@ -140,3 +140,37 @@ def test_chess960_never_takes_a_window_slot(clean: psycopg.Connection[DictRow]) 
     conn.commit()
     out = match_player(conn, window=2)
     assert out["candidates"] == 2 and out["matched"] == 2
+
+
+def test_a_run_with_nothing_to_match_reads_no_line(clean: psycopg.Connection[DictRow], fresh_db_url: str) -> None:
+    """The lines (every FEN of every active line) are the step's whole cost when the window is
+    unchanged; with no game to match they are counted, not read."""
+    from typing import Any
+
+    from psycopg.rows import dict_row
+
+    class Recording(psycopg.Connection[DictRow]):
+        statements: list[str] = []
+        payload_rows = 0
+
+        def execute(self, *args: Any, **kwargs: Any) -> Any:
+            Recording.statements.append(str(args[0]))
+            cur = super().execute(*args, **kwargs)
+            if cur.description and {d.name for d in cur.description} >= {"moves", "fen_sequence"}:
+                rows = cur.fetchall()
+                Recording.payload_rows += len(rows)
+                cur = super().execute(*args, **kwargs)  # the caller fetches afresh
+            return cur
+
+    conn = clean
+    _seed(conn)
+    _game(conn, 1, ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qd8"], "black")
+    conn.commit()
+    with Recording.connect(fresh_db_url, row_factory=dict_row) as c:
+        assert match_player(c, window=1000) == {"candidates": 1, "matched": 1, "no_match": 0, "lines": 2}
+        c.commit()
+        Recording.statements, Recording.payload_rows = [], 0
+        assert match_player(c, window=1000) == {"candidates": 0, "matched": 0, "no_match": 0, "lines": 2}
+        c.commit()
+    assert Recording.payload_rows == 0
+    assert len(Recording.statements) == 3  # the lock, the unmatched games, the count

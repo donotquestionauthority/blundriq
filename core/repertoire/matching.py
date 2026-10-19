@@ -110,16 +110,19 @@ def match_game(
 # --- database -------------------------------------------------------------------
 
 
+# The lines a game is matched against: the whole active chain, with a FEN sequence to match on.
+_ACTIVE_LINES = """
+    FROM repertoire_lines rl
+    JOIN chapters ch ON ch.id = rl.chapter_id
+    JOIN books bk ON bk.id = ch.book_id
+    WHERE rl.active AND ch.active AND bk.active AND bk.player_id = %s AND rl.fen_sequence IS NOT NULL
+"""
+
+
 def active_lines(conn: Connection[Any]) -> list[Line]:
     rows = conn.execute(
-        """
-        SELECT rl.id AS line_id, bk.id AS book_id, ch.id AS chapter_id, bk.color, rl.moves, rl.fen_sequence
-        FROM repertoire_lines rl
-        JOIN chapters ch ON ch.id = rl.chapter_id
-        JOIN books bk ON bk.id = ch.book_id
-        WHERE rl.active AND ch.active AND bk.active AND bk.player_id = %s AND rl.fen_sequence IS NOT NULL
-        ORDER BY rl.id
-        """,
+        f"SELECT rl.id AS line_id, bk.id AS book_id, ch.id AS chapter_id, bk.color, rl.moves, rl.fen_sequence"
+        f" {_ACTIVE_LINES} ORDER BY rl.id",
         (PLAYER_ID,),
     ).fetchall()
     return [
@@ -220,10 +223,16 @@ def lock(conn: Connection[Any]) -> None:
 
 
 def match_player(conn: Connection[Any], window: int) -> dict[str, int]:
-    """The step: match every unmatched in-window game. Returns counts for the run log."""
+    """The step: match every unmatched in-window game. Returns counts for the run log. The
+    lines (every FEN of every active line) are read only when there is a game to match;
+    with none, the count alone keeps the log's shape."""
     with conn.transaction():
         lock(conn)
-        return _match_all(conn, unmatched_games(conn, window))
+        games = unmatched_games(conn, window)
+        if not games:
+            row = conn.execute(f"SELECT count(*) AS lines {_ACTIVE_LINES}", (PLAYER_ID,)).fetchone()
+            return {"candidates": 0, "matched": 0, "no_match": 0, "lines": int(row["lines"]) if row else 0}
+        return _match_all(conn, games)
 
 
 def rematch_window(conn: Connection[Any], window: int) -> dict[str, int]:

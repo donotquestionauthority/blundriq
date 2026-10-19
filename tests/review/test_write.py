@@ -122,8 +122,9 @@ def test_a_game_that_cannot_be_tagged_keeps_its_rows_and_fails_the_run(clean: ps
     conn.commit()
     out = run(conn)
     assert out["failed"] == 1 and out["games"] == 2 and out["events"] == 1 and out["failures"] == ["2: untaggable"]
+    assert out["deleted"] == 0  # the counts say what the run would have written
     assert len(events_of(conn, 2)) == 1  # the prior generation stays
-    assert events_of(conn, 1)[0]["cost"] != before  # the other game was still replaced (not all-or-nothing)
+    assert events_of(conn, 1)[0]["cost"] == before  # whole: the other game was not replaced either
     # a detector that raises is a failed game too, reported by its class chain only
     analysed_game(conn, 3, qh_ctx(), days_ago=0.5)
     conn.commit()
@@ -199,6 +200,8 @@ def test_workers_give_the_same_generation(clean: psycopg.Connection[DictRow]) ->
     conn.commit()
     serial = run(conn, workers=1)
     rows = [events_of(conn, g) for g in range(1, 5)]
+    conn.execute("UPDATE review_detection_state SET fingerprint = NULL")  # else the second run would skip
+    conn.commit()
     parallel = run(conn, workers=2)
     assert parallel["events"] == serial["events"] == 4
     assert [events_of(conn, g) for g in range(1, 5)] == rows
