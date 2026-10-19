@@ -11,7 +11,7 @@ import pytest
 from psycopg.rows import DictRow
 
 from core import settings as settings_store
-from core.review import read, snapshot
+from core.review import read, snapshot, stamp
 from core.settings import Settings
 from tests.review.position_helpers import ITALIAN, QGD, SCANDI, Games
 
@@ -111,7 +111,7 @@ def test_other_code_and_an_unbuilt_opening_compute_for_themselves(
 ) -> None:
     config = Settings()
     snapshot.build(clean, config)
-    monkeypatch.setattr(snapshot, "_code_stamp", lambda: "other code")
+    monkeypatch.setattr(stamp, "code_stamp", lambda: "other code")
     assert snapshot.read(clean, config, "focus", "__all__") is None
     monkeypatch.undo()
     assert snapshot.read(clean, config, "focus", "__all__") is not None
@@ -121,17 +121,40 @@ def test_other_code_and_an_unbuilt_opening_compute_for_themselves(
         read.page(clean, config, time_class="focus", opening="white:Nonsense")
 
 
-def test_the_code_stamp_covers_the_review_constants(monkeypatch: pytest.MonkeyPatch) -> None:
-    from core import constants
+def _with_source(monkeypatch: pytest.MonkeyPatch, module: str, extra: str) -> None:
+    """The stamp sees `module`'s source with `extra` appended, as a deploy of that change would."""
+    import importlib
+    import inspect
 
-    snapshot._code_stamp.cache_clear()  # type: ignore[reportPrivateUsage]
-    before = snapshot._code_stamp()  # type: ignore[reportPrivateUsage]
-    monkeypatch.setattr(constants, "REVIEW_LEAK_THRESHOLD", 0.05)
-    snapshot._code_stamp.cache_clear()  # type: ignore[reportPrivateUsage]
-    assert snapshot._code_stamp() != before  # type: ignore[reportPrivateUsage]
+    real = inspect.getsource
+    target = importlib.import_module(module)
+
+    def altered(obj: Any) -> str:
+        return real(obj) + (extra if obj is target else "")
+
+    monkeypatch.setattr(stamp.inspect, "getsource", altered)
+    stamp.code_stamp.cache_clear()
+
+
+def test_the_code_stamp_covers_the_detector_dependencies_outside_core_review(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The stamp covers what the detector computes with outside core.review: an unprefixed constant,
+    the shared SEE, the chess library's version."""
+    closure = stamp.dependency_closure()
+    assert {"core.analysis.motifs", "core.constants", "core.chess.board", "core.review.detect"} <= set(closure)
+    stamp.code_stamp.cache_clear()
+    before = stamp.code_stamp()
+    _with_source(monkeypatch, "core.constants", "\nCLOCK_DECIDED_TERMINATIONS = ('timeout',)\n")
+    assert stamp.code_stamp() != before
     monkeypatch.undo()
-    snapshot._code_stamp.cache_clear()  # type: ignore[reportPrivateUsage]
-    assert snapshot._code_stamp() == before  # type: ignore[reportPrivateUsage]
+    _with_source(monkeypatch, "core.analysis.motifs", "\n# a changed SEE\n")
+    assert stamp.code_stamp() != before
+    monkeypatch.undo()
+    monkeypatch.setattr(stamp.chess, "__version__", "0.0.0")
+    stamp.code_stamp.cache_clear()
+    assert stamp.code_stamp() != before
+    monkeypatch.undo()
+    stamp.code_stamp.cache_clear()
+    assert stamp.code_stamp() == before
 
 
 def test_a_rebuild_replaces_every_row(clean: psycopg.Connection[DictRow], corpus: Games) -> None:
@@ -153,7 +176,7 @@ def test_the_code_stamp_reads_every_review_module() -> None:
     import core.review
 
     files = {p.stem for p in Path(core.review.__path__[0]).glob("*.py") if p.stem != "__init__"}
-    assert {f"core.review.{f}" for f in files} <= set(snapshot.stamped_modules())
+    assert {f"core.review.{f}" for f in files} <= set(stamp.dependency_closure())
 
 
 def test_the_fingerprint_names_every_setting_the_sections_read() -> None:
@@ -168,3 +191,65 @@ def test_the_fingerprint_names_every_setting_the_sections_read() -> None:
         read_fields |= set(re.findall(r"config\.(\w+)", inspect.getsource(module)))
     read_fields -= {"review_faded_peak_es"}  # lost wins: read live, never stored
     assert read_fields <= set(snapshot.SETTINGS_READ), read_fields - set(snapshot.SETTINGS_READ)
+
+
+# --- the build skips a time class whose stored rows are complete and current ------------------
+
+
+def _snapshot_rows(conn: psycopg.Connection[DictRow]) -> list[tuple[Any, ...]]:
+    return [
+        tuple(r.values())
+        for r in conn.execute(
+            "SELECT time_class, opening, fingerprint, body, computed_at FROM review_snapshots"
+            " ORDER BY time_class, opening"
+        ).fetchall()
+    ]
+
+
+def test_a_build_over_unchanged_data_skips_both_classes_and_leaves_every_row(
+    clean: psycopg.Connection[DictRow], corpus: Games
+) -> None:
+    config = Settings()
+    first = snapshot.build(clean, config)
+    assert first["rebuilt"] == ["focus", "all"] and first["skipped"] == []
+    rows = _snapshot_rows(clean)
+    second = snapshot.build(clean, config)
+    assert second["skipped"] == ["focus", "all"] and second["rebuilt"] == [] and second["snapshots"] == 0
+    assert _snapshot_rows(clean) == rows
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["a new game outside the focus", "a new evaluation", "an opening row deleted", "a stale row", "an empty table"],
+)
+def test_a_change_rebuilds_the_classes_it_touches(
+    clean: psycopg.Connection[DictRow], corpus: Games, change: str
+) -> None:
+    """The games digest covers every analysable game, so a new game of any time class rebuilds
+    both classes (the conservative invalidation the page already relies on); a class whose rows
+    are missing, stale or absent rebuilds alone."""
+    config = Settings()
+    snapshot.build(clean, config)
+    rows = _snapshot_rows(clean)
+    expected = ["focus", "all"]
+    if change == "a new game outside the focus":
+        corpus.add(QGD, time_class="blitz", days=0.5)
+    elif change == "a new evaluation":
+        clean.execute("INSERT INTO position_evals (board_key, fen, eval_cp, depth) VALUES (1, 'x', 10, 18)")
+    elif change == "an opening row deleted":
+        clean.execute("DELETE FROM review_snapshots WHERE time_class = 'all' AND opening <> '__all__'")
+        expected = ["all"]
+    elif change == "a stale row":
+        clean.execute(
+            "UPDATE review_snapshots SET fingerprint = 'old' WHERE time_class = 'focus' AND opening = '__all__'"
+        )
+        expected = ["focus"]
+    else:
+        clean.execute("DELETE FROM review_snapshots")
+    clean.commit()
+    out = snapshot.build(clean, config)
+    assert out["rebuilt"] == expected and out["skipped"] == [c for c in ["focus", "all"] if c not in expected]
+    after = _snapshot_rows(clean)
+    untouched = [r for r in rows if r[0] not in expected]
+    assert [r for r in after if r[0] not in expected] == untouched
+    assert {r[0] for r in after} == {"focus", "all"}

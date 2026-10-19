@@ -657,13 +657,15 @@ CREATE SEQUENCE public.repertoire_lines_id_seq
 
 ALTER SEQUENCE public.repertoire_lines_id_seq OWNED BY public.repertoire_lines.id;
 
--- The last `pipeline review` run's window size and UNKNOWN-candidate count.
+-- The last `pipeline review` run's window size and UNKNOWN-candidate count, and the proof of the generation it published (migration 015).
 CREATE TABLE public.review_detection_state (
     player_id integer NOT NULL,
     config_version integer NOT NULL,
     unknown_candidates integer DEFAULT 0 NOT NULL,
     window_games integer DEFAULT 0 NOT NULL,
-    computed_at timestamp with time zone DEFAULT now() NOT NULL
+    computed_at timestamp with time zone DEFAULT now() NOT NULL,
+    fingerprint text,
+    fingerprint_at timestamp with time zone
 );
 
 -- One review event per (game, anchor ply): the player decision that lost the expected score, priced and routed; rewritten per game by `pipeline review`, never migrated.

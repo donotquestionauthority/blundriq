@@ -209,5 +209,7 @@ def test_the_lock_order_is_review_then_repertoire_on_every_path(url: str, monkey
         review.run(c)
         c.commit()
         assert not held(c, LOCK_REVIEW) and not held(c, LOCK_REPERTOIRE)  # both fell with the commit
-    assert seen == [(True, False)]  # the review lock was already held when the repertoire lock was taken
-    assert under_locks == [True]  # the settings row is read under both, like every other read
+        assert review.run(c)["skipped"] is True  # the skip path takes the same locks in the same order
+        c.commit()
+    assert seen == [(True, False)] * 2  # the review lock was already held when the repertoire lock was taken
+    assert under_locks == [True] * 2  # the settings row is read under both, like every other read

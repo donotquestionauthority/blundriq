@@ -32,6 +32,18 @@ KNOB_FIELDS = (
     "review_quiesce_max_plies",
 )
 
+# The window's rows, shared by the read and by the fingerprint that stands in for it.
+_WINDOW_ROWS = cast(
+    LiteralString,
+    """
+    FROM window_games w
+    JOIN chess_games cg ON cg.id = w.chess_game_id
+    JOIN player_games pg ON pg.chess_game_id = cg.id AND pg.player_id = %(pid)s
+    WHERE pg.analyzed_at_depth IS NOT NULL
+      AND cg.moves IS NOT NULL AND cg.fen_sequence IS NOT NULL AND cg.ply_analysis IS NOT NULL
+    """,
+)
+
 _WINDOW = cast(
     LiteralString,
     f"""
@@ -39,14 +51,78 @@ _WINDOW = cast(
     SELECT cg.id AS chess_game_id, cg.moves, cg.fen_sequence, cg.ply_analysis,
            cg.ply_analysis_depth AS analysis_depth, pg.player_color, pg.result, cg.termination,
            cg.variant, cg.starting_fen, cg.opening_eco, cg.canonical_family, cg.canonical_variation
-    FROM window_games w
-    JOIN chess_games cg ON cg.id = w.chess_game_id
-    JOIN player_games pg ON pg.chess_game_id = cg.id AND pg.player_id = %(pid)s
-    WHERE pg.analyzed_at_depth IS NOT NULL
-      AND cg.moves IS NOT NULL AND cg.fen_sequence IS NOT NULL AND cg.ply_analysis IS NOT NULL
+    {_WINDOW_ROWS}
     ORDER BY cg.played_at DESC NULLS LAST, cg.id DESC
     """,
 )
+
+# Everything the detector is given, digested where it is stored so that no payload leaves the
+# server: every column `_WINDOW` selects (the three jsonb columns by the hash of their canonical
+# text) as one row literal per game, the repertoire rows `_REPERTOIRE` joins before its
+# DISTINCT ON, the motif rows `_MOTIF_MISSED` returns, the schema version — plus the proof the
+# published generation carries (`proven`: its fingerprint, only while `fingerprint_at` is the
+# generation's own `computed_at`; an older client's upsert moves `computed_at` and not
+# `fingerprint_at`, so what it publishes carries no proof). Sums of 64-bit hashes are
+# order-independent, which is right: tagging is per game and the delete takes a set. A row
+# literal keeps NULLs in their positions, unlike concat_ws.
+_FINGERPRINT = cast(
+    LiteralString,
+    f"""
+    WITH {window_cte()},
+    w AS MATERIALIZED (
+        SELECT cg.id AS chess_game_id,
+               hashtextextended(row(cg.id, pg.analyzed_at_depth, cg.ply_analysis_depth, pg.player_color, pg.result,
+                                    cg.termination, cg.variant, cg.starting_fen, cg.opening_eco, cg.canonical_family,
+                                    cg.canonical_variation, hashtextextended(cg.moves::text, 0),
+                                    hashtextextended(cg.fen_sequence::text, 0),
+                                    hashtextextended(cg.ply_analysis::text, 0))::text, 0) AS h
+        {_WINDOW_ROWS}
+    )
+    SELECT (SELECT count(*) FROM w) AS games,
+           (SELECT sum(h) FROM w) AS games_digest,
+           (SELECT sum(hashtextextended(row(grr.chess_game_id, grr.book_id, grr.chapter_id, grr.deviated_at_ply,
+                                            grr.deviation_by, grr.expected_move, grl.line_id, grl.matched_ply,
+                                            hashtextextended(rl.moves::text, 0))::text, 0))
+              FROM game_repertoire_results grr
+              JOIN game_result_lines grl ON grl.game_repertoire_result_id = grr.id
+              JOIN repertoire_lines rl ON rl.id = grl.line_id
+              WHERE grr.player_id = %(pid)s
+                AND grr.chess_game_id = ANY(ARRAY(SELECT chess_game_id FROM w))) AS repertoire_digest,
+           (SELECT sum(hashtextextended(row(chess_game_id, ply, metric_type, theme, mate_in_moves)::text, 0))
+              FROM player_motif_events
+              WHERE player_id = %(pid)s AND chess_game_id = ANY(ARRAY(SELECT chess_game_id FROM w))
+                AND found IS FALSE AND metric_type IN ('motif', 'mate')) AS motif_digest,
+           (SELECT max(version) FROM schema_version) AS schema_version,
+           (SELECT fingerprint FROM review_detection_state
+             WHERE player_id = %(pid)s AND fingerprint IS NOT NULL AND fingerprint_at = computed_at) AS proven
+    """,
+)
+
+
+def fingerprint_row(conn: Connection[Any], window: int) -> dict[str, Any]:
+    """One row of scalars: the digests of the window's inputs and the published generation's
+    proof, in one statement (the locks are held, and Supabase is a network away)."""
+    found = conn.execute(_FINGERPRINT, {"pid": PLAYER_ID, "window": window}).fetchone()
+    return dict(found) if found else {}
+
+
+def fingerprint(row: dict[str, Any], knobs: dict[str, int], window: int, code: str) -> str:
+    """The digests with the knobs, the window size, the schema version and the code stamp, as one
+    sorted JSON string: what a generation is a function of."""
+    return json.dumps(
+        {
+            "code": code,
+            "schema_version": row.get("schema_version"),
+            "window": window,
+            "knobs": knobs,
+            "games": row.get("games"),
+            "games_digest": str(row.get("games_digest")),
+            "repertoire_digest": str(row.get("repertoire_digest")),
+            "motif_digest": str(row.get("motif_digest")),
+        },
+        sort_keys=True,
+    )
+
 
 # One row per game: the result joined to its deepest matched line (max matched_ply, then the
 # lowest line_id, the matcher's own tie-break), with the line's length in plies.
