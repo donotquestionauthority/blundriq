@@ -115,7 +115,10 @@ def _rep_scope(ptype: str, subtype: str | None) -> visibility.RepScope | None:
 def get_repertoire_scopes() -> dict[str, Any]:
     with db.transaction() as conn:
         lookahead = serve.lookahead_plies(settings.load(conn))
-        return {"books": visibility.repertoire_scopes(conn, lookahead_plies=lookahead)}
+        # `drill_max_lines`: how many lines one drill takes, so the list's "Drill these" can
+        # refuse before the serve does.
+        books = visibility.repertoire_scopes(conn, lookahead_plies=lookahead)
+        return {"books": books, "drill_max_lines": DRILL_MAX_LINES}
 
 
 class AttemptBody(BaseModel):

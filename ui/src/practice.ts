@@ -284,10 +284,13 @@ export interface RepertoireScopeBook {
   chapters: RepertoireScopeChapter[];
 }
 
-export async function getRepertoireScopes(): Promise<RepertoireScopeBook[]> {
-  const data = await api.get<{ books: RepertoireScopeBook[] }>("/practice/repertoire-scopes");
-  return data.books;
+/** `drill_max_lines`: how many lines one drill takes (core/constants.py; the server refuses more). */
+export interface RepertoireScopesResponse {
+  books: RepertoireScopeBook[];
+  drill_max_lines: number;
 }
+
+export const getRepertoireScopes = () => api.get<RepertoireScopesResponse>("/practice/repertoire-scopes");
 
 /** A repertoire SubType: `book:<id>`, `chapter:<id>`, `line:<id>`, or a bare `<id>` (a line, the
  *  older spelling). Anything else is no filter here; the server refuses it. */
