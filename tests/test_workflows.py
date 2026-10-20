@@ -1,4 +1,4 @@
-"""The hourly workflow's wiring, read from the file GitHub runs: the keepalive runs after the
+"""The scheduled workflow's wiring, read from the file GitHub runs: the keepalive runs after the
 chain whatever happened to it and leaves a manual pause alone, a failed keepalive sends the
 application's own alert, the secrets reach only the steps that need them, and both workflows
 download the engine the constants name."""
@@ -26,6 +26,20 @@ def _job() -> dict[str, Any]:
 
 def _steps() -> list[dict[str, Any]]:
     return _job()["steps"]
+
+
+def test_the_schedule_is_one_fixed_slot_a_day() -> None:
+    """Every scheduled run that finds a game reads tens of MB; more runs a day than this leave the
+    database tier's egress allowance short for the app, and a slot on the hour is the one GitHub
+    drops."""
+    doc = yaml.safe_load(WORKFLOW.read_text())
+    crons = [entry["cron"] for entry in doc.get("on", doc.get(True))["schedule"]]  # YAML 1.1 reads `on` as true
+    assert len(crons) == 1
+    for cron in crons:
+        minute, hour, dom, month, dow = cron.split()
+        assert minute.isdigit() and int(minute) in range(1, 60), cron
+        assert hour.isdigit() and int(hour) in range(24), cron
+        assert (dom, month, dow) == ("*", "*", "*")
 
 
 def _named(name: str) -> tuple[int, dict[str, Any]]:
