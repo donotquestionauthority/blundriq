@@ -819,7 +819,7 @@ function ReviewBody(p: {
             <p className="text-xs text-zinc-500">No mistake flagged here. Step through with Back / Next (or ← / → keys).</p>
           </div>
         ) : (
-          <div className={`${panel} text-zinc-500`}>{plyAnalysis ? "No flagged move here. Step through with Back / Next (or ← / → keys); flagged positions show the engine's best move and an explanation." : "This game has not been analysed yet: the board and the moves only, until the next hourly run reaches it."}</div>
+          <div className={`${panel} text-zinc-500`}>{plyAnalysis ? "No flagged move here. Step through with Back / Next (or ← / → keys); flagged positions show the engine's best move and an explanation." : "This game has not been analysed yet: the board and the moves only, until the next scheduled run reaches it."}</div>
         )}
 
         {repEntry && !leakBlocked && <RepertoirePanel entry={repEntry} bookArrowDrawn={bookArrowDrawn} walk={walkOnShow} onOpen={(lineId, openAt) => setWalk({ lineId, openAt })} onClose={() => setWalk(null)} />}

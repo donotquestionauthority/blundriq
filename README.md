@@ -6,7 +6,7 @@ One deployment serves one player behind one password; there are no accounts. To 
 
 ## Try it locally
 
-You need Python 3.14, Node 24, Postgres 16 or later (CI runs 17) where you can create databases, and Stockfish 19 on `PATH` (the hourly job pins the same version; analyses are labelled with it, and the pipeline refuses any other version rather than mislabel a result).
+You need Python 3.14, Node 24, Postgres 16 or later (CI runs 17) where you can create databases, and Stockfish 19 on `PATH` (the scheduled job pins the same version; analyses are labelled with it, and the pipeline refuses any other version rather than mislabel a result).
 
 ```
 git clone <your fork> blundriq && cd blundriq
@@ -49,9 +49,9 @@ What needs more than your games:
 
   **A book marked `"complete": true` is a replacement, not an addition.** In `scratch` mode such a book's file is taken as the whole book: lines and chapters already stored but missing from the file are switched off, and the course notes the file no longer carries are deleted (notes you wrote by hand are kept, and lines are never deleted, so their puzzles keep their progress). The worked example sets the flag. To add a few lines to a book you already imported, leave `complete` out (or set it to `false`): the import then only adds. Before re-importing a book that already exists, run the same command with `--dry-run` first: nothing is written, and its counts show what would change (`lines.vanished_deactivated`, `annotations.stale_deleted`).
 - **AI explanations** are optional. Each prompt names its model on the Preferences page, and the key for that provider (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) is read only when a button is pressed.
-- **"Run now" on Home** starts the hourly GitHub Actions workflow from the app. It needs `DISPATCH_TOKEN` (a fine-grained GitHub token for your fork alone, with Actions read and write) and `DISPATCH_REPO` (`owner/name`) in the API's environment, read only when the button is pressed; without them the button answers "dispatch is not configured" and everything else works. Home shows the latest run either way.
+- **"Run now" on Home** starts the GitHub Actions pipeline workflow from the app. It needs `DISPATCH_TOKEN` (a fine-grained GitHub token for your fork alone, with Actions read and write) and `DISPATCH_REPO` (`owner/name`) in the API's environment, read only when the button is pressed; without them the button answers "dispatch is not configured" and everything else works. Home shows the latest run either way.
 
-`.venv/bin/pipeline run` is the unattended hourly chain. It refuses to start without a way to report a failure (`RESEND_API_KEY`, `ALERT_EMAIL`, `ALERT_FROM`: a Resend account and a sender on a domain verified there), so run the steps by hand until you set those.
+`.venv/bin/pipeline run` is the unattended scheduled chain. It refuses to start without a way to report a failure (`RESEND_API_KEY`, `ALERT_EMAIL`, `ALERT_FROM`: a Resend account and a sender on a domain verified there), so run the steps by hand until you set those.
 
 ## Settings worth checking first
 
@@ -65,7 +65,7 @@ Every tunable lives in one database row, edited on the Preferences page; a fresh
 
 ## Deploying
 
-The original runs on free tiers: Postgres on Supabase, the API on Render, the UI on Vercel, and the hourly pipeline on GitHub Actions. Any host for each works the same way.
+The original runs on free tiers: Postgres on Supabase, the API on Render, the UI on Vercel, and the scheduled pipeline on GitHub Actions. Any host for each works the same way.
 
 **The UI and the API must share a site.** The login cookie is `SameSite=Lax`, so the browser sends it only when the UI and the API are under the same registrable domain, e.g. `app.example.org` and `api.example.org`, both on HTTPS. Two default host names such as `*.vercel.app` and `*.onrender.com` are different sites: the page loads, but every login fails. Use a domain you control for both.
 
@@ -75,7 +75,7 @@ The original runs on free tiers: Postgres on Supabase, the API on Render, the UI
 
 **UI** (Vercel or any static host): build `ui/` with `npm run build`, with `VITE_API_URL=https://api.example.org` set at build time. Point `app.example.org` at it.
 
-**Hourly pipeline**: `.github/workflows/pipeline.yml` runs `pipeline run` every hour. Add `DATABASE_URL`, `RESEND_API_KEY`, `ALERT_EMAIL` and `ALERT_FROM` as repository secrets and enable Actions on your copy (scheduled workflows start disabled on a fork). GitHub also disables a public repository's schedules after 60 days without commits, silently; the job re-enables its own workflow after every run and sends the failure email if it cannot, but GitHub does not promise that this resets the 60 days, so glance at the Actions tab every few weeks. Its console output is public on a public repository, so the code prints counts and error class names only, never messages or handles; keep it that way in anything you add.
+**Scheduled pipeline**: `.github/workflows/pipeline.yml` runs `pipeline run` once a day (a run that finds new games reads tens of MB from the database, so hourly is more egress than a free database tier allows; change the `cron` line to taste). Add `DATABASE_URL`, `RESEND_API_KEY`, `ALERT_EMAIL` and `ALERT_FROM` as repository secrets and enable Actions on your copy (scheduled workflows start disabled on a fork). GitHub also disables a public repository's schedules after 60 days without commits, silently; the job re-enables its own workflow after every run and sends the failure email if it cannot, but GitHub does not promise that this resets the 60 days, so glance at the Actions tab every few weeks. Its console output is public on a public repository, so the code prints counts and error class names only, never messages or handles; keep it that way in anything you add.
 
 ## Developing
 

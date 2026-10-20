@@ -14,7 +14,7 @@ import { lichessAnalyzeUrl } from "../utils/chess";
  * One opponent at a time: how active they are, what they play and where it goes well or badly
  * for them, the positions where they choose between replies on lines I play against them, and
  * the positions we both reach — my blunders first, then my repertoire, then everything else.
- * Adding an opponent verifies the handles and queues the import for the next hourly run;
+ * Adding an opponent verifies the handles and queues the import for the next scheduled run;
  * removing one deletes the profile. A dismissal here is the same as on Blunders and sticks;
  * the Dismissed-boards panel at the foot is where any dismissed board comes back from.
  */
@@ -438,7 +438,7 @@ function ScoutBody({ profile, filters, setFilters, version, bump }: { profile: O
           {failure ?? report.error}
         </p>
       )}
-      {!profile.is_initialized && <p className="text-sm text-zinc-500">This opponent's games are imported on the next hourly run; the page fills in after that.</p>}
+      {!profile.is_initialized && <p className="text-sm text-zinc-500">This opponent's games are imported on the next scheduled run; the page fills in after that.</p>}
 
       {r && <Activity name={profile.name} a={r.activity} />}
       {r && (

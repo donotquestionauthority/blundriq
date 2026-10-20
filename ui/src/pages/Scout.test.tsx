@@ -224,7 +224,7 @@ describe("Scout page", () => {
     const post = calls.find((c) => c.path === "/scout/profiles" && c.method === "POST" && c.body?.name === "Caruana");
     expect(post?.body).toEqual({ name: "Caruana", lichess_username: "x" });
     expect(screen.getByText(/importing on the next run/)).toBeInTheDocument();
-    expect(screen.getByText(/imported on the next hourly run/)).toBeInTheDocument();
+    expect(screen.getByText(/imported on the next scheduled run/)).toBeInTheDocument();
   });
 
   it("removing confirms first, then refetches the profiles", async () => {

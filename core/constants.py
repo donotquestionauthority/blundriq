@@ -28,7 +28,7 @@ ANALYSABLE_VARIANTS = (VARIANT_STANDARD,)
 # the two together. Review's position statistics read only this prefix.
 OPENING_PREFIX_PLIES = 30
 
-# Position evaluations (`pipeline position-evals`): how many boards an hourly run evaluates.
+# Position evaluations (`pipeline position-evals`): how many boards a scheduled run evaluates.
 POSITION_EVALS_PER_RUN = 40
 
 # The hourly job's `timeout-minutes` in pipeline.yml (tests/test_workflows.py pins the two
