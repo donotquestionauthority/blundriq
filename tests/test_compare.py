@@ -4,6 +4,7 @@ and their two routes."""
 from __future__ import annotations
 
 import json
+import random
 from typing import Any
 
 import chess
@@ -12,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from psycopg.rows import DictRow
 
+from core import oracle
 from core.constants import PLAYER_ID
 from core.repertoire import branch_compare as bc
 from core.repertoire import neighbourhood as nb
@@ -835,3 +837,206 @@ def test_a_patterns_most_common_move_can_be_illegal_on_its_displayed_board(
         == 400
     )
     assert client.get("/repertoire/similar", params={"fen": card["deviation_fen"]}).status_code == 200
+
+
+# --- the sparse statement: what leaves the database, and parity with whole lines ---------
+
+
+def _raw_line(conn: psycopg.Connection[DictRow], id: int, chapter_id: int, moves: Any, fens: Any) -> None:
+    """A line stored exactly as given, malformed or not."""
+    conn.execute(
+        "INSERT INTO repertoire_lines (id, chapter_id, line_name, moves, fen_sequence) VALUES (%s, %s, %s, %s, %s)",
+        (id, chapter_id, f"Raw {id}", json.dumps(moves), json.dumps(fens)),
+    )
+
+
+def _kept(rows: list[dict[str, Any]], line_id: int) -> list[int] | None:
+    """The plies the statement kept for a line (its non-null signatures), None when it is absent."""
+    for r in rows:
+        if r["line_id"] == line_id:
+            return [i for i, s in enumerate(r["material_sigs"]) if s is not None]
+    return None
+
+
+def _same(conn: psycopg.Connection[DictRow], fen: str, move: str | None = None, *, d: int, cap: int = 50) -> None:
+    got = nb.similar_positions(conn, fen, move, max_distance=d, max_positions=cap)
+    want = oracle.similar_whole_lines(conn, fen, move, max_distance=d, max_positions=cap)
+    assert got == want
+
+
+@pytest.fixture()
+def two_books(clean: psycopg.Connection[DictRow]) -> psycopg.Connection[DictRow]:
+    h.player(clean)
+    h.book(clean, 1, "W", "white")
+    h.chapter(clean, 1, 1, "c")
+    h.book(clean, 2, "B", "black")
+    h.chapter(clean, 2, 2, "c")
+    return clean
+
+
+def test_a_ply_at_the_distance_is_kept_and_one_past_it_is_not(two_books: psycopg.Connection[DictRow]) -> None:
+    conn = two_books
+    h.line(conn, 1, 1, "Open", ["e4", "e5", "Nf3", "Nc6"])  # ply 2 at distance 0, ply 4 at 4
+    h.line(conn, 2, 1, "Queen's pawn", ["d4", "d5", "c4", "e6"])  # every White-to-move ply over 4 away
+    conn.commit()
+    query = fen_after(["e4", "e5"])
+    _, rows = nb.candidate_rows(conn, query, 4)
+    assert _kept(rows, 1) == [2, 4] and _kept(rows, 2) is None
+    _, rows = nb.candidate_rows(conn, query, 3)
+    assert _kept(rows, 1) == [2]
+    for d in (3, 4, 8):
+        _same(conn, query, d=d)
+
+
+def test_the_sparse_lists_hold_what_verification_reads_and_their_stored_lengths(
+    two_books: psycopg.Connection[DictRow],
+) -> None:
+    conn = two_books
+    moves = ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3"]
+    fens = h.line(conn, 1, 1, "Italian", moves)
+    conn.commit()
+    _, rows = nb.candidate_rows(conn, fen_after(["e4", "e5"]), 4)
+    (row,) = rows
+    assert (row["moves_len"], row["fens_len"], row["sigs_len"]) == (7, 8, 8)
+    # Kept plies 2 and 4: fens 1-4 and moves 1-4 as stored, null before, cut after ply 4.
+    assert row["fen_sequence"] == [None, *fens[1:5]]
+    assert row["moves"] == [None, *moves[1:5]]
+    assert len(row["material_sigs"]) == 5
+
+
+def test_a_kept_last_ply_has_no_next_move_and_stays_an_end_of_line(two_books: psycopg.Connection[DictRow]) -> None:
+    conn = two_books
+    h.line(conn, 1, 1, "Short", ["e4", "e5"])
+    h.line(conn, 2, 1, "Longer", ["e4", "e5", "Nf3"])
+    conn.commit()
+    query = fen_after(["e4", "e5"])
+    _, rows = nb.candidate_rows(conn, query, 4)
+    short = next(r for r in rows if r["line_id"] == 1)
+    assert short["moves"] == [None, "e5"] and short["moves_len"] == 2
+    r = nb.similar_positions(conn, query, None, max_distance=4, max_positions=12)
+    assert {g["prep_status"] for g in r["neighbours"][0]["groups"]} == {"move", "end_of_line"}
+    _same(conn, query, d=4)
+
+
+def test_repeated_boards_and_interior_holes_match_the_whole_lines(two_books: psycopg.Connection[DictRow]) -> None:
+    conn = two_books
+    # The same board at ply 2 and ply 6 (knights out and back).
+    h.line(conn, 1, 1, "Shuffle", ["e4", "e5", "Nf3", "Nf6", "Ng1", "Ng8", "Nc3"])
+    # A JSON null arriving move, and a JSON null parent board, each in front of a matching ply.
+    italian = spine(None, ["e4", "e5", "Nf3", "Nc6"])
+    _raw_line(conn, 2, 1, ["e4", None, "Nf3", "Nc6"], italian)
+    _raw_line(conn, 3, 1, ["e4", "e5", "Nf3", "Nc6"], [italian[0], None, *italian[2:]])
+    # A JSON null next move at a kept ply: the occurrence has no expected move, so it is an end of line.
+    _raw_line(conn, 4, 1, ["e4", "e5", None, "Nc6"], italian)
+    conn.commit()
+    query = fen_after(["e4", "e5"])
+    _, rows = nb.candidate_rows(conn, query, 4)
+    assert _kept(rows, 1) == [2, 4, 6]
+    for d in (1, 4, 8):
+        _same(conn, query, d=d)
+    _same(conn, query, "Nf3", d=4)
+
+
+def test_placements_sql_cannot_read_are_kept_for_python_to_judge(two_books: psycopg.Connection[DictRow]) -> None:
+    conn = two_books
+    real = spine(None, ["e4", "e5", "Nf3"])
+    query = real[2]
+    rest = query.split(" ", 1)[1]
+    variants = {
+        11: "rnbqkbnr/pppp01ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR " + rest,  # a 0 digit Python reads as nothing
+        12: "rnbqkbnr/pppp١ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR " + rest,  # a non-ASCII digit Python reads as 1
+        13: "\t" + query,  # leading whitespace Python strips
+        14: "rnbqkbnr/pppp1ppp/9/4p3/4P3/8/PPPP1PPP/RNBQKBNR " + rest,  # a 9: Python refuses the rank
+        15: "rnbqkbnr/pppp1ppp/4p3/4P3/8/PPPP1PPP/RNBQKBNR " + rest,  # seven ranks: Python refuses
+        16: "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPPxPPP/RNBQKBNR " + rest,  # an odd piece letter Python counts as a square
+    }
+    for line_id, fen in variants.items():  # a chapter each: a chapter holds a move list once
+        h.chapter(conn, line_id, 1, f"c{line_id}")
+        _raw_line(conn, line_id, line_id, ["e4", "e5", "Nf3"], [real[0], real[1], fen, real[3]])
+    # A non-string board whose text still carries the query's material signature.
+    h.chapter(conn, 17, 1, "c17")
+    _raw_line(conn, 17, 17, ["e4", "e5", "Nf3"], [real[0], real[1], {query: 0}, real[3]])
+    # The same spellings Python reads (a 0 digit, a leading tab) at a board beyond the distance: SQL
+    # expands them as Python does, so it drops them.
+    far = spine(None, ["d4", "d5"])[2]
+    far_rest = far.split(" ", 1)[1]
+    far_variants = {21: "rnbqkbnr/ppp01pppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR " + far_rest, 22: "\t" + far}
+    for line_id, fen in far_variants.items():
+        h.chapter(conn, line_id, 1, f"c{line_id}")
+        _raw_line(conn, line_id, line_id, ["d4", "d5", "Nf3"], [*spine(None, ["d4", "d5"])[:2], fen, real[3]])
+    conn.commit()
+    _, rows = nb.candidate_rows(conn, query, 1)
+    for line_id in (11, 12, 13, 14, 15, 16, 17):
+        assert _kept(rows, line_id) == [2], line_id
+    for line_id, fen in far_variants.items():
+        assert nb.placement_distance(nb.expand_placement(query), nb.expand_placement(fen)) > 1
+        assert _kept(rows, line_id) is None, line_id
+    admitted = {
+        line_id
+        for line_id in variants
+        if nb.expand_and_verify(
+            [r for r in rows if r["line_id"] == line_id], query, nb.query_material(conn, query)[0], 1
+        )
+    }
+    assert {11, 12, 13} <= admitted and not admitted & {14, 15}
+    for d in (1, 8):
+        _same(conn, query, d=d)
+
+
+def test_a_line_whose_moves_are_not_a_list_or_break_the_length_rule_is_skipped(
+    two_books: psycopg.Connection[DictRow],
+) -> None:
+    conn = two_books
+    fens = spine(None, ["e4", "e5", "Nf3"])
+    _raw_line(conn, 1, 1, {"not": "a list"}, fens)
+    _raw_line(conn, 2, 1, ["e4", "e5", "Nf3"], fens[:3])  # one board short
+    _raw_line(conn, 3, 1, [], fens[:1])
+    # One board too many: cut after kept ply 2 the lists would line up (2 moves, 3 boards), so only
+    # the stored lengths keep the line out.
+    _raw_line(conn, 4, 1, ["e4", "e5"], fens)
+    conn.commit()
+    query = fen_after(["e4", "e5"])
+    _, rows = nb.candidate_rows(conn, query, 4)
+    assert next(r for r in rows if r["line_id"] == 1)["moves"] == {"not": "a list"}
+    extra = next(r for r in rows if r["line_id"] == 4)
+    assert (len(extra["moves"]), len(extra["fen_sequence"]), extra["moves_len"], extra["fens_len"]) == (2, 3, 2, 4)
+    assert nb.similar_positions(conn, query, None, max_distance=4, max_positions=12)["neighbours"] == []
+    _same(conn, query, d=4)
+
+
+def test_random_repertoires_answer_exactly_as_whole_lines_do(two_books: psycopg.Connection[DictRow]) -> None:
+    """Random games as lines of both colours, queried at their own boards and at boards one random
+    move away, at every distance: the sparse statement and the whole-line reference agree."""
+    conn = two_books
+    rng = random.Random(20261020)
+    boards: list[str] = []
+    seen: set[str] = set()
+    line_id = 0
+    for colour_chapter in (1, 2):
+        for _ in range(30):
+            board = chess.Board()
+            moves: list[str] = []
+            for _ in range(rng.randint(4, 24)):
+                legal = list(board.legal_moves)
+                if not legal:
+                    break
+                mv = rng.choice(legal[:6]) if rng.random() < 0.7 else rng.choice(legal)
+                moves.append(board.san(mv))
+                board.push(mv)
+            key = json.dumps(moves)
+            if not moves or key in seen:
+                continue
+            seen.add(key)
+            line_id += 1
+            boards.extend(h.line(conn, line_id, colour_chapter, f"R{line_id}", moves)[1:])
+    conn.commit()
+    queries = rng.sample(boards, 40)
+    for fen in list(queries[:20]):
+        b = chess.Board(fen)
+        legal = list(b.legal_moves)
+        if legal:
+            b.push(rng.choice(legal))
+            queries.append(b.fen())
+    for fen in queries:
+        for d in (1, 2, 4, 6, 8):
+            _same(conn, fen, d=d, cap=rng.choice([1, 12, 50]))

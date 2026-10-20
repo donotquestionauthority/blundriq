@@ -7,12 +7,13 @@ has no arriving move — and a node is admitted only if its stored move parses a
 parent FEN, so every neighbour on the wire says how it arose.
 
 The search runs in a fixed order, and the order is the contract: (1) a GIN probe on
-`material_keys` picks candidate lines by the query's material hash; (2) the hash-matched
-plies of those lines have their material *signature* computed in SQL and compared as text
-against the query's — a hash is a prefilter, never an identity, and the CASE computes the
-signature for matched elements only (computing it for every ply of every candidate line was
-11.8 s of an 11.87 s request); (3) only then the placement distance, dedup by board text,
-grouping, ranking and the cap. Nothing downstream ever sees a ply that failed step 2.
+`material_keys` picks candidate lines by the query's material hash; (2) the hash-matched plies of
+those lines that SQL cannot prove to be beyond the distance have their material *signature*
+computed in SQL and compared as text against the query's — a hash is a prefilter, never an
+identity, and the CASE computes the signature for those elements only (for every ply of every
+candidate line it takes seconds on a full repertoire); only those plies, with the
+elements around them, leave the database; (3) only then the placement distance, dedup by board
+text, grouping, ranking and the cap. Nothing downstream ever sees a ply that failed step 2.
 
 Distance is the number of the 64 squares whose occupant differs: a piece moving is 2,
 castling 4, an en passant capture 3, so odd distances exist. The query board itself is not
@@ -156,18 +157,58 @@ class NoSignature(ValueError):
 
 _QUERY_SIG_SQL = "SELECT bq_material_sig(%(fen)s) AS sig, bq_material_key(%(fen)s) AS key"
 
-_CANDIDATE_LINES_SQL = """
-SELECT rl.id AS line_id, rl.line_name, rl.moves, rl.fen_sequence, rl.is_alternative,
-       ch.title AS chapter_title, bk.title AS book_title,
-       (SELECT array_agg(CASE WHEN k.key = %(qkey)s THEN bq_material_sig(rl.fen_sequence->>(k.ord::int - 1)) END
-                         ORDER BY k.ord)
-          FROM unnest(rl.material_keys) WITH ORDINALITY AS k(key, ord)) AS material_sigs
+# A ply's placement, FEN field 1 with the ranks run together and every digit spelled out as that
+# many '.', the way `expand_placement` reads it. Only a key-matched ply other than ply 0 is
+# expanded; one is dropped only when its expansion is 64 squares of the standard alphabet and more
+# than %(max_distance)s of them differ from the query's (`expand_placement` of it, bound as
+# %(qplacement)s). Any placement SQL cannot read that way is kept for `expand_and_verify` to judge,
+# so for every ply `expand_and_verify` admits the SQL distance is the same count and the ply is never
+# dropped here.
+#
+# Each surviving line comes back sparse: `moves` and `fen_sequence` hold the stored element at every
+# index `expand_and_verify` reads for a kept ply i (fen i - 1 and i, move i - 1 and i), JSON null
+# elsewhere, cut after the last kept ply; `material_sigs` holds the signature at the kept plies only;
+# `moves_len`, `fens_len` and `sigs_len` are the stored lengths the lists are padded back to. A
+# `moves` that is not an array is returned as stored. A line with no kept ply is not returned.
+_CANDIDATE_LINES_SQL = r"""
+SELECT rl.id AS line_id, rl.line_name, rl.is_alternative, ch.title AS chapter_title, bk.title AS book_title,
+       CASE WHEN jsonb_typeof(rl.moves) = 'array' THEN jsonb_array_length(rl.moves) END AS moves_len,
+       CASE WHEN jsonb_typeof(rl.fen_sequence) = 'array' THEN jsonb_array_length(rl.fen_sequence) END AS fens_len,
+       cardinality(rl.material_keys) AS sigs_len,
+       CASE WHEN jsonb_typeof(rl.moves) = 'array' THEN
+              COALESCE((SELECT jsonb_agg(CASE WHEN g.n = ANY(kp.plies) OR g.n + 1 = ANY(kp.plies)
+                                              THEN rl.moves -> g.n ELSE 'null'::jsonb END ORDER BY g.n)
+                          FROM generate_series(0, LEAST(kp.last, jsonb_array_length(rl.moves) - 1)) AS g(n)),
+                       '[]'::jsonb)
+            ELSE rl.moves END AS moves,
+       (SELECT jsonb_agg(CASE WHEN g.n = ANY(kp.plies) OR g.n + 1 = ANY(kp.plies)
+                              THEN rl.fen_sequence -> g.n ELSE 'null'::jsonb END ORDER BY g.n)
+          FROM generate_series(0, kp.last) AS g(n)) AS fen_sequence,
+       (SELECT array_agg(CASE WHEN g.n = ANY(kp.plies) THEN bq_material_sig(rl.fen_sequence->>g.n) END ORDER BY g.n)
+          FROM generate_series(0, kp.last) AS g(n)) AS material_sigs
 FROM repertoire_lines rl
 JOIN chapters ch ON ch.id = rl.chapter_id
 JOIN books bk ON bk.id = ch.book_id
+CROSS JOIN LATERAL (
+    SELECT array_agg((k.ord - 1)::int ORDER BY k.ord) AS plies, max(k.ord - 1)::int AS last
+    FROM unnest(rl.material_keys) WITH ORDINALITY AS k(key, ord)
+    CROSS JOIN LATERAL (
+        SELECT replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(
+                 split_part(regexp_replace(rl.fen_sequence->>(k.ord::int - 1), '^\s+', ''), ' ', 1),
+                 '/', ''), '0', ''), '1', '.'), '2', '..'), '3', '...'), '4', '....'), '5', '.....'),
+                 '6', '......'), '7', '.......'), '8', '........'), '9', '.........') AS placement
+        OFFSET 0  -- a fence: the expansion is computed once per ply, not once per square counted
+    ) e
+    WHERE k.key = %(qkey)s AND k.ord > 1
+      AND NOT (e.placement ~ '^[.PNBRQKpnbrqk]{64}$'
+               AND (SELECT count(*) FROM generate_series(1, 64) AS s(n)
+                     WHERE substr(e.placement, s.n, 1) <> substr(%(qplacement)s, s.n, 1)) > %(max_distance)s)
+) kp
 WHERE bk.player_id = %(pid)s AND rl.active AND ch.active AND bk.active
   AND bk.color = %(book_color)s
   AND rl.material_keys && ARRAY[%(qkey)s::bigint]
+  AND kp.last IS NOT NULL
+ORDER BY rl.id
 """
 
 
@@ -185,17 +226,27 @@ def query_material(conn: Connection[Any], fen: str) -> tuple[str, int]:
 # --- corpus expansion: verify, distance, admission -----------------------------------------
 
 
+def _padded(items: list[Any] | None, length: int | None) -> list[Any] | None:
+    """`items` extended with None to the stored `length` the SQL reports (a sparse list is cut
+    after its last needed element); unchanged when there is no length or nothing to add."""
+    if items is None or length is None or len(items) >= length:
+        return items
+    return items + [None] * (length - len(items))
+
+
 def expand_and_verify(rows: list[Row], query_fen: str, query_sig: str, max_distance: int) -> list[Row]:
-    """Candidate line rows to the verified, distance-qualified occurrences ("carriers"). The
-    exact-signature test runs first on every ply; a NULL signature (a hash-unmatched element,
-    or a malformed stored FEN) never equals a real one, so both fail here."""
+    """Candidate line rows to the verified, distance-qualified occurrences ("carriers"). A row
+    whose lists are sparse (`_CANDIDATE_LINES_SQL`) is padded back to its stored lengths first, so
+    every check below sees the lengths the line has. The exact-signature test runs first on every
+    ply; a NULL signature (a hash-unmatched or prefiltered element, or a malformed stored FEN)
+    never equals a real one, so all of those fail here."""
     query_stm = side_to_move(query_fen)
     query_placement = expand_placement(query_fen)
     carriers: list[Row] = []
     for r in rows:
-        moves = _tokens(r["moves"])
-        fens = _tokens(r["fen_sequence"])
-        sigs = cast(list[str | None] | None, r["material_sigs"])
+        moves = _padded(_tokens(r["moves"]), r.get("moves_len"))
+        fens = _padded(_tokens(r["fen_sequence"]), r.get("fens_len"))
+        sigs = _padded(cast(list[str | None] | None, r["material_sigs"]), r.get("sigs_len"))
         if not moves or not fens or sigs is None:
             continue
         if len(fens) != len(moves) + 1 or len(sigs) != len(fens):
@@ -367,6 +418,24 @@ def assemble_response(
     }
 
 
+def candidate_rows(conn: Connection[Any], fen: str, max_distance: int) -> tuple[str, list[Row]]:
+    """(the query's signature, `_CANDIDATE_LINES_SQL`'s rows) for `fen`: the candidate lines of
+    the book colour to move, sparse, ready for `expand_and_verify`."""
+    query_sig, query_key = query_material(conn, fen)
+    book_color = "white" if side_to_move(fen) == "w" else "black"
+    params = {
+        "pid": PLAYER_ID,
+        "qkey": query_key,
+        "book_color": book_color,
+        "qplacement": expand_placement(fen),
+        "max_distance": max_distance,
+    }
+    with conn.cursor() as cur:
+        cur.execute(_CANDIDATE_LINES_SQL, params)
+        rows = [dict(r) for r in cur.fetchall()]
+    return query_sig, rows
+
+
 def similar_positions(
     conn: Connection[Any], fen: str, canonical_query_move: str | None, *, max_distance: int, max_positions: int
 ) -> Row:
@@ -374,10 +443,6 @@ def similar_positions(
     query move is already canonical SAN or None; the bounds are the route-resolved values."""
     if not 1 <= max_distance <= MAX_DISTANCE_CEILING or max_positions < 1:
         raise ValueError("search bounds out of domain")
-    query_sig, query_key = query_material(conn, fen)
-    book_color = "white" if side_to_move(fen) == "w" else "black"
-    with conn.cursor() as cur:
-        cur.execute(_CANDIDATE_LINES_SQL, {"pid": PLAYER_ID, "qkey": query_key, "book_color": book_color})
-        rows = [dict(r) for r in cur.fetchall()]
+    query_sig, rows = candidate_rows(conn, fen, max_distance)
     carriers = expand_and_verify(rows, fen, query_sig, max_distance)
     return assemble_response(fen, canonical_query_move, carriers, max_distance, max_positions)

@@ -15,6 +15,7 @@ from psycopg import Connection
 
 from core.chess.eligibility import analysable_sql
 from core.constants import PLAYER_ID, STOCKFISH_DEPTH
+from core.repertoire import neighbourhood
 
 RESULT_FIELDS = (
     "book_id",
@@ -677,3 +678,36 @@ def game_fens(conn: Connection[Any], ids: list[int]) -> dict[int, tuple[str, lis
     """{game id: (variant, FEN sequence)} for the games given, from this database."""
     rows = conn.execute("SELECT id, variant, fen_sequence FROM chess_games WHERE id = ANY(%s)", (ids,)).fetchall()
     return {int(r["id"]): (str(r["variant"]), list(r["fen_sequence"] or [])) for r in rows}
+
+
+# The Similar positions reference: every candidate line read whole. `similar_whole_lines` must equal
+# `neighbourhood.similar_positions` response for response.
+SIMILAR_CANDIDATES_WHOLE_LINES = """
+SELECT rl.id AS line_id, rl.line_name, rl.moves, rl.fen_sequence, rl.is_alternative,
+       ch.title AS chapter_title, bk.title AS book_title,
+       (SELECT array_agg(CASE WHEN k.key = %(qkey)s THEN bq_material_sig(rl.fen_sequence->>(k.ord::int - 1)) END
+                         ORDER BY k.ord)
+          FROM unnest(rl.material_keys) WITH ORDINALITY AS k(key, ord)) AS material_sigs
+FROM repertoire_lines rl
+JOIN chapters ch ON ch.id = rl.chapter_id
+JOIN books bk ON bk.id = ch.book_id
+WHERE bk.player_id = %(pid)s AND rl.active AND ch.active AND bk.active
+  AND bk.color = %(book_color)s
+  AND rl.material_keys && ARRAY[%(qkey)s::bigint]
+"""
+
+
+def similar_whole_lines(
+    conn: Connection[Any], fen: str, canonical_query_move: str | None, *, max_distance: int, max_positions: int
+) -> dict[str, Any]:
+    """`neighbourhood.similar_positions` over the reference statement."""
+    query_sig, query_key = neighbourhood.query_material(conn, fen)
+    book_color = "white" if neighbourhood.side_to_move(fen) == "w" else "black"
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            SIMILAR_CANDIDATES_WHOLE_LINES, {"pid": PLAYER_ID, "qkey": query_key, "book_color": book_color}
+        ).fetchall()
+    ]
+    carriers = neighbourhood.expand_and_verify(rows, fen, query_sig, max_distance)
+    return neighbourhood.assemble_response(fen, canonical_query_move, carriers, max_distance, max_positions)
