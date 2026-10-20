@@ -519,8 +519,8 @@ describe("Practice: Drill these", () => {
     await vi.waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/practice"));
   });
 
-  it("browser Back and Forward across a scope change: a drill of the whole book returns to the whole book, not to the chapter chosen later", async () => {
-    stubFetch({
+  it("browser Back across a scope change: a drill of the whole repertoire returns to the whole repertoire, not to the chapter chosen later", async () => {
+    const calls = stubFetch({
       "/practice/puzzles": () => ({ status: 200, body: list([line(31, 901)]) }),
       "/practice/repertoire-scopes": () => ({ status: 200, body: scopes() }),
       "/practice/drill": () => ({ status: 200, body: drillBody([line(31, 901)]) }),
@@ -539,10 +539,18 @@ describe("Practice: Drill these", () => {
     fireEvent.click(screen.getByText("browser back"));
     await screen.findByTestId("drill-header");
     expect(screen.getByRole("link", { name: "Stop" })).toHaveAttribute("href", "/practice?type=repertoire&srs=all&last_n_games=0"); // an omitted subtype is no subtype
-    // Forward again, to the stripped list URL, and the page is where it was: chapter 7.
-    fireEvent.click(screen.getByText("browser forward"));
+    // Stop lands on the whole repertoire: the chapter chosen later is gone from the read and the page.
+    const readsBefore = calls.filter((c) => c.path === "/practice/puzzles").length;
+    fireEvent.click(screen.getByRole("link", { name: "Stop" }));
     await screen.findByRole("link", { name: "Drill these (1 line)" });
-    expect(screen.getByRole("link", { name: "Drill these (1 line)" })).toHaveAttribute("href", expect.stringContaining("subtype=chapter%3A7"));
+    await vi.waitFor(() => expect(calls.filter((c) => c.path === "/practice/puzzles").length).toBeGreaterThan(readsBefore));
+    const landed = calls.filter((c) => c.path === "/practice/puzzles").at(-1)!.query;
+    expect(landed.get("ptype")).toBe("repertoire");
+    expect(landed.has("subtype")).toBe(false);
+    expect(screen.getByRole("link", { name: "Drill these (1 line)" })).toHaveAttribute("href", "/practice?drill=901&from=list&type=repertoire&srs=all&last_n_games=0");
+    await vi.waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/practice"));
+    fireEvent.click(screen.getByRole("button", { name: /^Filters/ }));
+    expect(screen.getByLabelText("Chapter")).toHaveValue("");
     expect(readQueue()).toEqual([901, 902]);
   });
 

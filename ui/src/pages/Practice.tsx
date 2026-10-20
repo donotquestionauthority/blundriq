@@ -1262,7 +1262,9 @@ export default function Practice() {
     setAdopted(search);
     const t = searchParams.get("type");
     if (isPracticeType(t)) setType(t);
-    if (searchParams.has("subtype")) setSubtype(searchParams.get("subtype") || null);
+    // A URL that names the type is a whole query: a subtype it omits is no subtype (the first
+    // render reads it the same way). A URL without one changes only what it carries.
+    if (isPracticeType(t) || searchParams.has("subtype")) setSubtype(searchParams.get("subtype") || null);
     const v = searchParams.get("srs");
     if (isSrsFilter(v)) setSrsFilter(v);
     const n = Number(searchParams.get("last_n_games"));
