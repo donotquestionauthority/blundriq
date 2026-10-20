@@ -1,5 +1,5 @@
 import { configure, fireEvent, render, screen, within } from "@testing-library/react";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Practice from "./Practice";
 import { _resetProbesForTests } from "../utils/attemptQueue";
@@ -96,6 +96,20 @@ function Location() {
   const loc = useLocation();
   return <div data-testid="location">{loc.pathname + loc.search}</div>;
 }
+/** The browser's Back and Forward buttons. */
+function History() {
+  const navigate = useNavigate();
+  return (
+    <>
+      <button type="button" onClick={() => navigate(-1)}>
+        browser back
+      </button>
+      <button type="button" onClick={() => navigate(1)}>
+        browser forward
+      </button>
+    </>
+  );
+}
 function renderPage(entry: string) {
   return render(
     <MemoryRouter initialEntries={[entry]}>
@@ -104,6 +118,7 @@ function renderPage(entry: string) {
         <Route path="/repertoire/report" element={<p>report page</p>} />
       </Routes>
       <Location />
+      <History />
     </MemoryRouter>,
   );
 }
@@ -469,6 +484,66 @@ describe("Practice: Drill these", () => {
     fireEvent.click(back);
     expect(await screen.findByText("#31")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Repertoire" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("browser Back into a list drill after the type was changed: the origin and the return come from the drill URL, and the report's queue survives Done", async () => {
+    stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: list([line(31, 901)]) }),
+      "/practice/repertoire-scopes": () => ({ status: 200, body: scopes() }),
+      "/practice/drill": () => ({ status: 200, body: drillBody([line(31, 901)]) }),
+      "/practice/puzzles/31/attempt": () => OK,
+    });
+    renderPage("/practice?type=repertoire&subtype=chapter:7&srs=all&last_n_games=100");
+    fireEvent.click(await screen.findByRole("link", { name: "Drill these (1 line)" }));
+    await screen.findByTestId("drill-header");
+    fireEvent.click(screen.getByRole("link", { name: "Stop" }));
+    await screen.findByRole("link", { name: "Drill these (1 line)" });
+    fireEvent.click(screen.getByRole("tab", { name: "Blunder" }));
+    await vi.waitFor(() => expect(screen.getByRole("tab", { name: "Blunder" })).toHaveAttribute("aria-selected", "true"));
+    // Back to the drill URL (the Stop landing was stripped in place). The page's filters still say Blunder.
+    fireEvent.click(screen.getByText("browser back"));
+    await screen.findByTestId("drill-header");
+    expect(screen.getByTestId("location").textContent).toBe("/practice?drill=901&from=list&type=repertoire&srs=all&last_n_games=100&subtype=chapter%3A7");
+    expect(screen.getByRole("link", { name: "Stop" })).toHaveAttribute("href", "/practice?type=repertoire&srs=all&last_n_games=100&subtype=chapter%3A7");
+    await solveLine();
+    const finish = await screen.findByText("Finish →");
+    await vi.waitFor(() => expect(screen.getByRole("link", { name: "Stop" })).toHaveAttribute("aria-disabled", "false"));
+    fireEvent.click(finish);
+    await screen.findByTestId("drill-done");
+    expect(readQueue()).toEqual([901, 902]); // not this drill's queue
+    const back = screen.getByRole("link", { name: "Back to the list" });
+    expect(back).toHaveAttribute("href", "/practice?type=repertoire&srs=all&last_n_games=100&subtype=chapter%3A7");
+    fireEvent.click(back);
+    await screen.findByRole("link", { name: "Drill these (1 line)" });
+    expect(screen.getByRole("tab", { name: "Repertoire" })).toHaveAttribute("aria-selected", "true"); // the drill's list, not Blunder
+    await vi.waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/practice"));
+  });
+
+  it("browser Back and Forward across a scope change: a drill of the whole book returns to the whole book, not to the chapter chosen later", async () => {
+    stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: list([line(31, 901)]) }),
+      "/practice/repertoire-scopes": () => ({ status: 200, body: scopes() }),
+      "/practice/drill": () => ({ status: 200, body: drillBody([line(31, 901)]) }),
+    });
+    renderPage("/practice?type=repertoire&srs=all"); // the whole repertoire: no subtype
+    fireEvent.click(await screen.findByRole("link", { name: "Drill these (1 line)" }));
+    await screen.findByTestId("drill-header");
+    expect(screen.getByRole("link", { name: "Stop" })).toHaveAttribute("href", "/practice?type=repertoire&srs=all&last_n_games=0");
+    fireEvent.click(screen.getByRole("link", { name: "Stop" }));
+    await screen.findByRole("link", { name: "Drill these (1 line)" });
+    // Narrow to chapter 7 in the filters, then Back into the drill of the whole book.
+    fireEvent.click(screen.getByRole("button", { name: /^Filters/ }));
+    fireEvent.change(screen.getByLabelText("Book"), { target: { value: "1" } });
+    fireEvent.change(await screen.findByLabelText("Chapter"), { target: { value: "7" } });
+    await vi.waitFor(() => expect(screen.getByRole("link", { name: "Drill these (1 line)" })).toHaveAttribute("href", expect.stringContaining("subtype=chapter%3A7")));
+    fireEvent.click(screen.getByText("browser back"));
+    await screen.findByTestId("drill-header");
+    expect(screen.getByRole("link", { name: "Stop" })).toHaveAttribute("href", "/practice?type=repertoire&srs=all&last_n_games=0"); // an omitted subtype is no subtype
+    // Forward again, to the stripped list URL, and the page is where it was: chapter 7.
+    fireEvent.click(screen.getByText("browser forward"));
+    await screen.findByRole("link", { name: "Drill these (1 line)" });
+    expect(screen.getByRole("link", { name: "Drill these (1 line)" })).toHaveAttribute("href", expect.stringContaining("subtype=chapter%3A7"));
+    expect(readQueue()).toEqual([901, 902]);
   });
 
   it("a drill with from=list but no repertoire filter returns to the report, as a report drill does", async () => {

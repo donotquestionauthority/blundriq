@@ -1240,8 +1240,16 @@ export default function Practice() {
   const navLocked = inPageLock || held !== null;
 
   const drilling = drillIds !== null;
-  // A drill from a list: its Back link is the list, and Done leaves the report's queue alone.
-  const fromList = drilling && searchParams.get("from") === "list" && type === "repertoire";
+  // A drill from a list carries the list's query in its own URL, and that URL alone says where
+  // the drill came from and where it goes back to: the page's filter state may belong to a later
+  // visit (browser Back restores a drill URL without restoring the filters). An omitted subtype
+  // is no subtype. Anything else is a report drill.
+  const listReturn = useMemo(() => {
+    if (!drilling || searchParams.get("from") !== "list" || searchParams.get("type") !== "repertoire") return null;
+    const v = searchParams.get("srs");
+    const n = Number(searchParams.get("last_n_games"));
+    return listPath("repertoire", searchParams.get("subtype") || null, isSrsFilter(v) ? v : "all", LAST_N_OPTIONS.some((o) => o.value === n) ? n : 0);
+  }, [drilling, searchParams]);
 
   // Adopt the entry params whenever the URL carries any and no drill is running, then strip
   // them. Adoption is state set during render (the URL is a prop, not an external system), once
@@ -1318,7 +1326,7 @@ export default function Practice() {
   // "Drill these" on the repertoire "All" list: the cap is the server's, known once the scopes
   // read answers; a drill from here carries the list's query so its Back link can return to it.
   const drill = type === "repertoire" && srsFilter === "all" ? { cap: scopeData?.drill_max_lines ?? null, locked: navLocked, href: (ids: number[]) => `/practice?drill=${ids.join(",")}&from=list&${listPath(type, subtype, srsFilter, lastNGames).split("?")[1]}` } : null;
-  const back = fromList ? { to: listPath(type, subtype, srsFilter, lastNGames), label: "Back to the list", clearsQueue: false } : { to: reportPath(), label: "Back to the report", clearsQueue: true };
+  const back = listReturn ? { to: listReturn, label: "Back to the list", clearsQueue: false } : { to: reportPath(), label: "Back to the report", clearsQueue: true };
 
   return (
     <div>
