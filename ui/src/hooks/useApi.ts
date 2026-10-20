@@ -23,7 +23,8 @@ export function sameDeps(a: unknown[] | null, b: unknown[] | null): boolean {
  * very first render that sees new deps until the matching response lands. An effect-set flag
  * would land one render late and let the old data mount once under the new deps. Pass
  * primitives in `deps`; a freshly-constructed object compares unequal every render.
- * `keepDataOnError` keeps the last data through a failed re-run (for a page that polls).
+ * `keepDataOnError` keeps the last data through a failed re-run under the same deps (a page that
+ * polls, or one whose rows must outlive a failed refresh).
  * `dataDeps` is returned so two reads over the same deps can be joined only when both answered
  * the same request (`sameDeps`); a page that must re-run both after a mutation puts a generation
  * in their deps, which marks both old answers stale at once, where `refetch()` would leave the
@@ -54,8 +55,8 @@ export function useApi<T>(
       .catch((err: unknown) => {
         if (myRun !== runIdRef.current) return;
         const error = err instanceof Error ? err.message : String(err);
-        // A page that polls keeps what it last saw through one failed read: the error shows
-        // beside the data, and the next poll replaces both.
+        // With `keepDataOnError` the page keeps what it last saw through a failed re-run: the
+        // error shows beside the data, and the next successful run replaces both.
         setState((s) => (keepDataOnError ? { ...s, isLoading: false, error } : { data: null, isLoading: false, error, dataDeps: null }));
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps

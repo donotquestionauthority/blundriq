@@ -18,14 +18,19 @@ import { errorLabel } from "../utils/errorLabel";
 /**
  * Practice: the puzzle queue. `srs=due` is the play queue (a streaming batch consumer);
  * `srs=all` and `srs=retired` are lists, each row opening the solver in an overlay.
- * `?puzzle=<id>` deep-links straight into the overlay.
+ * `?puzzle=<id>` deep-links straight into the overlay. `?drill=<ids>` is a drill instead of
+ * the queue; `from=list` says it came from a list here, and the list's own params ride along.
  *
- * Deep-link query params are read on first render and then stripped from the URL:
+ * Entry query params are adopted into state whenever the URL carries them and no drill is
+ * running, then stripped from the URL — on first render, and again when a drill's Back link
+ * lands here with the list's params (the route is one component, so nothing else re-reads them).
+ * While a drill runs they stay, so a reload serves the same drill and comes back to the same list:
  *   type = all | motif | repertoire | blunder | custom · subtype · srs = due | all | retired ·
  *   last_n_games · puzzle
  */
 
 const noop = () => {};
+const ENTRY_KEYS = ["type", "subtype", "srs", "last_n_games", "puzzle", "from"];
 const PLAY_TYPES: PracticeType[] = ["all", "motif", "repertoire", "blunder", "custom"];
 const TYPE_LABEL: Record<PracticeType, string> = { all: "All", motif: "Motif", repertoire: "Repertoire", blunder: "Blunder", custom: "Custom" };
 // A custom puzzle's subtype is the page it was made from (core/puzzles/custom.py CONTEXT_TAGS).
@@ -359,6 +364,18 @@ function BlockingBanner({ error, submitting, onRetry }: { error: unknown; submit
 
 // ─── Play mode: the streaming queue ─────────────────────────────────────────
 
+/** Where the queue would say "Loading…" after a re-read that failed: the way to ask again. */
+function RetryLoad({ onRetry }: { onRetry: () => void }) {
+  return (
+    <p className="mt-4 text-center text-xs text-zinc-500">
+      More puzzles could not be loaded.{" "}
+      <button type="button" onClick={onRetry} className="underline">
+        Try again
+      </button>
+    </p>
+  );
+}
+
 /**
  * The parent passes the LATEST served batch; PlayMode keeps its own growing `items` queue,
  * appending each row whose `play_batch_id` has not been seen (never a global puzzle-id dedup,
@@ -371,6 +388,7 @@ function PlayMode({
   ptype,
   subtype,
   allCaughtUp,
+  refreshFailed,
   prefetchThreshold,
   onAttemptRecorded,
   onNeedRefetch,
@@ -381,6 +399,8 @@ function PlayMode({
   ptype: PracticeType;
   subtype: string | null;
   allCaughtUp: boolean;
+  /** The last re-read of the queue failed (the rows shown are the ones before it). */
+  refreshFailed: boolean;
   prefetchThreshold: number;
   onAttemptRecorded: () => void;
   onNeedRefetch: () => void;
@@ -488,6 +508,7 @@ function PlayMode({
         </div>
       );
     }
+    if (refreshFailed) return <RetryLoad onRetry={onNeedRefetch} />;
     return <p className="px-6 py-12 text-center text-sm text-zinc-500">Loading next puzzle…</p>;
   }
 
@@ -563,7 +584,7 @@ function PlayMode({
         submissionLocked={attempt.navigationBlocked || beingRemoved}
       />
       <BlockingBanner error={attempt.blockingError} submitting={attempt.submitting} onRetry={attempt.retry} />
-      {((showNext && isLastQueued) || awaitingNext) && !allCaughtUp && <p className="mt-4 text-center text-xs text-zinc-500">Loading more puzzles…</p>}
+      {((showNext && isLastQueued) || awaitingNext) && !allCaughtUp && (refreshFailed ? <RetryLoad onRetry={onNeedRefetch} /> : <p className="mt-4 text-center text-xs text-zinc-500">Loading more puzzles…</p>)}
       {exhausted && <p className="mt-4 text-center text-sm text-zinc-500">You're all caught up</p>}
       <GameLinks puzzle={puzzle} />
     </div>
@@ -573,15 +594,16 @@ function PlayMode({
 // ─── Drill: the chosen lines, whole, in order ───────────────────────────────
 
 /**
- * A drill of the lines the report sent (`/practice?drill=1,2,3`): one serve, each line played
- * whole from its first board, in the order given, until the list is done. Not the queue: no
- * batch, nothing due, no Skip, no Previous — Next is offered once a verdict is in, and every
+ * A drill of the lines the report or a list sent (`/practice?drill=1,2,3`): one serve, each line
+ * played whole from its first board, in the order given, until the list is done. Not the queue:
+ * no batch, nothing due, no Skip, no Previous — Next is offered once a verdict is in, and every
  * position in the list is one load (the solver's key is the position and the round), so the
  * tally — the first verdict of each load, as the hook reported it — is the server's count too.
- * Stop and Done tell the server nothing (a drill has no server-side lifetime to end); Stop waits
- * for a verdict still posting, as every way of leaving a solver does.
+ * Stop and Done tell the server nothing (a drill has no server-side lifetime to end) and go
+ * `back` to where the drill came from; Stop waits for a verdict still posting, as every way of
+ * leaving a solver does.
  */
-function DrillMode({ lineIds, onAttemptRecorded, onNavigationLock }: { lineIds: number[]; onAttemptRecorded: () => void; onNavigationLock: (locked: boolean) => void }) {
+function DrillMode({ lineIds, back, onAttemptRecorded, onNavigationLock }: { lineIds: number[]; back: { to: string; label: string; clearsQueue: boolean }; onAttemptRecorded: () => void; onNavigationLock: (locked: boolean) => void }) {
   const key = lineIds.join(",");
   const { data, isLoading, error } = useApi(() => getDrill(lineIds), [key]); // eslint-disable-line react-hooks/exhaustive-deps
   const [cursor, setCursor] = useState(0);
@@ -606,15 +628,17 @@ function DrillMode({ lineIds, onAttemptRecorded, onNavigationLock }: { lineIds: 
 
   const done = data !== null && data !== undefined && cursor >= puzzles.length;
   // Done is when the report's drill queue has been drilled: it clears here, not when the drill was
-  // served, so a Stop before the end and a serve that skipped every line keep the queue.
+  // served, so a Stop before the end and a serve that skipped every line keep the queue. A drill
+  // that came from a list did not drill the queue and leaves it alone.
+  const clearsQueue = back.clearsQueue;
   useEffect(() => {
-    if (done && puzzles.length > 0) clearQueue();
-  }, [done, puzzles.length]);
+    if (done && puzzles.length > 0 && clearsQueue) clearQueue();
+  }, [done, puzzles.length, clearsQueue]);
   const right = Object.values(firsts).filter(Boolean).length;
   const wrong = Object.values(firsts).filter((v) => !v).length;
   const stop = (
-    <Link to={reportPath()} aria-disabled={navigationBlocked} onClick={(e) => navigationBlocked && e.preventDefault()} title={navigationBlocked ? "Saving your attempt first" : undefined} className={`rounded border border-zinc-300 px-2.5 py-1 text-xs font-medium dark:border-zinc-700 ${navigationBlocked ? "pointer-events-none opacity-40" : "hover:bg-zinc-50 dark:hover:bg-zinc-800"}`}>
-      {done ? "Back to the report" : "Stop"}
+    <Link to={back.to} aria-disabled={navigationBlocked} onClick={(e) => navigationBlocked && e.preventDefault()} title={navigationBlocked ? "Saving your attempt first" : undefined} className={`rounded border border-zinc-300 px-2.5 py-1 text-xs font-medium dark:border-zinc-700 ${navigationBlocked ? "pointer-events-none opacity-40" : "hover:bg-zinc-50 dark:hover:bg-zinc-800"}`}>
+      {done ? back.label : "Stop"}
     </Link>
   );
 
@@ -703,8 +727,11 @@ function DrillMode({ lineIds, onAttemptRecorded, onNavigationLock }: { lineIds: 
 
 // ─── Overlay: one puzzle in a modal (deep link, list rows) ──────────────────
 
-function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onNavigationLock }: { puzzle: Puzzle; onClose: () => void; onAttemptRecorded: () => void; onNavigationLock: (locked: boolean) => void }) {
-  const attempt = useAttemptSubmit(puzzle.id, onAttemptRecorded, puzzle.presentation_ply);
+function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onAttempted, onNavigationLock }: { puzzle: Puzzle; onClose: () => void; onAttemptRecorded: () => void; onAttempted?: (puzzleId: number) => void; onNavigationLock: (locked: boolean) => void }) {
+  // `onAttempted` hears the verdict itself, before the save — a save that fails and lands later
+  // from the durable queue is still this visit's attempt.
+  const verdict = useCallback(() => onAttempted?.(puzzle.id), [onAttempted, puzzle.id]);
+  const attempt = useAttemptSubmit(puzzle.id, onAttemptRecorded, puzzle.presentation_ply, verdict);
   const locked = attempt.navigationBlocked;
 
   // A hand-made puzzle can be retired from here. Not while an attempt on it exists anywhere
@@ -837,50 +864,226 @@ function hydrateDeepLinkPuzzle(p: PlayablePuzzlePayload): Puzzle {
 
 // ─── List views (srs=all, srs=retired) ──────────────────────────────────────
 
-function PuzzleList({ puzzles, onOpen }: { puzzles: Puzzle[]; onOpen: (p: Puzzle) => void }) {
-  if (puzzles.length === 0) return <p className="px-2 py-6 text-center text-sm text-zinc-500">No puzzles match.</p>;
-  const th = (label: string) => (
-    <th key={label} className="px-2 py-1.5 text-left text-xs font-medium uppercase tracking-wide text-zinc-500">
-      {label}
-    </th>
-  );
+type SortKey = "id" | "level" | "seen" | "attempts" | "streak" | "due";
+type Sort = { key: SortKey; dir: "asc" | "desc" };
+const SORT_LABEL: Record<SortKey, string> = { id: "Puzzle", level: "Level", seen: "Seen", attempts: "Attempts", streak: "Streak", due: "Next due" };
+// The direction a first click gives: the most actionable rows first.
+const FIRST_DIR: Record<SortKey, "asc" | "desc"> = { id: "asc", level: "asc", seen: "desc", attempts: "asc", streak: "asc", due: "asc" };
+const LEVEL_RANK: Record<SrsLevel, number> = { pawn: 0, knight: 1, bishop: 2, rook: 3, queen: 4, king: 5 };
+
+/** A column's value for sorting; null is "no value" (Next due before a first attempt) and sorts
+ *  last in both directions. A puzzle not yet attempted has no level: it sorts below pawn. */
+function sortValue(p: Puzzle, key: SortKey): number | null {
+  switch (key) {
+    case "id":
+      return p.id;
+    case "level":
+      return p.srs ? LEVEL_RANK[p.srs.level] : -1;
+    case "seen":
+      return p.occurrence_count;
+    case "attempts":
+      return p.attempt_summary.total;
+    case "streak":
+      return p.attempt_summary.streak;
+    case "due":
+      return p.srs ? new Date(p.srs.next_show_at).getTime() : null;
+  }
+}
+
+/** The ids of `rows` under `sort`: stable, null values last either way, ties by id ascending. */
+function sortedIds(rows: Puzzle[], sort: Sort): number[] {
+  const sign = sort.dir === "asc" ? 1 : -1;
+  return rows
+    .map((p) => ({ id: p.id, v: sortValue(p, sort.key) }))
+    .sort((a, b) => {
+      if (a.v === null || b.v === null) return a.v === b.v ? a.id - b.id : a.v === null ? 1 : -1;
+      return a.v === b.v ? a.id - b.id : (a.v - b.v) * sign;
+    })
+    .map((r) => r.id);
+}
+
+const sameIds = (a: number[], b: number[]) => a.length === b.length && a.every((id, i) => id === b[i]);
+
+/** The list's rows in the visit's order: every id of `order` the response still carries, then
+ *  any new id in response order. */
+function mergeOrder(order: number[], rows: Puzzle[]): number[] {
+  const present = new Set(rows.map((p) => p.id));
+  const kept = order.filter((id) => present.has(id));
+  const known = new Set(kept);
+  return [...kept, ...rows.filter((p) => !known.has(p.id)).map((p) => p.id)];
+}
+
+const DEFAULT_CAPTION: Record<"all" | "retired", string> = {
+  all: "Default order: due first, then your blunders before deviations, lower level first, most seen first. Frozen for this visit — a row you solve stays where it is.",
+  retired: "Default order: most recently updated first.",
+};
+
+/** The list's own path, for a drill to come back to (the query the list is keyed on). */
+function listPath(type: PracticeType, subtype: string | null, srs: SrsFilter, lastNGames: number): string {
+  const q = new URLSearchParams({ type, srs, last_n_games: String(lastNGames) });
+  if (subtype) q.set("subtype", subtype);
+  return `/practice?${q}`;
+}
+
+/**
+ * One visit to a list: the rows' order is fixed when the list mounts (the server's Default order
+ * for the view), and a refetch after an attempt updates each row in place — appending a row that
+ * became visible, dropping one that is gone — but moves nothing. A header click sorts the rows as
+ * they are now and freezes again; a third click restores the mount's order. A row attempted this
+ * visit is tinted, wherever a sort puts it. The parent keys this component on the query, so a
+ * filter change is a new visit: a new order, no sort, no tint. The row overlay is this visit's
+ * too, so an attempt in it is known here by id, at its verdict.
+ *
+ * `drill`: on the repertoire "All" view, the listed rows' distinct lines in the current order,
+ * as a drill. `cap` null means the cap is not known (the scopes read pending or failed): disabled.
+ */
+function ListMode({
+  puzzles,
+  total,
+  view,
+  drill,
+  onNavigationLock,
+  onOverlayChange,
+  onNeedRefetch,
+}: {
+  puzzles: Puzzle[];
+  total: number;
+  view: "all" | "retired";
+  drill: { cap: number | null; href: (lineIds: number[]) => string; locked: boolean } | null;
+  onNavigationLock: (locked: boolean) => void;
+  onOverlayChange: (open: boolean) => void;
+  onNeedRefetch: () => void;
+}) {
+  // The Default order: the mount's, then every row appended since in the order it arrived.
+  const [defaultOrder, setDefaultOrder] = useState<number[]>(() => puzzles.map((p) => p.id));
+  const [order, setOrder] = useState<number[]>(defaultOrder);
+  const [sort, setSort] = useState<Sort | null>(null);
+  const [attempted, setAttempted] = useState<ReadonlySet<number>>(() => new Set());
+  const [openPuzzle, setOpenPuzzle] = useState<Puzzle | null>(null);
+  const byId = useMemo(() => new Map(puzzles.map((p) => [p.id, p])), [puzzles]);
+  // The order follows the rows in render: an appended or dropped row shows on the render that
+  // brings it, and the stored order is what is showing, so the next merge starts from it.
+  const merged = mergeOrder(order, puzzles);
+  if (!sameIds(merged, order)) setOrder(merged);
+  const arrived = mergeOrder(defaultOrder, puzzles);
+  if (!sameIds(arrived, defaultOrder)) setDefaultOrder(arrived);
+  const rows = merged.map((id) => byId.get(id)).filter((p): p is Puzzle => p !== undefined);
+
+  const clickHeader = (key: SortKey) => {
+    const next: Sort | null = sort?.key !== key ? { key, dir: FIRST_DIR[key] } : sort.dir === FIRST_DIR[key] ? { key, dir: sort.dir === "asc" ? "desc" : "asc" } : null;
+    setSort(next);
+    setOrder(next ? sortedIds(rows, next) : mergeOrder(defaultOrder, rows));
+  };
+  const attemptedNow = useCallback((id: number) => setAttempted((prev) => (prev.has(id) ? prev : new Set(prev).add(id))), []);
+  const closeOpenPuzzle = useCallback(() => setOpenPuzzle(null), []);
+  useEffect(() => {
+    onOverlayChange(openPuzzle !== null);
+    return () => onOverlayChange(false);
+  }, [openPuzzle, onOverlayChange]);
+
+  const lineIds = drill ? [...new Set(rows.map((p) => p.repertoire_line_id).filter((id): id is number => id !== null))] : [];
+  const drillReason = !drill
+    ? null
+    : drill.locked
+      ? "Save your attempt first"
+      : lineIds.length === 0
+        ? "Nothing listed to drill"
+        : drill.cap === null
+          ? "The drill limit is not known yet"
+          : lineIds.length > drill.cap
+            ? `${drill.cap} at most — narrow the filter`
+            : null;
+  const drillLabel = `Drill these (${lineIds.length} ${lineIds.length === 1 ? "line" : "lines"})`;
+  const drillButton = "rounded bg-zinc-900 px-3 py-1 text-xs font-medium text-white dark:bg-zinc-100 dark:text-zinc-900";
+
+  const caption = sort ? `Sorted by ${SORT_LABEL[sort.key]}, ${sort.dir === "asc" ? "ascending" : "descending"}.` : DEFAULT_CAPTION[view];
+  const th = (label: string, key: SortKey | null) => {
+    const active = key !== null && sort?.key === key;
+    return (
+      <th key={label} aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : key ? "none" : undefined} className="px-2 py-1.5 text-left text-xs font-medium uppercase tracking-wide text-zinc-500">
+        {key ? (
+          <button type="button" onClick={() => clickHeader(key)} className={`whitespace-nowrap uppercase tracking-wide ${active ? "text-zinc-900 dark:text-zinc-100" : "hover:text-zinc-800 dark:hover:text-zinc-200"}`}>
+            {label}
+            {active && <span aria-hidden="true"> {sort.dir === "asc" ? "▲" : "▼"}</span>}
+          </button>
+        ) : (
+          label
+        )}
+      </th>
+    );
+  };
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full border-collapse text-sm">
-        <thead>
-          <tr className="border-b border-zinc-200 dark:border-zinc-800">{["Puzzle", "Level", "Source", "Themes", "Seen", "Attempts", "Streak", "Next due"].map(th)}</tr>
-        </thead>
-        <tbody>
-          {puzzles.map((p) => (
-            <tr key={p.id} onClick={() => onOpen(p)} className="cursor-pointer border-b border-zinc-100 hover:bg-zinc-100 dark:border-zinc-900 dark:hover:bg-zinc-900">
-              <td className="px-2 py-1.5 font-mono text-xs">
-                #{p.id}
-                {p.title && <span className="ml-2 font-sans text-zinc-700 dark:text-zinc-300">{p.title}</span>}
-              </td>
-              <td className="px-2 py-1.5">
-                <LevelBadge srs={p.srs} isRotation={isRotationPuzzle(p)} />
-              </td>
-              <td className="space-x-1 px-2 py-1.5">
-                {p.source_types.map((s) => (
-                  <SourceBadge key={s} type={s} />
-                ))}
-              </td>
-              <td className="max-w-[14rem] truncate px-2 py-1.5 text-xs" title={(p.themes ?? []).join(", ")}>
-                {(p.themes ?? []).join(", ") || "—"}
-              </td>
-              <td className="px-2 py-1.5 font-mono text-xs">{p.occurrence_count || "—"}</td>
-              <td className="px-2 py-1.5 font-mono text-xs">
-                {p.attempt_summary.solved}/{p.attempt_summary.total}
-              </td>
-              <td className={`px-2 py-1.5 font-mono text-xs ${p.attempt_summary.streak > 0 ? "text-emerald-600 dark:text-emerald-400" : p.attempt_summary.streak < 0 ? "text-rose-600 dark:text-rose-400" : "text-zinc-400"}`}>
-                {p.attempt_summary.streak > 0 ? `+${p.attempt_summary.streak}` : p.attempt_summary.streak || "—"}
-              </td>
-              <td className="whitespace-nowrap px-2 py-1.5 font-mono text-xs">{p.srs ? new Date(p.srs.next_show_at).toLocaleDateString() : "—"}</td>
-            </tr>
+    <>
+      <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-zinc-500">
+        <span>
+          {total} {view === "retired" ? "mastered" : ""} puzzles
+        </span>
+        {drill &&
+          (drillReason ? (
+            <button type="button" disabled title={drillReason} className={`${drillButton} disabled:opacity-40`}>
+              {drillLabel}
+            </button>
+          ) : (
+            <Link to={drill.href(lineIds)} className={drillButton}>
+              {drillLabel}
+            </Link>
           ))}
-        </tbody>
-      </table>
-    </div>
+        {drill && drillReason && lineIds.length > 0 && !drill.locked && <span className="text-xs text-red-600 dark:text-red-400">{drillReason}</span>}
+      </div>
+      {rows.length === 0 ? (
+        <p className="px-2 py-6 text-center text-sm text-zinc-500">No puzzles match.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <p className="mb-1 px-2 text-xs text-zinc-500" data-testid="list-caption">
+            {caption}
+          </p>
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="border-b border-zinc-200 dark:border-zinc-800">
+                {th("Puzzle", "id")}
+                {th("Level", "level")}
+                {th("Source", null)}
+                {th("Themes", null)}
+                {th("Seen", "seen")}
+                {th("Attempts", "attempts")}
+                {th("Streak", "streak")}
+                {th("Next due", "due")}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((p) => (
+                <tr key={p.id} onClick={() => setOpenPuzzle(p)} data-attempted={attempted.has(p.id) ? "true" : undefined} className={`cursor-pointer border-b border-zinc-100 dark:border-zinc-900 ${attempted.has(p.id) ? "bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-900/20 dark:hover:bg-emerald-900/30" : "hover:bg-zinc-100 dark:hover:bg-zinc-900"}`}>
+                  <td className="px-2 py-1.5 font-mono text-xs">
+                    #{p.id}
+                    {p.title && <span className="ml-2 font-sans text-zinc-700 dark:text-zinc-300">{p.title}</span>}
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <LevelBadge srs={p.srs} isRotation={isRotationPuzzle(p)} />
+                  </td>
+                  <td className="space-x-1 px-2 py-1.5">
+                    {p.source_types.map((s) => (
+                      <SourceBadge key={s} type={s} />
+                    ))}
+                  </td>
+                  <td className="max-w-[14rem] truncate px-2 py-1.5 text-xs" title={(p.themes ?? []).join(", ")}>
+                    {(p.themes ?? []).join(", ") || "—"}
+                  </td>
+                  <td className="px-2 py-1.5 font-mono text-xs">{p.occurrence_count || "—"}</td>
+                  <td className="px-2 py-1.5 font-mono text-xs">
+                    {p.attempt_summary.solved}/{p.attempt_summary.total}
+                  </td>
+                  <td className={`px-2 py-1.5 font-mono text-xs ${p.attempt_summary.streak > 0 ? "text-emerald-600 dark:text-emerald-400" : p.attempt_summary.streak < 0 ? "text-rose-600 dark:text-rose-400" : "text-zinc-400"}`}>
+                    {p.attempt_summary.streak > 0 ? `+${p.attempt_summary.streak}` : p.attempt_summary.streak || "—"}
+                  </td>
+                  <td className="whitespace-nowrap px-2 py-1.5 font-mono text-xs">{p.srs ? new Date(p.srs.next_show_at).toLocaleDateString() : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {openPuzzle && <PuzzleOverlay key={openPuzzle.id} puzzle={openPuzzle} onClose={closeOpenPuzzle} onAttemptRecorded={onNeedRefetch} onAttempted={attemptedNow} onNavigationLock={onNavigationLock} />}
+    </>
   );
 }
 
@@ -1025,7 +1228,7 @@ export default function Practice() {
     const ids = raw.split(",").map((x) => Number(x)).filter((n) => Number.isInteger(n) && n > 0);
     return ids.length > 0 ? ids : null; // the server holds the cap
   }, [searchParams]);
-  const [openPuzzle, setOpenPuzzle] = useState<Puzzle | null>(null);
+  const [listOverlayOpen, setListOverlayOpen] = useState(false);
   const [inPageLock, setInPageLock] = useState(false);
   // An attempt held from an earlier visit (the page was left, or reloaded into blocking
   // mode) is offered for retry here, above whatever the page serves, until it is saved.
@@ -1036,29 +1239,54 @@ export default function Practice() {
   const orphaned = held !== null && !heldOwnedHere;
   const navLocked = inPageLock || held !== null;
 
-  // Strip the entry params after first render; the state above already holds them.
-  const urlStripRef = useRef(false);
-  useEffect(() => {
-    if (urlStripRef.current) return;
-    urlStripRef.current = true;
-    const keys = ["type", "subtype", "srs", "last_n_games", "puzzle"];
-    if (keys.some((k) => searchParams.has(k))) {
-      const next = new URLSearchParams(searchParams);
-      keys.forEach((k) => next.delete(k));
-      setSearchParams(next, { replace: true });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Every dep is a primitive, so `isStale` compares exactly.
   const drilling = drillIds !== null;
-  const { data, isLoading, error, refetch, isStale } = useApi(() => (drilling ? Promise.resolve(null) : getPuzzles({ srs: srsFilter, ptype: type, subtype, last_n_games: lastNGames })), [type, subtype, lastNGames, srsFilter, drilling]);
+  // A drill from a list carries the list's query in its own URL, and that URL alone says where
+  // the drill came from and where it goes back to: the page's filter state may belong to a later
+  // visit (browser Back restores a drill URL without restoring the filters). An omitted subtype
+  // is no subtype. Anything else is a report drill.
+  const listReturn = useMemo(() => {
+    if (!drilling || searchParams.get("from") !== "list" || searchParams.get("type") !== "repertoire") return null;
+    const v = searchParams.get("srs");
+    const n = Number(searchParams.get("last_n_games"));
+    return listPath("repertoire", searchParams.get("subtype") || null, isSrsFilter(v) ? v : "all", LAST_N_OPTIONS.some((o) => o.value === n) ? n : 0);
+  }, [drilling, searchParams]);
+
+  // Adopt the entry params whenever the URL carries any and no drill is running, then strip
+  // them. Adoption is state set during render (the URL is a prop, not an external system), once
+  // per search string; the first render's is a no-op, the initialisers read the same values.
+  const search = searchParams.toString();
+  const [adopted, setAdopted] = useState(search);
+  const carriesEntry = ENTRY_KEYS.some((k) => searchParams.has(k));
+  if (!carriesEntry && adopted !== search) setAdopted(search); // the strip landed: the next entry URL is new, even if identical
+  if (!drilling && carriesEntry && adopted !== search) {
+    setAdopted(search);
+    const t = searchParams.get("type");
+    if (isPracticeType(t)) setType(t);
+    // A URL that names the type is a whole query: a subtype it omits is no subtype (the first
+    // render reads it the same way). A URL without one changes only what it carries.
+    if (isPracticeType(t) || searchParams.has("subtype")) setSubtype(searchParams.get("subtype") || null);
+    const v = searchParams.get("srs");
+    if (isSrsFilter(v)) setSrsFilter(v);
+    const n = Number(searchParams.get("last_n_games"));
+    if (searchParams.has("last_n_games") && LAST_N_OPTIONS.some((o) => o.value === n)) setLastNGames(n);
+    const id = Number(searchParams.get("puzzle"));
+    if (Number.isInteger(id) && id > 0) setDeepLinkId(id);
+  }
+  useEffect(() => {
+    if (drilling || !carriesEntry) return;
+    const next = new URLSearchParams(searchParams);
+    ENTRY_KEYS.forEach((k) => next.delete(k));
+    setSearchParams(next, { replace: true });
+  }, [searchParams, drilling, carriesEntry, setSearchParams]);
+
+  // Every dep is a primitive, so `isStale` compares exactly. A failed re-read within one query
+  // keeps the rows (`keepDataOnError`): the list's visit and the queue's cursor live on, and the
+  // error shows beside them; a read for a new query that fails shows the error alone.
+  const { data, isLoading, error, refetch, isStale } = useApi(() => (drilling ? Promise.resolve(null) : getPuzzles({ srs: srsFilter, ptype: type, subtype, last_n_games: lastNGames })), [type, subtype, lastNGames, srsFilter, drilling], { keepDataOnError: true });
 
   const { data: deepLinkData, isLoading: deepLinkLoading, error: deepLinkError } = useApi(() => (deepLinkId != null ? getPuzzleById(deepLinkId) : Promise.resolve(null)), [deepLinkId]);
-  useEffect(() => {
-    // A missing or no-longer-visible puzzle falls back to the queue.
-    if (deepLinkError && deepLinkId != null) setDeepLinkId(null);
-  }, [deepLinkError, deepLinkId]);
+  // A missing or no-longer-visible puzzle falls back to the queue.
+  if (deepLinkError && deepLinkId != null) setDeepLinkId(null);
   const deepLinkPuzzle = deepLinkData && deepLinkData.id === deepLinkId ? hydrateDeepLinkPuzzle(deepLinkData) : null;
 
   // Background processor for the durable attempt queue.
@@ -1085,7 +1313,6 @@ export default function Practice() {
   const unplayable = useUnplayable();
   const puzzles = useMemo(() => (data?.puzzles ?? []).filter((p) => !isGone(p.id)), [data, unplayable]); // eslint-disable-line react-hooks/exhaustive-deps
   const closeDeepLink = useCallback(() => setDeepLinkId(null), []);
-  const closeOpenPuzzle = useCallback(() => setOpenPuzzle(null), []);
   const subtypeOptions = (() => {
     if (type === "motif") return (data?.served_themes ?? []).map((t) => ({ value: t, label: t }));
     if (type === "blunder") return [...new Set(puzzles.flatMap((p) => p.themes ?? []))].sort().map((t) => ({ value: t, label: t }));
@@ -1095,9 +1322,13 @@ export default function Practice() {
   // The repertoire filter's tree comes from the server, so a line appears whether or not one of
   // its puzzles is on the page; fetched only while the Repertoire type is showing.
   const { data: scopeData, error: scopeError } = useApi(() => (type === "repertoire" ? getRepertoireScopes() : Promise.resolve(null)), [type]);
-  const repertoireScopes = type === "repertoire" ? (scopeData ?? null) : undefined;
+  const repertoireScopes = type === "repertoire" ? (scopeData?.books ?? null) : undefined;
   // The dialog covers the toolbar and carries its own copy of the count.
-  const dialogOpen = !orphaned && (deepLinkPuzzle !== null || openPuzzle !== null);
+  const dialogOpen = !orphaned && (deepLinkPuzzle !== null || listOverlayOpen);
+  // "Drill these" on the repertoire "All" list: the cap is the server's, known once the scopes
+  // read answers; a drill from here carries the list's query so its Back link can return to it.
+  const drill = type === "repertoire" && srsFilter === "all" ? { cap: scopeData?.drill_max_lines ?? null, locked: navLocked, href: (ids: number[]) => `/practice?drill=${ids.join(",")}&from=list&${listPath(type, subtype, srsFilter, lastNGames).split("?")[1]}` } : null;
+  const back = listReturn ? { to: listReturn, label: "Back to the list", clearsQueue: false } : { to: reportPath(), label: "Back to the report", clearsQueue: true };
 
   return (
     <div>
@@ -1129,7 +1360,7 @@ export default function Practice() {
         </div>
         <div className="flex items-center gap-3">
           <TodayCount variant="toolbar" quiet={dialogOpen} />
-          {data && srsFilter === "due" && <span className="text-xs text-zinc-500">{data.mastered_count} mastered</span>}
+          {data && !isStale && srsFilter === "due" && <span className="text-xs text-zinc-500">{data.mastered_count} mastered</span>}
           {!drilling && <FiltersPopover disabled={navLocked} subtype={subtype} onSubtypeChange={setSubtype} subtypeOptions={subtypeOptions} repertoireScopes={repertoireScopes} repertoireScopesError={type === "repertoire" ? scopeError : null} srsFilter={srsFilter} onSrsChange={setSrsFilter} lastNGames={lastNGames} onPeriodChange={setLastNGames} />}
         </div>
       </div>
@@ -1139,15 +1370,16 @@ export default function Practice() {
       {orphaned && held && <HeldAttemptBanner attempt={held} onSaved={refetch} />}
       {!orphaned && drilling && drillIds && (
         <div className="mt-4">
-          <DrillMode key={drillIds.join(",")} lineIds={drillIds} onAttemptRecorded={noop} onNavigationLock={setInPageLock} />
+          <DrillMode key={drillIds.join(",")} lineIds={drillIds} back={back} onAttemptRecorded={noop} onNavigationLock={setInPageLock} />
         </div>
       )}
       {!orphaned && !drilling && (
       <div className="mt-4">
         {/* `isStale` is checked as well as `isLoading`: on the first render after a filter change the
             effect has not run yet, so isLoading still reads false from the previous fetch. */}
-        {(isStale || (isLoading && data == null)) && <p className="text-sm text-zinc-500">…</p>}
-        {error && data == null && !isStale && <p className="text-sm text-rose-600">{error}</p>}
+        {((isStale && !error) || (isLoading && data == null)) && <p className="text-sm text-zinc-500">…</p>}
+        {error && (data == null || isStale) && <p className="text-sm text-rose-600">{error}</p>}
+        {error && data != null && !isStale && <p className="mb-2 text-xs text-rose-600">Could not refresh: {error}</p>}
         {data != null && !isStale && srsFilter === "due" && (
           // Keyed on the serve QUERY, not puzzle ids: a filter change resets the queue, but an
           // in-query refetch appends and keeps the cursor.
@@ -1158,6 +1390,7 @@ export default function Practice() {
             ptype={type}
             subtype={subtype}
             allCaughtUp={puzzles.length === 0}
+            refreshFailed={error !== null}
             prefetchThreshold={data.mint_ahead_threshold ?? 4}
             onAttemptRecorded={noop}
             onNeedRefetch={refetch}
@@ -1165,19 +1398,24 @@ export default function Practice() {
           />
         )}
         {data != null && !isStale && srsFilter !== "due" && (
-          <>
-            <p className="mb-2 text-sm text-zinc-500">
-              {data.total} {srsFilter === "retired" ? "mastered" : ""} puzzles
-            </p>
-            <PuzzleList puzzles={puzzles} onOpen={setOpenPuzzle} />
-          </>
+          // Keyed on the query: a filter change is a new visit (new order, no sort, no tint); an
+          // in-query refetch updates the rows in place.
+          <ListMode
+            key={`list|${type}|${subtype ?? ""}|${lastNGames}|${srsFilter}`}
+            puzzles={puzzles}
+            total={data.total}
+            view={srsFilter}
+            drill={drill}
+            onNavigationLock={setInPageLock}
+            onOverlayChange={setListOverlayOpen}
+            onNeedRefetch={refetch}
+          />
         )}
       </div>
       )}
 
       {deepLinkId != null && deepLinkLoading && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 text-sm text-zinc-200">…</div>}
       {!orphaned && deepLinkPuzzle && <PuzzleOverlay key={deepLinkPuzzle.id} puzzle={deepLinkPuzzle} onClose={closeDeepLink} onAttemptRecorded={refetch} onNavigationLock={setInPageLock} />}
-      {!orphaned && openPuzzle && !deepLinkPuzzle && <PuzzleOverlay key={openPuzzle.id} puzzle={openPuzzle} onClose={closeOpenPuzzle} onAttemptRecorded={refetch} onNavigationLock={setInPageLock} />}
     </div>
   );
 }

@@ -28,7 +28,11 @@ Chess.com / Lichess APIs
         │                 puzzle, stamps puzzles.drilled_at and writes exposures under the drill scope as proof
         │                 of service only (never queue state; attempts.py grades against them for a week);
         │                 the lines come from the report's drill queue (ui/src/utils/drillQueue.ts: the tab's
-        │                 sessionStorage, in the order added, cleared when the drill reaches Done)
+        │                 sessionStorage, in the order added, cleared when the drill reaches Done) or from the
+        │                 Practice "All" list ("Drill these": the listed rows' lines in the list's order; the
+        │                 list's query rides in the drill URL so Stop/Done come back to it; the queue untouched);
+        │                 a list (ui/src/pages/Practice.tsx ListMode) is one visit: the server's order at mount,
+        │                 rows updated in place after an attempt, a header sort re-freezes, a filter change remounts
         │                 pipeline srs-maintain un-retires mastered puzzles whose pattern recurs
         │
         └─► pipeline review ──► review_events (the whole window retagged, per-game replace, under the review

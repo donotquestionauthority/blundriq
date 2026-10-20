@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from psycopg.rows import DictRow
 
-from core.constants import PLAYER_ID
+from core.constants import DRILL_MAX_LINES, PLAYER_ID
 from core.puzzles.lines import fen_sequence
 
 FORK_FEN = "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1"
@@ -162,7 +162,7 @@ def test_a_malformed_repertoire_subtype_is_refused_with_nothing_to_match(
 
 def test_the_repertoire_scopes_route_answers_an_empty_repertoire(client: tuple[TestClient, int]) -> None:
     c, _ = client
-    assert c.get("/practice/repertoire-scopes").json() == {"books": []}
+    assert c.get("/practice/repertoire-scopes").json() == {"books": [], "drill_max_lines": DRILL_MAX_LINES}
     # A theme SubType is still free text for the other types.
     assert c.get("/practice/puzzles", params={"ptype": "motif", "subtype": "chapter:"}).status_code == 200
 
