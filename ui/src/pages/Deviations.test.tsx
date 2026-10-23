@@ -205,6 +205,19 @@ describe("Deviations page", () => {
     expect(similar[0].query.has("move")).toBe(false);
   });
 
+  it("offers no Add to repertoire on an uncovered board: a deviation is by definition on a repertoire line", async () => {
+    stubFetch({
+      "/settings": () => ({ status: 200, body: SETTINGS }),
+      "/deviations": () => ({ status: 200, body: page([pattern()]) }),
+      "/repertoire/coverage": () => ({ status: 200, body: { status: "none", transposed: null, book_move: null, played_is_book: null, book: null, chapter: null, line_name: null, line_id: null, line_ply: null, more_lines: 0 } }),
+    });
+    renderPage();
+    fireEvent.click(await screen.findByText("3×"));
+    const dialog = await screen.findByRole("dialog", { name: "Position" });
+    expect(await within(dialog).findByText("Not in your repertoire")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Add to repertoire" })).toBeNull();
+  });
+
   it("asks the repertoire about the board without the aggregate move when that move is not playable there", async () => {
     const calls = stubFetch({
       "/settings": () => ({ status: 200, body: SETTINGS }),

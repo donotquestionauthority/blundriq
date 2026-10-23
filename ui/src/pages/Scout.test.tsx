@@ -203,6 +203,7 @@ describe("Scout page", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     fireEvent.click(cards[1]); // a position: its own list, the player to move
     expect(await screen.findByText("Not in your repertoire")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add to repertoire" })).toBeNull(); // Blunders only: the opponent's board is nothing to add
     const asked = calls.filter((c) => c.path === "/repertoire/coverage");
     expect(asked.map((c) => c.query.get("fen"))).toEqual([position().fen]);
   });

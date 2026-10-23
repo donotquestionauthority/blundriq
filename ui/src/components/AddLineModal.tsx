@@ -12,7 +12,7 @@ const CATCH_ALL = "catch-all";
 
 function defaultName(card: GapCard): string {
   const family = card.family ?? "Unnamed opening";
-  if (card.context) return `${family} — after ${card.context.played}`;
+  if (card.context?.played) return `${family} — after ${card.context.played}`;
   if (card.arrived_by) return `${family} — 1.${card.arrived_by}`;
   return family;
 }

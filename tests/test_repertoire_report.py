@@ -618,3 +618,197 @@ def test_every_active_line_is_a_row_with_its_origin_and_practice_numbers(clean: 
     assert chapter["practice"] == book["practice"] == {"loads": 1, "first_right": 0, "first_wrong": 1}
     assert chapter["title"] == "Giuoco" and chapter["book_id"] == 1 and "book" not in chapter
     assert book["title"] == "Italian" and book["colour"] == "white"
+
+
+# --- one game at one board (a Blunders card's "Add to repertoire") ---------------------------
+
+
+def _card(conn: psycopg.Connection[DictRow], gid: int, ply: int) -> dict[str, Any]:
+    return report.gap_card_for_game(conn, gid, ply)
+
+
+def test_a_blunder_cards_game_is_a_gap_card_with_the_lines_context_as_derived(
+    clean: psycopg.Connection[DictRow],
+) -> None:
+    """The opponent left the Italian at ply 5 (d6 for Bc5); the blunder is two plies on. The card
+    is the board after ply 7 of the game, its stem the game's own moves, the engine entry the
+    stored one at the ply, and the context the line with the derived opponent slip."""
+    _seed(clean)
+    h.line(clean, 1, 1, "Main", ITALIAN)
+    game = ["e4", "e5", "Nf3", "Nc6", "Bc4", "d6", "c3", "Nf6", "Ng5"]
+    h.game(clean, 1, game, result="loss")
+    _analyse(clean, 1, game, {8: {"best_move": "d4", "best_line": "d4 exd4 cxd4", "eval": 35}})
+    _match(clean)
+    out = _card(clean, 1, 8)
+    card = out["card"]
+    assert card["fen"] == spine(None, game)[8] and card["colour"] == "white" and card["arrived_by"] == "Nf6"
+    assert card["stem"] == game[:8] and card["games"] == 1 and card["losses"] == 1 and card["score"] == 0
+    assert card["engine"] == {"best_move": "d4", "line": ["d4", "exd4", "cxd4"], "eval": 35, "mate_in": None}
+    assert card["continuations"] == [] and "canon" not in card
+    assert card["context"] == {
+        "book_id": 1,
+        "book": "Italian",
+        "chapter_id": 1,
+        "chapter": "Giuoco",
+        "line_id": 1,
+        "line_name": "Main",
+        "expected": "Bc5",
+        "played": "d6",
+        "count": 1,
+    }
+    assert card["catch_all"] == {"book": "Catch-all (White)", "chapter": card["family"] or "Unnamed opening"}
+    assert [c["id"] for c in out["destinations"]] == [1] and out["max_plies"] == 60 and out["prefill_plies"] == 10
+    # The player's own deviation gives the same context, with the player's moves at it; a game
+    # with no stored analysis gives no engine line, and the card opens with the stem alone.
+    h.game(clean, 2, ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O"])
+    _match(clean)
+    card = _card(clean, 2, 8)["card"]
+    ctx = card["context"]
+    assert (ctx["line_name"], ctx["expected"], ctx["played"]) == ("Main", "Bc4", "Bb5")
+    assert card["engine"] is None
+
+
+def test_an_exhausted_context_line_keeps_its_chapter_with_no_moves(clean: psycopg.Connection[DictRow]) -> None:
+    """The game followed the whole line (the matcher stores the boundary with `none` and null
+    moves, never a NULL boundary): the context names the chapter, expected and played are null."""
+    _seed(clean)
+    h.line(clean, 1, 1, "Short", ITALIAN[:5])
+    game = ITALIAN[:5] + ["d6", "c3", "Nf6", "Ng5"]
+    h.game(clean, 1, game)
+    _match(clean)
+    row = clean.execute("SELECT deviated_at_ply, deviation_by FROM game_repertoire_results").fetchone()
+    assert row is not None and row["deviated_at_ply"] == 5 and row["deviation_by"] == "none"
+    ctx = _card(clean, 1, 8)["card"]["context"]
+    assert ctx is not None and ctx["chapter_id"] == 1 and ctx["line_name"] == "Short"
+    assert ctx["expected"] is None and ctx["played"] is None
+    # A game that stopped inside the line (`ended`) likewise: the line has a move at the boundary,
+    # the game does not, and neither is the context's.
+    h.game(clean, 2, ITALIAN[:4])
+    _match(clean)
+    ctx = _card(clean, 2, 4)["card"]["context"]
+    assert ctx is not None and ctx["line_name"] == "Short" and ctx["expected"] is None and ctx["played"] is None
+    # A result row without a boundary (the column is nullable; the matcher writes one) is no context.
+    clean.execute("UPDATE game_repertoire_results SET deviated_at_ply = NULL WHERE chess_game_id = 2")
+    assert _card(clean, 2, 4)["card"]["context"] is None
+
+
+@pytest.mark.parametrize("short_first", [True, False])
+@pytest.mark.parametrize("short_named_first", [True, False])
+def test_a_mixed_exhausted_and_continuing_tie_takes_the_continuing_line_with_its_own_moves(
+    clean: psycopg.Connection[DictRow], short_first: bool, short_named_first: bool
+) -> None:
+    """e4 e5 Nf3 Nc6 Bc4 d6 ties a line ending at Bc4 (the matcher's first when its id is lower:
+    boundary 5, `none`, null moves stored) with a line expecting Bc5. Whichever id or name sorts
+    first, the context is the continuing line with Bc5 and d6 — the gap games' representative
+    (status precedence before rank), never the result row's null moves."""
+    _seed(clean)
+    a, b = (1, 2) if short_first else (2, 1)
+    short_name, long_name = (
+        ("A ends at Bc4", "B continuing") if short_named_first else ("B ends at Bc4", "A continuing")
+    )
+    h.line(clean, a, 1, short_name, ITALIAN[:5])
+    h.line(clean, b, 1, long_name, ITALIAN)
+    game = ["e4", "e5", "Nf3", "Nc6", "Bc4", "d6", "c3", "Nf6", "Ng5"]
+    h.game(clean, 1, game)
+    _match(clean)
+    row = clean.execute("SELECT expected_move, played_move FROM game_repertoire_results").fetchone()
+    assert row is not None and (row["expected_move"], row["played_move"]) == (
+        (None, None) if short_first else ("Bc5", "d6")
+    )
+    ctx = _card(clean, 1, 8)["card"]["context"]
+    assert (ctx["line_id"], ctx["line_name"], ctx["expected"], ctx["played"]) == (b, long_name, "Bc5", "d6")
+    # The same line the report's gap card names for this game.
+    (gap,) = _gaps(clean, "white")["gaps"]
+    assert gap["context"]["line_id"] == b
+    # Two continuing lines tied: the first by name, as the report's rank (a new game: the matcher
+    # matches games without a result row, so the new line reaches only those).
+    h.line(clean, 3, 1, "0 first by name", ITALIAN[:5] + ["Be7"])
+    h.game(clean, 2, game)
+    _match(clean)
+    assert _card(clean, 2, 8)["card"]["context"]["line_id"] == 3
+
+
+def test_an_unmatched_game_has_no_context_and_black_has_the_black_destinations(
+    clean: psycopg.Connection[DictRow],
+) -> None:
+    _seed(clean, black=True)
+    h.line(clean, 1, 1, "Main", ITALIAN)
+    h.line(clean, 2, 2, "Main", SCANDI)
+    h.game(clean, 1, ["d4", "d5", "c4", "e6", "Nc3", "Nf6", "Bg5"], color="black")
+    _match(clean)
+    row = clean.execute("SELECT no_repertoire_match FROM player_games").fetchone()
+    assert row is not None and row["no_repertoire_match"]
+    out = _card(clean, 1, 7)
+    card = out["card"]
+    assert (
+        card["context"] is None
+        and card["colour"] == "black"
+        and card["stem"] == ["d4", "d5", "c4", "e6", "Nc3", "Nf6", "Bg5"]
+    )
+    assert card["catch_all"]["book"] == "Catch-all (Black)"
+    assert [(c["id"], c["book"]) for c in out["destinations"]] == [(2, "Scandi")]
+
+
+def test_the_game_card_refusals(clean: psycopg.Connection[DictRow]) -> None:
+    _seed(clean)
+    h.line(clean, 1, 1, "Main", ITALIAN)
+    game = ["e4", "e5", "Nf3", "Nc6", "Bc4", "d6", "c3"]
+    h.game(clean, 1, game)
+    h.game(clean, 2, game, variant="chess960")
+    h.game(clean, 3, game, color="black")
+    _match(clean)
+    with pytest.raises(report.GameNotFound):
+        _card(clean, 9, 6)
+    with pytest.raises(report.GameCardRefused, match="not analysable"):
+        _card(clean, 2, 6)
+    with pytest.raises(report.GameCardRefused, match="ply out of range"):
+        _card(clean, 1, 8)
+    with pytest.raises(report.GameCardRefused, match="ply out of range"):
+        _card(clean, 1, -1)
+    # The opponent to move: as White at an odd ply, as Black at an even one.
+    with pytest.raises(report.GameCardRefused, match="not the player's move"):
+        _card(clean, 1, 5)
+    with pytest.raises(report.GameCardRefused, match="not the player's move"):
+        _card(clean, 3, 6)
+    assert _card(clean, 3, 7)["card"]["colour"] == "black"
+    # The last ply is a board too (the game ended on the opponent's move).
+    assert _card(clean, 1, 6)["card"]["fen"] == spine(None, game)[6]
+    # A game whose bulk payload housekeeping cleared.
+    clean.execute("UPDATE chess_games SET moves = NULL, fen_sequence = NULL WHERE id = 1")
+    with pytest.raises(report.GameCardRefused, match="moves not stored"):
+        _card(clean, 1, 6)
+
+
+def test_a_stem_that_does_not_replay_refuses_the_game_card(clean: psycopg.Connection[DictRow]) -> None:
+    _seed(clean)
+    h.line(clean, 1, 1, "Main", ITALIAN)
+    game = ["e4", "e5", "Nf3", "Nc6", "Bc4", "d6", "c3"]
+    h.game(clean, 1, game)
+    _match(clean)
+    damaged = ["e4", "e5", "Nf3", "Nc6", "Bc4", "Zz9", "c3"]
+    clean.execute("UPDATE chess_games SET moves = %s::jsonb WHERE id = 1", (json.dumps(damaged),))
+    with pytest.raises(report.GameCardRefused, match="stem does not replay"):
+        _card(clean, 1, 6)
+
+
+@pytest.mark.parametrize(
+    ("colour", "answered", "refused"),
+    [("white", (58,), (60, 62)), ("black", (59,), (61, 63))],
+)
+def test_the_cap_the_last_board_a_line_can_start_from(
+    clean: psycopg.Connection[DictRow], colour: str, answered: tuple[int, ...], refused: tuple[int, ...]
+) -> None:
+    """A line is the stem (`ply` plies) plus at least one own move, at most 60 plies: the last
+    board is ply 59 for Black, 58 for White; the refusal names the cap in moves and the board's
+    move number."""
+    _seed(clean, black=True)
+    # Knights shuffle: a long legal game of 70 plies.
+    shuffle = ["Nf3", "Nf6", "Ng1", "Ng8"] * 17 + ["Nf3", "Nf6"]
+    assert len(shuffle) == 70
+    h.game(clean, 1, shuffle, color=colour)
+    _match(clean)
+    for ply in answered:
+        assert _card(clean, 1, ply)["card"]["stem"] == shuffle[:ply]
+    for ply in refused:
+        with pytest.raises(report.GameCardRefused, match=f"at most 30 moves; this board is at move {ply // 2 + 1}$"):
+            _card(clean, 1, ply)

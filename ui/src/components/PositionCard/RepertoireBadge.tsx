@@ -33,13 +33,41 @@ function Verdict({ c, move }: { c: RepertoireCoverage; move: string | null }) {
   }
 }
 
-export function RepertoireBadge({ fen, move }: { fen: string; move: string | null }) {
+/** What a page offers on a board the repertoire does not cover: the click, whether its read is
+ *  in flight, and the reason the last one was refused (shown under the line, for this card). */
+export interface AddToRepertoire {
+  onAdd: () => void;
+  pending: boolean;
+  error: string | null;
+}
+
+export function RepertoireBadge({ fen, move, add }: { fen: string; move: string | null; add?: AddToRepertoire }) {
   const cov = useCoverage(fen, move);
   // Nothing while loading: the walk-through below unmounts with it, so stepping to another card
   // covered by the same line starts it closed, at the new card's ply.
   if (cov.status !== "known") return null;
   const c = cov.data;
-  if (c.status === "none") return <p className="text-xs text-zinc-500">Not in your repertoire</p>;
+  if (c.status === "none")
+    return (
+      <div className="space-y-1" data-testid="repertoire-none">
+        <p className="text-xs text-zinc-500">
+          <span>Not in your repertoire</span>
+          {add && (
+            <>
+              {" · "}
+              <button type="button" disabled={add.pending} onClick={add.onAdd} className="rounded border border-zinc-300 px-2 py-0.5 text-xs font-medium text-zinc-700 hover:border-zinc-500 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300">
+                {add.pending ? "Opening…" : "Add to repertoire"}
+              </button>
+            </>
+          )}
+        </p>
+        {add?.error && (
+          <p role="alert" className="text-xs text-red-600 dark:text-red-400">
+            {add.error}
+          </p>
+        )}
+      </div>
+    );
   const where = whereInBook(c);
   const said = Verdict({ c, move });
   return (

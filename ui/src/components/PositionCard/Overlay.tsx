@@ -9,6 +9,7 @@ import { ClassBadge, RepliesLine } from "./CardInner";
 import { GamesTable } from "./GamesTable";
 import { LineReaderPanel } from "./LineReaderPanel";
 import { RepertoireBadge } from "./RepertoireBadge";
+import type { AddToRepertoire } from "./RepertoireBadge";
 import { RepLinesPanel } from "./RepLinesPanel";
 import { SimilarPositionsPanel } from "./SimilarPositionsPanel";
 import { lineNamesSummary, recommended } from "./types";
@@ -48,8 +49,15 @@ function CopyBlock({ label, text }: { label: string; text: string }) {
  * Explore is seeded with the FEN and colour captured at the click, not `d`'s: the list can shrink
  * under an open overlay (a dismissal refetches it) and the clamped index would otherwise re-seed an
  * open layer with another card's board, or flip it.
+ *
+ * `addToRepertoire` is a page's offer on a board the repertoire does not cover, for the cards it
+ * can make it on (undefined for the rest: the badge then reads as on every other page).
+ * `repertoireRevision` names the repertoire the readers below were mounted against: the badge and
+ * Similar positions are keyed on it with the board, so a page that changed the repertoire remounts
+ * both — the badge starts with no answer rather than an actionable stale one, and Similar positions
+ * drops its per-mount cache.
  */
-export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, suspended = false }: { items: PositionCardData[]; initialIndex: number; onClose: () => void; onIndexChange?: (i: number) => void; actions?: React.ReactNode; suspended?: boolean }) {
+export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, suspended = false, addToRepertoire, repertoireRevision = 0 }: { items: PositionCardData[]; initialIndex: number; onClose: () => void; onIndexChange?: (i: number) => void; actions?: React.ReactNode; suspended?: boolean; addToRepertoire?: (item: PositionCardData) => AddToRepertoire | undefined; repertoireRevision?: number }) {
   const [index, setIndex] = useState(initialIndex);
   const [compareOpen, setCompareOpen] = useState(false);
   const [exploreSeed, setExploreSeed] = useState<{ fen: string; orientation: "white" | "black" } | null>(null);
@@ -226,7 +234,7 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
         )}
 
         {/* Not on a decision node: its board is the opponent's move, and "what does my repertoire play here" has no answer there. */}
-        {!node && <RepertoireBadge fen={d.fen} move={queriedMove} />}
+        {!node && <RepertoireBadge key={`badge:${d.fen}:${repertoireRevision}`} fen={d.fen} move={queriedMove} add={addToRepertoire?.(d)} />}
 
         <button type="button" data-testid="explore-launch" onClick={() => canExplore && setExploreSeed({ fen: d.fen, orientation: d.color })} disabled={!canExplore} title={canExplore ? undefined : "This position cannot be explored"} className="w-full rounded border border-sky-300 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-800 disabled:opacity-40 dark:border-sky-800 dark:bg-sky-900/30 dark:text-sky-300">
           Explore from here
@@ -242,7 +250,7 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
 
         <LineReaderPanel fen={d.fen} repertoireLineId={null} />
 
-        <SimilarPositionsPanel fen={d.fen} queriedMove={queriedMove} orientation={d.color} mainArrows={mainArrows} compareOpen={compareOpen} onCompareOpenChange={setCompareOpen} />
+        <SimilarPositionsPanel key={`similar:${d.fen}:${repertoireRevision}`} fen={d.fen} queriedMove={queriedMove} orientation={d.color} mainArrows={mainArrows} compareOpen={compareOpen} onCompareOpenChange={setCompareOpen} />
 
         {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
 

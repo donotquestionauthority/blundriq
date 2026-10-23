@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LineReaderLine, RepertoireCoverage } from "../../repertoire";
 import { RepertoireBadge } from "./RepertoireBadge";
@@ -147,5 +147,57 @@ describe("RepertoireBadge", () => {
     fireEvent.click(button);
     expect(button).toHaveAttribute("aria-expanded", "true");
     expect(button).toHaveClass("w-full", "bg-sky-700");
+  });
+
+  it("offers Add to repertoire only on an uncovered board, only when the page offers it, and never while the answer is unknown", async () => {
+    const none = coverage({ status: "none", book: null, chapter: null, line_name: null, line_id: null, line_ply: null, book_move: null });
+    const onAdd = vi.fn();
+    const add = { onAdd, pending: false, error: null };
+    stubFetch({ "/repertoire/coverage": () => ({ status: 200, body: none }) });
+    render(<RepertoireBadge fen={AFTER_E5} move="Nc3" add={add} />);
+    // Nothing until the coverage answers: no button that could act on no answer.
+    expect(screen.queryByRole("button", { name: "Add to repertoire" })).toBeNull();
+    const button = await screen.findByRole("button", { name: "Add to repertoire" });
+    expect(screen.getByTestId("repertoire-none")).toHaveTextContent("Not in your repertoire · Add to repertoire");
+    fireEvent.click(button);
+    expect(onAdd).toHaveBeenCalledTimes(1);
+    cleanup();
+
+    // Without the page's offer, the line reads as before.
+    render(<RepertoireBadge fen={AFTER_E5} move="Nc3" />);
+    expect(await screen.findByText("Not in your repertoire")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add to repertoire" })).toBeNull();
+    cleanup();
+
+    // A covered board, whatever its status, offers nothing.
+    for (const status of ["match", "agree", "end_of_line", "conflict"] as const) {
+      vi.unstubAllGlobals();
+      stubFetch({ "/repertoire/coverage": () => ({ status: 200, body: coverage({ status }) }) });
+      render(<RepertoireBadge fen={AFTER_E5} move="Nc3" add={add} />);
+      await screen.findByTestId("repertoire-coverage");
+      expect(screen.queryByRole("button", { name: "Add to repertoire" })).toBeNull();
+      cleanup();
+    }
+
+    // A failed coverage read is unknown: nothing, not an offer.
+    vi.unstubAllGlobals();
+    stubFetch({ "/repertoire/coverage": () => ({ status: 500, body: { detail: "down" } }) });
+    const { container } = render(<RepertoireBadge fen={AFTER_E5} move="Nc3" add={add} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(container).toBeEmptyDOMElement());
+    expect(screen.queryByRole("button", { name: "Add to repertoire" })).toBeNull();
+  });
+
+  it("shows the read in flight and the reason it was refused, under the line", async () => {
+    const none = coverage({ status: "none", book: null, chapter: null, line_name: null, line_id: null, line_ply: null, book_move: null });
+    stubFetch({ "/repertoire/coverage": () => ({ status: 200, body: none }) });
+    const { rerender } = render(<RepertoireBadge fen={AFTER_E5} move="Nc3" add={{ onAdd: vi.fn(), pending: true, error: null }} />);
+    const button = await screen.findByRole("button", { name: "Opening…" });
+    expect(button).toBeDisabled();
+    rerender(<RepertoireBadge fen={AFTER_E5} move="Nc3" add={{ onAdd: vi.fn(), pending: false, error: "a repertoire line holds at most 30 moves; this board is at move 31" }} />);
+    expect(screen.getByRole("button", { name: "Add to repertoire" })).toBeEnabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("a repertoire line holds at most 30 moves; this board is at move 31");
   });
 });
