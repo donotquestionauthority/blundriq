@@ -1,11 +1,16 @@
-import { useEffect, useRef, useState } from "react";
-import { api } from "../api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, ApiError } from "../api";
 import { BLUNDER_CLASSES, DAY_OPTIONS, LAST_N_OPTIONS, MIN_OCCURRENCE_OPTIONS, TIME_CLASS_LABELS, defaultFilters, dismissBoard, getBlunders, markSeen, restoreBoard, toCard } from "../blunders";
 import type { BlunderClass, BlunderFilters, TimeClass } from "../blunders";
+import { AddLineModal } from "../components/AddLineModal";
 import { CreatePuzzleModal } from "../components/CreatePuzzleModal";
 import type { CreatePuzzleSource } from "../components/CreatePuzzleModal";
 import { PositionList } from "../components/PositionCard/PositionList";
+import type { AddToRepertoire } from "../components/PositionCard/RepertoireBadge";
+import type { PositionCardData } from "../components/PositionCard/types";
 import { useApi } from "../hooks/useApi";
+import { getGapCard } from "../repertoire";
+import type { GapCardResponse, NewLineResponse } from "../repertoire";
 import { lichessAnalyzeUrl } from "../utils/chess";
 import { errorLabel } from "../utils/errorLabel";
 
@@ -18,6 +23,14 @@ import { errorLabel } from "../utils/errorLabel";
  * response told it to — and every rendered response, an empty list included, records the look —
  * so Home's count is spent only for what was actually shown. A response that lost to a newer
  * request, or arrived after the page was left, is never acknowledged.
+ *
+ * A card whose board no line covers offers "Add to repertoire": the card's game at its board is
+ * read as a gap card and the line editor opens on it. That read belongs to the card it was made
+ * for: stepping to another card, closing the overlay, a new list, a second click, or another
+ * activity opening over the card (Create puzzle, Explore, the compare view) aborts it, and an
+ * answer is applied only while it is still the current read — one dialog on a card at a time. A saved line can change what the
+ * rows say (their repertoire context comes from the match), so the list is re-read under the
+ * visit's marker and the overlay's repertoire readers are remounted.
  */
 
 const ACCENT: Record<BlunderClass, string> = { miss: "border-l-rose-700", blunder: "border-l-red-500", mistake: "border-l-orange-500", inaccuracy: "border-l-yellow-500" };
@@ -26,11 +39,25 @@ const select = "rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:b
 const chip = (on: boolean) => `rounded border px-2.5 py-1 text-xs font-medium ${on ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900" : "border-zinc-300 text-zinc-500 dark:border-zinc-700"}`;
 const action = "rounded border border-zinc-300 px-3 py-1.5 text-sm hover:border-zinc-500 disabled:opacity-50 dark:border-zinc-700";
 
+/** The identity of a card's read: its game at its board, on the board it shows. */
+const cardKey = (item: Pick<PositionCardData, "fen" | "chessGameId" | "ply">) => `${item.chessGameId}:${item.ply}:${item.fen}`;
+
+/** The toast after a save: where the line went and what the rematch did. */
+function addedText(made: NewLineResponse, read: GapCardResponse): string {
+  const chapter = read.destinations.find((ch) => ch.id === made.chapter_id);
+  const where = chapter ? `${chapter.book} › ${chapter.title}` : `${read.card.catch_all.book} › ${read.card.catch_all.chapter}`;
+  return `Added to ${where} · ${made.rematch.matched} games re-matched`;
+}
+
 function List({ filters, setFilters }: { filters: BlunderFilters; setFilters: (f: BlunderFilters) => void }) {
   const [page, setPage] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [creating, setCreating] = useState<CreatePuzzleSource | null>(null);
+  const [adding, setAdding] = useState<{ fen: string; read: GapCardResponse } | null>(null);
+  const [addPending, setAddPending] = useState<string | null>(null);
+  const [addFailure, setAddFailure] = useState<{ key: string; text: string } | null>(null);
+  const [repertoireRevision, setRepertoireRevision] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
   const key = JSON.stringify(filters);
   // The visit's order marker: taken from the first accepted response and sent on every later
@@ -64,6 +91,66 @@ function List({ filters, setFilters }: { filters: BlunderFilters; setFilters: (f
     setPage(0);
     setFilters({ ...filters, ...patch });
   };
+
+  // The one in-flight gap-card read, owned by the card it was made for.
+  const inFlight = useRef<{ key: string; controller: AbortController } | null>(null);
+  const abortRead = useCallback(() => {
+    inFlight.current?.controller.abort();
+    inFlight.current = null;
+    setAddPending(null);
+  }, []);
+  // A new list (a filter or page change) and leaving the page abort it.
+  useEffect(() => abortRead, [key, page, abortRead]);
+  // Another card showing (or none): the read belongs to the card it was made for, and so does
+  // the reason the last one was refused.
+  const onShowingChange = useCallback(
+    (item: PositionCardData | null) => {
+      if (inFlight.current && (!item || cardKey(item) !== inFlight.current.key)) abortRead();
+      setAddFailure((f) => (f && item && cardKey(item) === f.key ? f : null));
+    },
+    [abortRead],
+  );
+
+  async function addToRepertoire(item: PositionCardData, gameId: number, ply: number) {
+    abortRead();
+    const k = cardKey(item);
+    const controller = new AbortController();
+    inFlight.current = { key: k, controller };
+    setAddPending(k);
+    setAddFailure(null);
+    try {
+      const read = await getGapCard(gameId, ply, controller.signal);
+      if (inFlight.current?.controller !== controller) return;
+      setAdding({ fen: item.fen, read });
+    } catch (e) {
+      if (inFlight.current?.controller !== controller) return;
+      setAddFailure({ key: k, text: e instanceof ApiError ? e.message : "Could not read the game." });
+    } finally {
+      if (inFlight.current?.controller === controller) {
+        inFlight.current = null;
+        setAddPending(null);
+      }
+    }
+  }
+
+  // The offer on a card: one that names the game and ply the read is of, with that read's state.
+  const offerAdd = (item: PositionCardData): AddToRepertoire | undefined => {
+    const gameId = item.chessGameId;
+    const ply = item.ply;
+    if (gameId == null || ply == null) return undefined;
+    const k = cardKey(item);
+    return { onAdd: () => void addToRepertoire(item, gameId, ply), pending: addPending === k, error: addFailure?.key === k ? addFailure.text : null };
+  };
+
+  function onLineAdded(made: NewLineResponse) {
+    if (!adding) return;
+    setToast(addedText(made, adding.read));
+    setAdding(null);
+    // The rows read the repertoire: re-read them under the visit's marker, and remount the
+    // overlay's repertoire readers so the badge and Similar positions answer for the new book.
+    refetch();
+    setRepertoireRevision((r) => r + 1);
+  }
 
   async function toggleDismissed(fen: string, dismissed: boolean) {
     setBusy(fen);
@@ -181,7 +268,11 @@ function List({ filters, setFilters }: { filters: BlunderFilters; setFilters: (f
             ) : (
               <PositionList
                 items={cards}
-                overlaySuspended={creating !== null}
+                overlaySuspended={creating !== null || adding !== null}
+                repertoireRevision={repertoireRevision}
+                onShowingChange={onShowingChange}
+                onLayerOpen={abortRead}
+                addToRepertoire={offerAdd}
                 accent={(item) => `${item.topClassification ? ACCENT[item.topClassification] : ""} ${item.dismissed ? "opacity-60" : ""}`}
                 headerRight={(item) => (
                   <button
@@ -217,6 +308,7 @@ function List({ filters, setFilters }: { filters: BlunderFilters; setFilters: (f
         )}
       </div>
 
+      {adding && <AddLineModal key={`add:${adding.fen}`} card={adding.read.card} destinations={adding.read.destinations} prefillPlies={adding.read.prefill_plies} maxPlies={adding.read.max_plies} onClose={() => setAdding(null)} onAdded={onLineAdded} />}
       {creating && <CreatePuzzleModal key={creating.fen} source={creating} onClose={() => setCreating(null)} onCreated={(made) => setToast(made.visible ? "Puzzle created" : "Puzzle created, but hidden for now: this board is dismissed, or your repertoire already covers the position")} />}
       {toast && (
         <div role="status" className="fixed bottom-6 left-1/2 z-[60] max-w-md -translate-x-1/2 rounded-lg border border-zinc-200 bg-white px-4 py-2 text-sm shadow-2xl dark:border-zinc-800 dark:bg-zinc-900">

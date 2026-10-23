@@ -399,8 +399,10 @@ export interface GapCard {
   losses: number;
   score: number | null;
   family: string | null;
-  /** The book the games were in and where the opponent left it; null for a board no book reaches. */
-  context: { book_id: number; book: string; chapter_id: number; chapter: string; line_id: number; line_name: string; expected: string; played: string; count: number } | null;
+  /** The book the games were in and where the opponent left it; null for a board no book reaches.
+   *  `expected` and `played` are null when the line was followed to its end or the game stopped in
+   *  it (a Blunders card's game: `getGapCard`). */
+  context: { book_id: number; book: string; chapter_id: number; chapter: string; line_id: number; line_name: string; expected: string | null; played: string | null; count: number } | null;
   continuations: { moves: string[]; games: number; score: number | null }[];
   /** The stored engine line from the board (the most recent analysed game's); null when none is analysed. */
   engine: { best_move: string | null; line: string[]; eval: number | null; mate_in: number | null } | null;
@@ -444,6 +446,16 @@ export interface GapsResponse {
   prefill_plies: number;
   max_plies: number;
 }
+
+/** One game at one board as a gap card (`GET /repertoire/gap-card`): what a Blunders card's
+ *  "Add to repertoire" opens the line editor with. */
+export interface GapCardResponse {
+  card: GapCard;
+  destinations: Destination[];
+  prefill_plies: number;
+  max_plies: number;
+}
+export const getGapCard = (gameId: number, ply: number, signal?: AbortSignal) => api.get<GapCardResponse>(`/repertoire/gap-card?game_id=${gameId}&ply=${ply}`, signal);
 
 export interface NewLineBody {
   moves: string[];

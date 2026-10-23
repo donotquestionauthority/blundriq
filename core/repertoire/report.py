@@ -62,6 +62,12 @@ the limit and the limit itself. The practice numbers are not game-scoped.
 **Decisions and practice** (`core.repertoire.decisions`, `core.repertoire.practice`) add to each
 line what the player did at every board the line prescribes a move at, and how its puzzle's
 recent first tries went; the Decisions view is the same evidence grouped by board.
+
+**One game at one board** (`gap_card_for_game`) is the same card shape for a Blunders card whose
+board no line covers: the game's stem to the board, the stored engine entry there, and as
+context the game's attached line under the read's tie-break with that line's own derived
+status — the result row's `expected_move`/`played_move` describe the matcher's first tied line,
+never the chosen one.
 """
 
 from __future__ import annotations
@@ -73,7 +79,7 @@ from typing import Any, LiteralString, cast
 import chess
 from psycopg import Connection
 
-from core.chess.eligibility import analysable_sql, time_class_sql, window_cte
+from core.chess.eligibility import analysable_sql, is_analysable, time_class_sql, window_cte
 from core.chess.san import normalize_san
 from core.chess.san import parse as parse_san
 from core.constants import (
@@ -1001,3 +1007,114 @@ def _destinations(conn: Connection[Any], colour: str) -> list[Row]:
         (PLAYER_ID, colour),
     ).fetchall()
     return [{"id": int(r["id"]), "title": r["title"], "book_id": int(r["book_id"]), "book": r["book"]} for r in rows]
+
+
+# --- one game at one board ------------------------------------------------------------------
+
+
+class GameCardRefused(ValueError):
+    """The board cannot be the start of a manual line; the message is for the player."""
+
+
+class GameNotFound(LookupError):
+    """Not a game of the player's."""
+
+
+# The game's row at the board after `ply` moves: the board, its canonical key, the move that
+# reached it, the moves to it, and the stored engine entry there — one element of each array,
+# never the whole payload.
+_GAME_AT_PLY_SQL = """
+SELECT cg.id AS gid, pg.result, pg.player_color, cg.played_at, cg.canonical_family, cg.variant,
+       jsonb_array_length(cg.moves) AS glen,
+       cg.fen_sequence->>%(ply)s AS gap_fen,
+       bq_canonical_fen(cg.fen_sequence->>%(ply)s) || ' 0 1' AS canon,
+       CASE WHEN %(ply)s > 0 THEN cg.moves->>(%(ply)s - 1) END AS arrived_by,
+       (SELECT array_agg(x ORDER BY ord) FROM jsonb_array_elements_text(cg.moves) WITH ORDINALITY AS t(x, ord)
+         WHERE ord <= %(ply)s) AS stem,
+       cg.ply_analysis -> %(ply)s AS analysis
+FROM player_games pg
+JOIN chess_games cg ON cg.id = pg.chess_game_id
+WHERE pg.player_id = %(pid)s AND cg.id = %(gid)s
+"""
+
+# The game's attached lines in rank order, with what derives each one's own status: the boundary,
+# the line's moves and length, and the game's move at the boundary. A result row with no boundary
+# is not a match the read can describe.
+_GAME_CONTEXT_SQL = """
+SELECT grr.deviated_at_ply AS m, cg.moves->>grr.deviated_at_ply AS played,
+       rl.id AS line_id, rl.line_name, rl.moves, jsonb_array_length(rl.moves) AS len,
+       ch.id AS chapter_id, ch.title AS chapter_title, bk.id AS book_id, bk.title AS book_title
+FROM game_repertoire_results grr
+JOIN chess_games cg ON cg.id = grr.chess_game_id
+JOIN game_result_lines grl ON grl.game_repertoire_result_id = grr.id
+JOIN repertoire_lines rl ON rl.id = grl.line_id AND rl.active
+JOIN chapters ch ON ch.id = rl.chapter_id AND ch.active
+JOIN books bk ON bk.id = ch.book_id AND bk.active AND bk.player_id = %(pid)s
+WHERE grr.player_id = %(pid)s AND grr.chess_game_id = %(gid)s AND grr.deviated_at_ply IS NOT NULL
+ORDER BY bk.title COLLATE "C", ch.title COLLATE "C", rl.line_name COLLATE "C", rl.id
+"""
+
+
+def gap_card_for_game(conn: Connection[Any], game_id: int, ply: int) -> Row:
+    """`{"card", "destinations", "prefill_plies", "max_plies"}` for the player's game at the board
+    after `ply` of its moves — a gap card (`_group`) of one game, with the game's attached line
+    as context when the matcher attached one: the gap games' representative, the first attached
+    line by status precedence then rank, its status derived as the report derives it and the
+    expected and played moves only when someone left it. Raises `GameNotFound` for another
+    player's game and `GameCardRefused` when no manual line can start from the board: a game
+    that is not analysable, a ply off the game, the opponent to move, a board past the cap
+    (the stem plus one own move is the shortest line), or a stem that does not replay."""
+    r = conn.execute(_GAME_AT_PLY_SQL, {"pid": PLAYER_ID, "gid": game_id, "ply": ply}).fetchone()
+    if r is None:
+        raise GameNotFound("Not found")
+    if not is_analysable(r["variant"]):
+        raise GameCardRefused("not analysable")
+    if r["glen"] is None:
+        raise GameCardRefused("moves not stored")
+    if not 0 <= ply <= int(r["glen"]) or r["gap_fen"] is None:
+        raise GameCardRefused("ply out of range")
+    colour = str(r["player_color"])
+    if ("white" if ply % 2 == 0 else "black") != colour:
+        raise GameCardRefused("not the player's move")
+    if ply + 1 > REPERTOIRE_LINE_MAX_PLIES:
+        raise GameCardRefused(
+            f"a repertoire line holds at most {REPERTOIRE_LINE_MAX_PLIES // 2} moves;"
+            f" this board is at move {ply // 2 + 1}"
+        )
+    rep: Row = {**dict(r), "continuation": None}
+    context: dict[int, Row] | None = None
+    tied = [
+        (c, status_of(int(c["m"]), int(c["len"]), int(r["glen"]), colour))
+        for c in conn.execute(_GAME_CONTEXT_SQL, {"pid": PLAYER_ID, "gid": game_id}).fetchall()
+    ]
+    if tied:
+        c, status = min(tied, key=lambda t: _PRECEDENCE[t[1]])  # the first in rank among the least
+        m = int(c["m"])
+        left = status in (ME, OPPONENT)
+        context = {
+            int(r["gid"]): {
+                "book_id": int(c["book_id"]),
+                "book_title": c["book_title"],
+                "chapter_id": int(c["chapter_id"]),
+                "chapter_title": c["chapter_title"],
+                "line_id": int(c["line_id"]),
+                "line_name": c["line_name"],
+                "expected": str(c["moves"][m]) if left else None,
+                "played": str(c["played"]) if left else None,
+            }
+        }
+    analysis = cast(Row, r["analysis"]) if isinstance(r["analysis"], dict) else None
+    card = _group([rep], rep, analysis, colour=colour, context=context)
+    if card["stem"] is None:
+        raise GameCardRefused("stem does not replay")
+    del card["canon"]
+    card["catch_all"] = {
+        "book": f"{CATCH_ALL_TITLE} ({colour.capitalize()})",
+        "chapter": card["family"] or lines_by_hand.CATCH_ALL_FAMILY_FALLBACK,
+    }
+    return {
+        "card": card,
+        "destinations": _destinations(conn, colour),
+        "prefill_plies": REPORT_PREFILL_PLIES,
+        "max_plies": REPERTOIRE_LINE_MAX_PLIES,
+    }

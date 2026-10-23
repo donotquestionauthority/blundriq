@@ -196,6 +196,60 @@ def test_the_line_report_route(client: TestClient) -> None:
     assert out["gaps"]["black"] == {"colour": "black", "destinations": [], **empty}
 
 
+def test_the_gap_card_route(client: TestClient, clean: psycopg.Connection[DictRow]) -> None:
+    """GET /repertoire/gap-card: the fixture's game 1 at ply 4 (White to move, the player about
+    to play d4 for Bc4) as a gap card with the line's derived context and the colour's
+    destinations; 404 for a game that is not the player's, 422 with the reason when no line can
+    start there; a read that writes nothing."""
+    before = clean.execute(
+        "SELECT (SELECT count(*) FROM repertoire_lines), (SELECT count(*) FROM game_repertoire_results),"
+        " (SELECT count(*) FROM books), (SELECT count(*) FROM chapters)"
+    ).fetchone()
+    r = client.get("/repertoire/gap-card", params={"game_id": 1, "ply": 4})
+    assert r.status_code == 200
+    out = r.json()
+    card = out["card"]
+    assert card["stem"] == MAIN[:4] and card["colour"] == "white" and card["arrived_by"] == "Nc6"
+    assert card["games"] == 1 and card["losses"] == 1 and card["engine"] is None and card["continuations"] == []
+    assert card["context"] == {
+        "book_id": 1,
+        "book": "Italian",
+        "chapter_id": 1,
+        "chapter": "Giuoco",
+        "line_id": 1,
+        "line_name": "Main",
+        "expected": "Bc4",
+        "played": "d4",
+        "count": 1,
+    }
+    assert card["catch_all"]["book"] == "Catch-all (White)" and "canon" not in card
+    assert out["destinations"] == [{"id": 1, "title": "Giuoco", "book_id": 1, "book": "Italian"}]
+    assert out["prefill_plies"] == 10 and out["max_plies"] == 60
+    assert client.get("/repertoire/gap-card", params={"game_id": 9, "ply": 4}).status_code == 404
+    r = client.get("/repertoire/gap-card", params={"game_id": 1, "ply": 3})
+    assert r.status_code == 422 and r.json()["detail"] == "not the player's move"
+    r = client.get("/repertoire/gap-card", params={"game_id": 1, "ply": 6})
+    assert r.status_code == 422 and r.json()["detail"] == "ply out of range"
+    assert client.get("/repertoire/gap-card", params={"game_id": 1, "ply": -1}).status_code == 422
+    assert client.get("/repertoire/gap-card", params={"game_id": 0, "ply": 4}).status_code == 422
+    assert client.get("/repertoire/gap-card", params={"game_id": 1}).status_code == 422
+    # The cap, through the route: a 70-ply game, White at ply 60 is a board past the last line.
+    shuffle = ["Nf3", "Nf6", "Ng1", "Ng8"] * 17 + ["Nf3", "Nf6"]
+    h.game(clean, 3, shuffle)
+    clean.commit()
+    r = client.get("/repertoire/gap-card", params={"game_id": 3, "ply": 60})
+    assert (
+        r.status_code == 422
+        and r.json()["detail"] == "a repertoire line holds at most 30 moves; this board is at move 31"
+    )
+    assert client.get("/repertoire/gap-card", params={"game_id": 3, "ply": 58}).status_code == 200
+    after = clean.execute(
+        "SELECT (SELECT count(*) FROM repertoire_lines), (SELECT count(*) FROM game_repertoire_results),"
+        " (SELECT count(*) FROM books), (SELECT count(*) FROM chapters)"
+    ).fetchone()
+    assert before == after
+
+
 def test_the_manual_line_routes(client: TestClient) -> None:
     """POST /repertoire/lines: 201 into a chapter and into the catch-all, 409 for a duplicate and
     for a conflict, 404 for a chapter that is not a destination, 422 for a line that does not

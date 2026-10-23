@@ -12,8 +12,9 @@ editor and the line walk-through, on every card and in Practice. GET /repertoire
 card's board is in the repertoire, and the line to walk through. POST /repertoire/lines/{id}/explain —
 the walk-through's "why does this move matter" (core/ai.py `explain_line`). GET /repertoire/similar and
 GET /repertoire/branch-compare — the two compare surfaces. GET /repertoire/report — the
-line report, the lines table and both colours' gaps in one read (core/repertoire/report.py). All literal paths are
-registered before `/{book_id}`.
+line report, the lines table and both colours' gaps in one read (core/repertoire/report.py). GET
+/repertoire/gap-card — one game at one board as a gap card, what a Blunders card's "Add to repertoire"
+opens with. All literal paths are registered before `/{book_id}`.
 
 Both compare routes re-serialise their FENs through python-chess before anything reads them: every
 stored FEN is python-chess-generated (the en-passant field is a square only when a capture is legal),
@@ -86,6 +87,20 @@ def line_report_decisions(
     with db.transaction() as conn:
         out = report.decisions_view(conn, settings.load(conn), time_class=time_class, games=games)
     return JSONResponse(out)
+
+
+@router.get("/gap-card")
+def gap_card(game_id: int = Query(ge=1), ply: int = Query(ge=0, le=2000)) -> dict[str, Any]:
+    """A Blunders card's game at its board as a gap card, with the colour's destinations
+    (`report.gap_card_for_game`): what "Add to repertoire" opens the line editor with. 404 for
+    another player's game; 422 with the reason when no manual line can start from the board."""
+    try:
+        with db.transaction() as conn:
+            return report.gap_card_for_game(conn, game_id, ply)
+    except report.GameNotFound as exc:
+        raise HTTPException(404, "Not found") from exc
+    except report.GameCardRefused as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @router.get("/similar")

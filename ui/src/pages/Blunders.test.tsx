@@ -1,6 +1,9 @@
+import { useState } from "react";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { EngineEval } from "../engine/useStockfish";
+import type { GapCardResponse } from "../repertoire";
 import Blunders from "./Blunders";
 import { buildQuery, defaultFilters, formatDryRun, toCard, topClass } from "../blunders";
 import type { BlunderPosition, BlundersResponse } from "../blunders";
@@ -20,6 +23,18 @@ vi.mock("react-chessboard", () => ({
     </div>
   ),
 }));
+
+// The line editor's engine (AddLineModal.test.tsx covers Extend); here the modal only opens and saves.
+vi.mock("../engine/useStockfish", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../engine/useStockfish")>();
+  return {
+    ...actual,
+    useStockfish: () => {
+      const [s] = useState<{ ready: boolean; evalState: EngineEval | null }>({ ready: true, evalState: null });
+      return { ...s, analyze: vi.fn(), reset: vi.fn(), stop: vi.fn() };
+    },
+  };
+});
 
 // Explore is a layer of its own (ExploreLayer.test.tsx); here only what the host hands it matters.
 vi.mock("../components/ExploreLayer", () => ({
@@ -66,12 +81,12 @@ const page = (positions: BlunderPosition[], over: Partial<BlundersResponse> = {}
 
 type Reply = { status: number; body: unknown };
 function stubFetch(routes: Record<string, (method: string, body: Record<string, unknown> | null, query: URLSearchParams) => Reply | Promise<Reply>>) {
-  const calls: Array<{ path: string; method: string; body: Record<string, unknown> | null; query: URLSearchParams }> = [];
+  const calls: Array<{ path: string; method: string; body: Record<string, unknown> | null; query: URLSearchParams; signal: AbortSignal | null }> = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string, init?: RequestInit) => {
       const [rawPath, rawQuery] = url.replace(/^.*\/api/, "").split("?");
-      const call = { path: rawPath, method: init?.method ?? "GET", body: init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : null, query: new URLSearchParams(rawQuery ?? "") };
+      const call = { path: rawPath, method: init?.method ?? "GET", body: init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : null, query: new URLSearchParams(rawQuery ?? ""), signal: init?.signal ?? null };
       calls.push(call);
       // Acknowledging what was shown is fire-and-forget; tests that do not care get a 200.
       const h = routes[rawPath] ?? (rawPath === "/blunders/seen" ? () => ({ status: 200, body: { seen_at: "2026-09-22T10:00:00+00:00" } }) : undefined);
@@ -534,5 +549,256 @@ describe("Blunders page", () => {
     expect(lastList(calls)?.query.get("stay")).toBe(STAY); // the refetch after a dismissal stays in the visit
     expect(await screen.findByText("50 positions · 1 dismissed")).toBeInTheDocument();
     expect(screen.getAllByTestId("position-card")).toHaveLength(1);
+  });
+
+  // --- Add to repertoire from a card whose board no line covers ---------------------------------
+
+  const NONE = { status: "none", transposed: null, book_move: null, played_is_book: null, book: null, chapter: null, line_name: null, line_id: null, line_ply: null, more_lines: 0 };
+  const COVERED = { status: "match", transposed: false, book_move: "Nxe5", played_is_book: false, book: "Italian", chapter: "Giuoco", line_name: "Fork trick", line_id: 9, line_ply: 6, more_lines: 0 };
+  const gapCard = (): GapCardResponse => ({
+    card: { fen: FORK, colour: "white", arrived_by: "h6", games: 1, wins: 0, draws: 0, losses: 1, score: 0, family: "Italian Game", context: { book_id: 1, book: "Italian", chapter_id: 1, chapter: "Giuoco", line_id: 1, line_name: "Main", expected: "Bc5", played: "h6", count: 1 }, continuations: [], engine: { best_move: "Nxe5", line: ["Nxe5", "Nxe5", "d4", "Qh4", "O-O"], eval: 120, mate_in: null }, last_played: null, stem: MOVES.slice(0, 6), catch_all: { book: "Catch-all (White)", chapter: "Italian Game" } },
+    destinations: [{ id: 1, title: "Giuoco", book_id: 1, book: "Italian" }],
+    prefill_plies: 10,
+    max_plies: 60,
+  });
+  const gapCardCalls = (calls: ReturnType<typeof stubFetch>) => calls.filter((c) => c.path === "/repertoire/gap-card");
+  const addButton = (dialog: HTMLElement) => within(dialog).findByRole("button", { name: "Add to repertoire" });
+  /** A reply the test releases when it chooses. */
+  function deferred<T>() {
+    let resolve!: (v: T) => void;
+    const promise = new Promise<T>((r) => (resolve = r));
+    return { promise, resolve };
+  }
+
+  it("Add to repertoire reads the card's game at its board and opens the line editor on the stem and the engine's line", async () => {
+    const calls = stubFetch({
+      "/settings": () => ({ status: 200, body: SETTINGS }),
+      "/blunders": () => ({ status: 200, body: page([position(), position({ fen: OTHER, count: 2, chess_game_id: null, context: "Open Game", move_played: "Nf3" })]) }),
+      "/blunders/prompts": () => ({ status: 200, body: { prompts: [] } }),
+      "/repertoire/coverage": () => ({ status: 200, body: NONE }),
+      "/repertoire/gap-card": () => ({ status: 200, body: gapCard() }),
+    });
+    renderPage();
+    fireEvent.click((await screen.findAllByTestId("position-card"))[0]);
+    const dialog = await screen.findByRole("dialog", { name: "Position" });
+    fireEvent.click(await addButton(dialog));
+    const modal = await screen.findByRole("dialog", { name: "Add to repertoire" });
+    expect(gapCardCalls(calls).map((c) => [c.query.get("game_id"), c.query.get("ply")])).toEqual([["77", "6"]]);
+    // The seed: the game to the board, then the engine's line trimmed to end on the player's move.
+    const line = within(modal).getByTestId("solution-line");
+    expect(line.getAttribute("data-shown")).toBe("6");
+    expect(line.textContent).toContain("1. e4 e5 2. Nf3 Nc6 3. Bc4 h6 4. Nxe5 Nxe5 5. d4 Qh4 6. O-O");
+    expect(within(modal).getByLabelText("Book and chapter")).toHaveValue("1"); // the chapter of the line the game left
+    expect(within(modal).getByLabelText("Line name")).toHaveValue("Italian Game — after h6");
+    // The overlay underneath listens to nothing while the editor is open.
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(within(dialog).getByText("1 / 2")).toBeInTheDocument();
+    fireEvent.click(within(modal).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Add to repertoire" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Position" })).toBeInTheDocument();
+    // A card that names no game has nothing to read: the line without the offer.
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(await within(dialog).findByText("Not in your repertoire")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Add to repertoire" })).toBeNull();
+  });
+
+  it("a late answer belongs to the card and visit it was made for: after stepping on, closing, a new list, a replaced read or a list that shrank under the overlay it opens nothing", async () => {
+    let reply = deferred<{ status: number; body: unknown }>();
+    let dismissed = false;
+    const calls = stubFetch({
+      "/settings": () => ({ status: 200, body: SETTINGS }),
+      "/blunders": () => ({ status: 200, body: page(dismissed ? [position()] : [position(), position({ fen: OTHER, count: 2, chess_game_id: 78, ply: 2, moves: MOVES.slice(0, 2), context: "Open Game", move_played: "Nf3" })]) }),
+      "/blunders/prompts": () => ({ status: 200, body: { prompts: [] } }),
+      "/blunders/dismiss": () => ((dismissed = true), { status: 200, body: { detail: "dismissed" } }),
+      "/repertoire/coverage": () => ({ status: 200, body: NONE }),
+      "/repertoire/gap-card": () => reply.promise,
+    });
+    renderPage();
+    fireEvent.click((await screen.findAllByTestId("position-card"))[0]);
+    const dialog = await screen.findByRole("dialog", { name: "Position" });
+    const noModalNoError = () => {
+      expect(screen.queryByRole("dialog", { name: "Add to repertoire" })).toBeNull();
+      expect(screen.queryByRole("alert")).toBeNull();
+    };
+    const settle = async () => {
+      await vi.waitFor(() => expect(screen.queryByRole("button", { name: "Opening…" })).toBeNull());
+    };
+
+    // Stepping to the next card: the first card's read is aborted and its answer applies nowhere.
+    fireEvent.click(await addButton(dialog));
+    expect(screen.getByRole("button", { name: "Opening…" })).toBeDisabled();
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(within(dialog).getByText("2 / 2")).toBeInTheDocument();
+    expect(gapCardCalls(calls)[0].signal?.aborted).toBe(true);
+    reply.resolve({ status: 200, body: gapCard() });
+    await settle();
+    noModalNoError();
+    expect(await addButton(dialog)).toBeEnabled(); // the second card's own offer, not pending
+
+    // Closing the overlay.
+    reply = deferred();
+    fireEvent.click(await addButton(dialog));
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Position" })).toBeNull();
+    expect(gapCardCalls(calls)[1].signal?.aborted).toBe(true);
+    reply.resolve({ status: 422, body: { detail: "not the player's move" } });
+    await settle();
+    noModalNoError();
+
+    // A read replaced by a later one on the same card: only the later answer opens the editor. (The
+    // button is disabled while its read is in flight, so the later click follows a step away and
+    // back; the page's own guard against a second click is not reachable through the UI.)
+    fireEvent.click((await screen.findAllByTestId("position-card"))[0]);
+    const again = await screen.findByRole("dialog", { name: "Position" });
+    const first = deferred<{ status: number; body: unknown }>();
+    reply = first;
+    fireEvent.click(await addButton(again));
+    const second = deferred<{ status: number; body: unknown }>();
+    reply = second;
+    expect(gapCardCalls(calls)).toHaveLength(3);
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    fireEvent.click(await addButton(again));
+    expect(gapCardCalls(calls)).toHaveLength(4);
+    expect(gapCardCalls(calls)[2].signal?.aborted).toBe(true);
+    first.resolve({ status: 422, body: { detail: "stem does not replay" } });
+    await Promise.resolve();
+    noModalNoError();
+    expect(screen.getByRole("button", { name: "Opening…" })).toBeDisabled(); // the second read is still the current one
+    second.resolve({ status: 200, body: gapCard() });
+    expect(await screen.findByRole("dialog", { name: "Add to repertoire" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    // A new list (a filter change): the in-flight read is aborted with it.
+    reply = deferred();
+    fireEvent.click(await addButton(again));
+    fireEvent.change(screen.getByLabelText("Time class"), { target: { value: "blitz" } });
+    await vi.waitFor(() => expect(lastList(calls)?.query.get("time_class")).toBe("blitz"));
+    expect(gapCardCalls(calls).at(-1)?.signal?.aborted).toBe(true);
+    reply.resolve({ status: 200, body: gapCard() });
+    await settle();
+    noModalNoError();
+
+    // The list shrinking under the overlay (a dismissal of the shown card): the overlay slides to
+    // the previous board, and the dismissed card's read goes with the card.
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(within(again).getByText("2 / 2")).toBeInTheDocument();
+    reply = deferred();
+    fireEvent.click(await addButton(again));
+    const read = gapCardCalls(calls).at(-1);
+    fireEvent.click(within(again).getByRole("button", { name: "Dismiss" }));
+    await vi.waitFor(() => expect(within(again).getByText("1 / 1")).toBeInTheDocument());
+    expect(read?.signal?.aborted).toBe(true);
+    reply.resolve({ status: 200, body: gapCard() });
+    await settle();
+    noModalNoError();
+    expect(await addButton(again)).toBeEnabled();
+  });
+
+  it("another activity opened over the card owns it: a read pending under Create puzzle or Explore opens no editor and shows no error", async () => {
+    let reply = deferred<{ status: number; body: unknown }>();
+    const calls = stubFetch({
+      "/settings": () => ({ status: 200, body: SETTINGS }),
+      "/blunders": () => ({ status: 200, body: page([position()]) }),
+      "/blunders/prompts": () => ({ status: 200, body: { prompts: [] } }),
+      "/repertoire/coverage": () => ({ status: 200, body: NONE }),
+      "/repertoire/gap-card": () => reply.promise,
+    });
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    renderPage();
+    fireEvent.click((await screen.findAllByTestId("position-card"))[0]);
+    const dialog = await screen.findByRole("dialog", { name: "Position" });
+
+    // Create puzzle opened while the read is pending: its late success mounts nothing over it.
+    fireEvent.click(await addButton(dialog));
+    fireEvent.click(within(dialog).getByText("Create puzzle"));
+    const puzzle = await screen.findByRole("dialog", { name: "Create puzzle" });
+    expect(gapCardCalls(calls)[0].signal?.aborted).toBe(true);
+    reply.resolve({ status: 200, body: gapCard() });
+    await vi.waitFor(() => expect(screen.queryByRole("button", { name: "Opening…" })).toBeNull());
+    expect(screen.queryByRole("dialog", { name: "Add to repertoire" })).toBeNull();
+    expect(puzzle).toBeInTheDocument();
+    fireEvent.click(within(puzzle).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Create puzzle" })).toBeNull();
+
+    // Explore opened while the read is pending: its late refusal shows nothing, Explore stays.
+    reply = deferred();
+    fireEvent.click(await addButton(dialog));
+    fireEvent.click(within(dialog).getByTestId("explore-launch"));
+    expect(screen.getByTestId("explore-layer")).toBeInTheDocument();
+    expect(gapCardCalls(calls)[1].signal?.aborted).toBe(true);
+    reply.resolve({ status: 422, body: { detail: "stem does not replay" } });
+    await vi.waitFor(() => expect(screen.queryByRole("button", { name: "Opening…" })).toBeNull());
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Add to repertoire" })).toBeNull();
+    expect(screen.getByTestId("explore-layer")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("close explore"));
+    expect(await addButton(dialog)).toBeEnabled();
+    expect(warn).not.toHaveBeenCalled(); // no duplicate-key warning from two dialogs keyed alike
+  });
+
+  it("a refusal shows its reason under the badge for that card only, and clears on the next card", async () => {
+    stubFetch({
+      "/settings": () => ({ status: 200, body: SETTINGS }),
+      "/blunders": () => ({ status: 200, body: page([position({ ply: 60 }), position({ fen: OTHER, count: 2, chess_game_id: 78, ply: 2, moves: MOVES.slice(0, 2), context: "Open Game", move_played: "Nf3" })]) }),
+      "/blunders/prompts": () => ({ status: 200, body: { prompts: [] } }),
+      "/repertoire/coverage": () => ({ status: 200, body: NONE }),
+      "/repertoire/gap-card": () => ({ status: 422, body: { detail: "a repertoire line holds at most 30 moves; this board is at move 31" } }),
+    });
+    renderPage();
+    fireEvent.click((await screen.findAllByTestId("position-card"))[0]);
+    const dialog = await screen.findByRole("dialog", { name: "Position" });
+    fireEvent.click(await addButton(dialog));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("a repertoire line holds at most 30 moves; this board is at move 31");
+    expect(screen.queryByRole("dialog", { name: "Add to repertoire" })).toBeNull();
+    expect(within(dialog).getByRole("button", { name: "Add to repertoire" })).toBeEnabled();
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(within(dialog).getByText("2 / 2")).toBeInTheDocument();
+    await addButton(dialog);
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    await addButton(dialog);
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+  });
+
+  it("a saved line re-reads the rows under the visit's marker, keeps the open board, and re-asks the repertoire about it without showing the old answer", async () => {
+    let added = false;
+    const coverageAfter = deferred<{ status: number; body: unknown }>();
+    const calls = stubFetch({
+      "/settings": () => ({ status: 200, body: SETTINGS }),
+      "/blunders": () => ({ status: 200, body: page([position(added ? { book: "Italian", chapter: "Giuoco", line_names: ["Fork trick"], context: "Italian Game" } : {}), position({ fen: OTHER, count: 2, chess_game_id: null, context: "Open Game", move_played: "Nf3" })]) }),
+      "/blunders/prompts": () => ({ status: 200, body: { prompts: [] } }),
+      "/repertoire/coverage": (_m, _b, q) => (added && q.get("fen") === FORK ? coverageAfter.promise : { status: 200, body: NONE }),
+      "/repertoire/gap-card": () => ({ status: 200, body: gapCard() }),
+      "/repertoire/lines": () => ((added = true), { status: 201, body: { id: 9, chapter_id: 1, book_id: 1, rematch: { candidates: 4, matched: 3, no_match: 1, lines: 1 } } }),
+    });
+    renderPage();
+    fireEvent.click((await screen.findAllByTestId("position-card"))[0]);
+    const dialog = await screen.findByRole("dialog", { name: "Position" });
+    expect(within(dialog).getByText("Italian Game")).toBeInTheDocument(); // the context line, no book yet
+    fireEvent.click(await addButton(dialog));
+    const modal = await screen.findByRole("dialog", { name: "Add to repertoire" });
+    const listsBefore = calls.filter((c) => c.path === "/blunders").length;
+    const coverageBefore = calls.filter((c) => c.path === "/repertoire/coverage").length;
+    fireEvent.click(within(modal).getByRole("button", { name: "Save line" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Added to Italian › Giuoco · 3 games re-matched");
+    expect(screen.queryByRole("dialog", { name: "Add to repertoire" })).toBeNull();
+    const post = calls.find((c) => c.path === "/repertoire/lines");
+    expect(post?.body).toEqual({ moves: [...MOVES.slice(0, 6), "Nxe5", "Nxe5", "d4", "Qh4", "O-O"], line_name: "Italian Game — after h6", chapter_id: 1 });
+    // The rows: one more list request, in the visit (`stay`), and the card repaints from it.
+    await vi.waitFor(() => expect(calls.filter((c) => c.path === "/blunders")).toHaveLength(listsBefore + 1));
+    expect(lastList(calls)?.query.get("stay")).toBe(STAY);
+    expect(await within(dialog).findByText("Italian")).toBeInTheDocument();
+    expect(within(dialog).getByText("› Giuoco")).toBeInTheDocument();
+    expect(within(dialog).getByText("Fork trick")).toBeInTheDocument();
+    expect(within(dialog).getByText("1 / 2")).toBeInTheDocument(); // the same board, still open
+    // The badge: asked again for this board, and until it answers neither the old "none" nor its button shows.
+    await vi.waitFor(() => expect(calls.filter((c) => c.path === "/repertoire/coverage")).toHaveLength(coverageBefore + 1));
+    expect(calls.filter((c) => c.path === "/repertoire/coverage").at(-1)?.query.get("fen")).toBe(FORK);
+    expect(within(dialog).queryByText("Not in your repertoire")).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "Add to repertoire" })).toBeNull();
+    coverageAfter.resolve({ status: 200, body: COVERED });
+    expect(await within(dialog).findByTestId("repertoire-coverage")).toHaveTextContent("In your repertoire · Italian › Giuoco › Fork trick");
+    expect(within(dialog).queryByRole("button", { name: "Add to repertoire" })).toBeNull();
   });
 });

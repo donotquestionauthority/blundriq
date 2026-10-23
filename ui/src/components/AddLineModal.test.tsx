@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EngineEval } from "../engine/useStockfish";
 import type { GapCard } from "../repertoire";
@@ -115,6 +115,17 @@ describe("AddLineModal", () => {
     const post = calls.find((c) => c.path === "/repertoire/lines");
     expect(post?.body).toEqual({ moves: ["e4", "e5", "Nf3", "Nc6", "Bc4", "d6", "c3", "Be7", "d4", "exd4", "cxd4", "Nf6", "Nc3", "O-O", "O-O"], line_name: "Italian: d6 sideline", chapter_id: 9 });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("names the line by the family alone when the context line was followed to its end (no played move)", () => {
+    stubFetch({ "/settings": () => ({ status: 200, body: {} }) });
+    const ended = card({ context: { book_id: 1, book: "Italian", chapter_id: 1, chapter: "Giuoco", line_id: 1, line_name: "Short", expected: null, played: null, count: 1 } });
+    render(<AddLineModal card={ended} destinations={DESTINATIONS} prefillPlies={10} maxPlies={60} onClose={vi.fn()} onAdded={vi.fn()} />);
+    expect(screen.getByLabelText("Line name")).toHaveValue("Italian Game — 1.d6");
+    expect(screen.getByLabelText("Book and chapter")).toHaveValue("1"); // the chapter is still the destination
+    cleanup();
+    render(<AddLineModal card={{ ...ended, arrived_by: null }} destinations={DESTINATIONS} prefillPlies={10} maxPlies={60} onClose={vi.fn()} onAdded={vi.fn()} />);
+    expect(screen.getByLabelText("Line name")).toHaveValue("Italian Game");
   });
 
   it("the catch-all is the last option and the default without a context chapter; Save waits for a move past the gap that ends on the player's", async () => {
