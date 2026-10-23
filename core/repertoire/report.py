@@ -344,7 +344,9 @@ def _reduced(
     return scopes, gap_games
 
 
-def _decisions(conn: Connection[Any], config: Settings, time_class: str, games: int) -> list[decisions_mod.Decision]:
+def _decisions(
+    conn: Connection[Any], config: Settings, time_class: str, games: int
+) -> tuple[list[decisions_mod.Decision], dict[int, int]]:
     """The decisions statement under the reduction's session settings (two large CTE scans joined,
     the same planner), nested loops back on afterwards for the gap lookups."""
     for setting in READ_SETTINGS:
@@ -648,9 +650,21 @@ def decisions_view(conn: Connection[Any], config: Settings, *, time_class: str, 
     line none of whose decisions was reached. `scope` rides along so the page can match the two
     reads."""
     sc = scope(config, games)
+    decisions, totals = _decisions(conn, config, time_class, int(sc["games"]))
+    return view_of(conn, config, time_class, sc, decisions, totals)
+
+
+def view_of(
+    conn: Connection[Any],
+    config: Settings,
+    time_class: str,
+    sc: Row,
+    decisions: list[decisions_mod.Decision],
+    totals: dict[int, int],
+) -> Row:
+    """`decisions_view` from its decisions and each line's occurrence count."""
     n = int(sc["games"])
     lines_, chapters, books = _active_lines(conn)
-    decisions = _decisions(conn, config, time_class, n)
     per_line = decisions_mod.by_line(decisions)
     colour_of_line = {lid: str(books[int(ln["book_id"])]["color"]) for lid, ln in lines_.items()}
     rank = _rank(lines_, chapters, books)
@@ -659,7 +673,7 @@ def decisions_view(conn: Connection[Any], config: Settings, *, time_class: str, 
     line_len = {lid: int(ln["len"]) for lid, ln in lines_.items()}
     evidence: dict[int, Row] = {}
     for lid in lines_:
-        ev = decisions_mod.line_evidence(lid, per_line.get(lid, []))
+        ev = decisions_mod.line_evidence(lid, per_line.get(lid, []), totals.get(lid, 0))
         if ev["tested"] > 0 or any(d[3] == decisions_mod.CONTESTED for d in ev["decisions"]):
             evidence[lid] = ev
         else:

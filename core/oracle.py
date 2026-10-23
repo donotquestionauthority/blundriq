@@ -13,9 +13,11 @@ from typing import Any, LiteralString, cast
 
 from psycopg import Connection
 
-from core.chess.eligibility import analysable_sql
+from core.chess.eligibility import analysable_sql, time_class_sql, window_cte
 from core.constants import PLAYER_ID, STOCKFISH_DEPTH
-from core.repertoire import neighbourhood
+from core.repertoire import decisions as decisions_mod
+from core.repertoire import neighbourhood, report
+from core.settings import Settings
 
 RESULT_FIELDS = (
     "book_id",
@@ -711,3 +713,126 @@ def similar_whole_lines(
     ]
     carriers = neighbourhood.expand_and_verify(rows, fen, query_sig, max_distance)
     return neighbourhood.assemble_response(fen, canonical_query_move, carriers, max_distance, max_positions)
+
+
+# The Line report's decisions reference: every board of the effective repertoire read, each line's
+# total counted from them. `decisions_view_every_board` must equal `report.decisions_view`.
+DECISIONS_EVERY_BOARD = """
+WITH {window},
+eff AS MATERIALIZED (
+    -- Every effective line with its arrays as text[] (one conversion per line), so the zip below
+    -- is unnest over slices: the board, its key, the next board, its key and the move, by ply.
+    SELECT rl.id AS line_id, bk.color, rl.position_keys AS keys,
+           ARRAY(SELECT x FROM jsonb_array_elements_text(rl.fen_sequence) AS x) AS fens,
+           ARRAY(SELECT x FROM jsonb_array_elements_text(rl.moves) AS x) AS moves,
+           jsonb_array_length(rl.moves) AS len,
+           CASE bk.color WHEN 'white' THEN 'w' ELSE 'b' END AS side
+    FROM repertoire_lines rl
+    JOIN chapters ch ON ch.id = rl.chapter_id AND ch.active
+    JOIN books bk ON bk.id = ch.book_id AND bk.active AND bk.player_id = %(pid)s
+    WHERE rl.active AND rl.fen_sequence IS NOT NULL
+      AND jsonb_array_length(rl.fen_sequence) = jsonb_array_length(rl.moves) + 1
+),
+occ AS MATERIALIZED (
+    -- The player's turns only. The board is the FEN's first four fields — what bq_canonical_fen
+    -- keeps and position_keys hash — taken by splitting rather than by the regex function, which
+    -- costs several times more per call; on the stored single-spaced FENs the two are equal, and
+    -- a test holds them equal over every FEN the fixtures store.
+    SELECT color, line_id, ply, key, fen, array_to_string((string_to_array(fen, ' '))[1:4], ' ') AS board,
+           next_key, array_to_string((string_to_array(next_fen, ' '))[1:4], ' ') AS next_board, raw_move
+    FROM (
+        SELECT n.color, n.line_id, (z.ord - 1)::int AS ply, z.key, z.fen, z.next_key, z.next_fen, z.raw_move
+        FROM eff n
+        CROSS JOIN LATERAL unnest(n.keys[1:n.len], n.fens[1:n.len], n.keys[2:n.len + 1], n.fens[2:n.len + 1],
+                                  n.moves[1:n.len]) WITH ORDINALITY AS z(key, fen, next_key, next_fen, raw_move, ord)
+        WHERE split_part(z.fen, ' ', 2) = n.side
+    ) x
+),
+dec AS MATERIALIZED (
+    SELECT color, board, min(key) AS key, count(DISTINCT next_board) AS continuations,
+           min(next_board) AS next_board, min(next_key) AS next_key,
+           min(fen) AS fen, min(raw_move) AS raw_move,
+           jsonb_agg(jsonb_build_array(line_id, ply, split_part(fen, ' ', 6)::int) ORDER BY line_id, ply) AS occurrences
+    FROM occ GROUP BY color, board
+),
+scope AS MATERIALIZED (
+    -- Every board of the game: a repertoire board can be reached first late in a game, by
+    -- transposition or after reversible moves, so no ply bounds where an opportunity may lie.
+    SELECT cg.id AS gid, pg.player_color AS color, cg.played_at, cg.position_keys AS keys,
+           ARRAY(SELECT x FROM jsonb_array_elements_text(cg.fen_sequence) AS x) AS fens,
+           ARRAY(SELECT x FROM jsonb_array_elements_text(cg.moves) AS x) AS moves,
+           jsonb_array_length(cg.moves) AS glen
+    FROM player_games pg
+    JOIN chess_games cg ON cg.id = pg.chess_game_id
+    WHERE pg.player_id = %(pid)s
+      AND cg.id IN (SELECT chess_game_id FROM window_games)
+      AND cg.fen_sequence IS NOT NULL AND cg.moves IS NOT NULL
+      AND {analysable} AND {time_class}
+),
+gk AS MATERIALIZED (
+    -- Every board of every in-scope game with a move still to come, flat (the same zip), so the
+    -- join below is one hash on the key.
+    SELECT s.gid, s.color, s.played_at, (z.ord - 1)::int AS ply, z.key, z.fen, z.next_key, z.next_fen, z.played
+    FROM scope s
+    CROSS JOIN LATERAL unnest(s.keys[1:s.glen], s.fens[1:s.glen], s.keys[2:s.glen + 1], s.fens[2:s.glen + 1],
+                              s.moves[1:s.glen]) WITH ORDINALITY AS z(key, fen, next_key, next_fen, played, ord)
+),
+opp AS MATERIALIZED (
+    -- The hash is on the key and colour alone; the board text is checked on the matched rows as a
+    -- prefix (the canonical board is the FEN up to its fourth field), no function on the game side.
+    SELECT DISTINCT ON (g.gid, d.color, d.board)
+           g.gid, g.played_at, d.color, d.board,
+           (g.next_key = d.next_key AND left(g.next_fen, length(d.next_board) + 1) = d.next_board || ' ') AS success,
+           g.played
+    FROM gk g
+    JOIN dec d ON d.key = g.key AND d.color = g.color AND d.continuations = 1
+    WHERE left(g.fen, length(d.board) + 1) = d.board || ' '
+    ORDER BY g.gid, d.color, d.board, g.ply
+)
+-- Two kinds of row, merged in Python by (colour, board): the decisions and their evidence — no
+-- join the planner could get wrong. A contested board's continuations are read afterwards from
+-- its few lines (`_alternatives`).
+SELECT 'dec' AS kind, color, board, fen, raw_move, continuations::int AS n, occurrences AS j,
+       NULL::timestamptz AS t1, NULL::timestamptz AS t2, NULL::text[] AS a
+FROM dec
+UNION ALL
+SELECT 'agg', color, board, NULL, NULL, count(*)::int,
+       to_jsonb(count(*) FILTER (WHERE success)::int),
+       max(played_at), max(played_at) FILTER (WHERE NOT success),
+       array_agg(played) FILTER (WHERE NOT success)
+FROM opp GROUP BY color, board
+"""
+
+
+def decisions_every_board(
+    conn: Connection[Any], config: Settings, *, time_class: str, games: int
+) -> list[decisions_mod.Decision]:
+    """Every decision of the effective repertoire over the reference statement, under the route's
+    session settings."""
+    sql = DECISIONS_EVERY_BOARD.format(
+        window=window_cte(),
+        analysable=analysable_sql("cg"),
+        time_class=time_class_sql("cg", time_class, config.time_class_focus),
+    )
+    for setting in report.READ_SETTINGS:
+        conn.execute(setting)
+    try:
+        rows = conn.execute(cast(LiteralString, sql), {"pid": PLAYER_ID, "window": games}).fetchall()
+    finally:
+        for setting in report.READ_SETTINGS_AFTER:
+            conn.execute(setting)
+    return decisions_mod.assemble(conn, [dict(r) for r in rows])
+
+
+def decisions_view_every_board(
+    conn: Connection[Any], config: Settings, *, time_class: str, games: int | None = None
+) -> dict[str, Any]:
+    """`report.decisions_view` over the reference statement: a line's `decisions_total` is the
+    number of its occurrences among every board read."""
+    sc = report.scope(config, games)
+    decisions = decisions_every_board(conn, config, time_class=time_class, games=int(sc["games"]))
+    totals: dict[int, int] = {}
+    for d in decisions:
+        for lid, _, _ in d.occurrences:
+            totals[lid] = totals.get(lid, 0) + 1
+    return report.view_of(conn, config, time_class, sc, decisions, totals)

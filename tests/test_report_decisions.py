@@ -12,7 +12,8 @@ import psycopg
 import pytest
 from psycopg.rows import DictRow
 
-from core.repertoire import conflicts, matching, read, report
+from core import oracle
+from core.repertoire import conflicts, decisions, matching, read, report
 from core.repertoire.importing import spine
 from core.settings import Settings
 from tests import repertoire_helpers as h
@@ -475,3 +476,121 @@ def test_the_sql_agrees_with_a_python_chess_reference_including_the_text_tie_bre
     # The board after d4 Nf6 is the same full FEN with two continuations (c4, Nf3): contested, in neither.
     assert len(out["decisions"]["contested"]) == 1
     assert got[(4, "g3")] == (3, 2, "Nc3")
+
+
+# --- what the decisions read sends: the boards a line's evidence lists, and every line's count ----------------
+
+
+def _every_case(conn: psycopg.Connection[DictRow]) -> None:
+    """One repertoire holding every case the read's filter must get right, both colours, every
+    White line from 1.d4 (a second first move would contest the start board)."""
+    _seed(conn)
+    # A hole: move 2's board (after d4 Nf6) is never reached; moves 3–5 are, by transposition; moves
+    # 6 and 7 are this line's alone and untested — a trailing tail no other line references.
+    h.line(conn, 1, 1, "Hole", CATALAN + ["Be7", "Bg2", "O-O", "O-O", "dxc4", "Qc2"])
+    # Every decision tested, the last at the line's last player ply.
+    h.line(conn, 2, 1, "Tested to the end", ["d4", "d5", "c4", "e6", "Nc3"])
+    # Its own boards after 1.d4 e6 untested; its fourth decision is line 1's fourth by transposition.
+    h.line(conn, 3, 1, "Only by transposition", ["d4", "e6", "Nf3", "Nf6", "c4", "d5", "g3"])
+    # A contested board: the same board after d4 c5 Nf3 g6 / d4 g6 Nf3 c5, two continuations.
+    h.line(conn, 4, 1, "Via c5", ["d4", "c5", "Nf3", "g6", "e3"])
+    h.line(conn, 5, 1, "Via g6", ["d4", "g6", "Nf3", "c5", "c3"])
+    # The board after d4 c5 twice (knights out and back), then the contested board.
+    h.line(conn, 6, 1, "Twice", ["d4", "c5", "Nf3", "Nc6", "Ng1", "Nb8", "Nf3", "g6", "e3"])
+    h.book(conn, 2, "Defence", "black")
+    h.chapter(conn, 3, 2, "Caro")
+    h.line(conn, 7, 3, "Caro", ["e4", "c6", "d4", "d5", "Nc3", "dxe4", "Nxe4", "Bf5"])
+    # No game reaches any of its boards: its count alone, no board of its own sent.
+    h.line(conn, 8, 3, "Never reached", ["c4", "e5", "Nc3", "Nf6"])
+    h.game(conn, 1, ["c4", "Nf6", "d4", "e6", "Nf3", "d5", "g3", "Be7", "Nc3"], days_ago=1)
+    h.game(conn, 2, ["d4", "d5", "c4", "e6", "Nc3"], days_ago=2)
+    h.game(conn, 3, ["d4", "d5", "c4", "e6", "Nf3"], days_ago=3, time_class="blitz")
+    h.game(conn, 4, ["d4", "c5", "Nf3", "g6", "e3"], days_ago=4)
+    h.game(conn, 5, ["e4", "c6", "d4", "d5", "e5", "Bf5"], color="black", days_ago=5)
+    # Older games, enough that the last 100 leave some out: line 2's third decision slips in them.
+    for gid in range(6, 106):
+        h.game(conn, gid, ["d4", "d5", "c4", "e6", "e3"], days_ago=gid)
+    conn.commit()
+
+
+def _kept_by_rule(old: list[Any]) -> set[tuple[str, str]]:
+    """The boards a line's evidence lists, from every board: shown (tested or contested) and every
+    board a line reaches at or before its deepest shown occurrence."""
+    shown = {(d.colour, d.board) for d in old if d.contested or d.opportunities > 0}
+    last: dict[int, int] = {}
+    for d in old:
+        if (d.colour, d.board) in shown:
+            for lid, ply, _ in d.occurrences:
+                last[lid] = max(last.get(lid, -1), ply)
+    return {
+        (d.colour, d.board)
+        for d in old
+        if (d.colour, d.board) in shown or any(ply <= last.get(lid, -1) for lid, ply, _ in d.occurrences)
+    }
+
+
+@pytest.mark.parametrize("time_class", ["all", "focus"])
+@pytest.mark.parametrize("games", [100, 1000])
+def test_the_view_over_the_kept_boards_equals_the_view_over_every_board(
+    clean: psycopg.Connection[DictRow], time_class: str, games: int
+) -> None:
+    _every_case(clean)
+    got = report.decisions_view(clean, Settings(), time_class=time_class, games=games)
+    want = oracle.decisions_view_every_board(clean, Settings(), time_class=time_class, games=games)
+    assert got == want
+    lines = got["lines"]
+    assert [d[3] for d in lines[1]["decisions"]][:3] == ["slipped", "untested", "clean"]  # the hole, listed
+    assert lines[1]["decisions_total"] == 7 and len(lines[1]["decisions"]) == 5  # the tail counted, not listed
+    assert [d[3] for d in lines[3]["decisions"]] == ["slipped", "untested", "untested", "clean"]
+    assert [d[1] for d in lines[6]["decisions"]] == [1, 2, 3, 4, 5] and lines[6]["decisions_total"] == 5
+    assert lines[8] == {"decisions_total": 2}
+    assert len(got["contested"]) == 1
+    third = next(r for r in got["rows"] if r["lines"][0][1][0] == 2 and r["own_move"] == 3)
+    # The blitz game slips there too; the window is the last 100 games, the time class within it.
+    assert (
+        third["slips"]
+        == {("all", 100): 96, ("all", 1000): 101, ("focus", 100): 95, ("focus", 1000): 100}[(time_class, games)]
+    )
+
+
+def test_the_read_sends_exactly_the_listed_boards_and_every_lines_count(clean: psycopg.Connection[DictRow]) -> None:
+    _every_case(clean)
+    for time_class in ("all", "focus"):
+        old = oracle.decisions_every_board(clean, Settings(), time_class=time_class, games=1000)
+        new, totals = report._decisions(clean, Settings(), time_class, 1000)  # pyright: ignore[reportPrivateUsage]
+        kept = _kept_by_rule(old)
+        assert {(d.colour, d.board) for d in new} == kept
+        assert len(new) == len(kept) < len(old)  # the tails were there to drop
+        assert {(d.colour, d.board): d for d in new} == {
+            (d.colour, d.board): d for d in old if (d.colour, d.board) in kept
+        }
+        assert totals == Counter(lid for d in old for lid, _, _ in d.occurrences)
+    # Line 8's boards are its own and never reached: none of them is sent, its count is.
+    assert not any(lid == 8 for d in new for lid, _, _ in d.occurrences) and totals[8] == 2
+
+
+def test_a_lines_evidence_takes_its_count_from_the_read_not_from_the_boards_given() -> None:
+    def dec(board: str, ply: int, opportunities: int, successes: int) -> Any:
+        return decisions.Decision(
+            colour="white",
+            board=board,
+            fen=board + " 0 1",
+            own_move=ply // 2 + 1,
+            move="d4",
+            unreadable=False,
+            contested=False,
+            opportunities=opportunities,
+            successes=successes,
+            last_played=None,
+            last_slip=None,
+            most_played=None,
+            occurrences=[(1, ply, ply // 2 + 1)],
+            alternatives=[],
+        )
+
+    given = [dec("a", 0, 2, 2), dec("b", 2, 0, 0), dec("c", 4, 1, 0), dec("d", 6, 0, 0)]  # one past the last shown
+    ev = decisions.line_evidence(1, given, 9)
+    assert ev["decisions_total"] == 9
+    assert [r[3] for r in ev["decisions"]] == ["clean", "untested", "slipped"]
+    assert (ev["tested"], ev["deepest_tested"], ev["correct_through"]) == (2, 3, 1)
+    assert decisions.line_evidence(1, given[:3], 9) == ev  # the board past the last shown changes nothing

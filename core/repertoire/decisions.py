@@ -49,7 +49,8 @@ Row = dict[str, Any]
 
 # Every player-turn occurrence of every effective line (`occ`), grouped to one row per board
 # (`dec`), joined to every in-scope game's boards by key and verified by canonical text (`opp`):
-# two unnested sequences joined on their elements, so both sides are MATERIALIZED. The side to
+# two unnested sequences joined on their elements, so both sides are MATERIALIZED. Only the boards
+# a line's evidence lists are returned (`kept`); every line's occurrence count comes as a number. The side to
 # move is read from the FEN, not from the ply's parity, because a chapter may be rooted at a
 # tabiya. `position_keys` is 1-based: the board after `ord - 1` plies is keys[ord], the next
 # keys[ord + 1].
@@ -124,13 +125,35 @@ opp AS MATERIALIZED (
     JOIN dec d ON d.key = g.key AND d.color = g.color AND d.continuations = 1
     WHERE left(g.fen, length(d.board) + 1) = d.board || ' '
     ORDER BY g.gid, d.color, d.board, g.ply
+),
+shown AS MATERIALIZED (
+    -- The boards the page shows on their own: tested (an opportunity in scope) or contested.
+    SELECT color, board FROM dec WHERE continuations > 1
+    UNION
+    SELECT color, board FROM opp
+),
+last_shown AS MATERIALIZED (
+    -- Per line, the ply of its deepest occurrence of a shown board: its expansion ends there.
+    SELECT o.line_id, max(o.ply) AS ply
+    FROM occ o JOIN shown s ON s.color = o.color AND s.board = o.board
+    GROUP BY o.line_id
+),
+kept AS MATERIALIZED (
+    -- Every board a line reaches at or before its last shown ply: the shown boards and the holes
+    -- before them. A board past every line's last shown ply is only counted (`tot`), never sent.
+    SELECT DISTINCT o.color, o.board
+    FROM occ o JOIN last_shown l ON l.line_id = o.line_id AND o.ply <= l.ply
 )
--- Two kinds of row, merged in Python by (colour, board): the decisions and their evidence — no
--- join the planner could get wrong. A contested board's continuations are read afterwards from
--- its few lines (`_alternatives`).
-SELECT 'dec' AS kind, color, board, fen, raw_move, continuations::int AS n, occurrences AS j,
-       NULL::timestamptz AS t1, NULL::timestamptz AS t2, NULL::text[] AS a
-FROM dec
+-- Three kinds of row, merged in Python by (colour, board) and line: the kept decisions, their
+-- evidence, and each line's occurrence count — no join the planner could get wrong. A contested
+-- board's continuations are read afterwards from its few lines (`_alternatives`).
+(SELECT 'dec' AS kind, d.color, d.board, d.fen, d.raw_move, d.continuations::int AS n, d.occurrences AS j,
+        NULL::timestamptz AS t1, NULL::timestamptz AS t2, NULL::text[] AS a
+ FROM dec d JOIN kept k ON k.color = d.color AND k.board = d.board
+ ORDER BY d.color, d.board)  -- the decisions in board order, whichever side the join hashes
+UNION ALL
+SELECT 'tot', NULL, NULL, NULL, NULL, count(*)::int, to_jsonb(line_id), NULL, NULL, NULL
+FROM occ GROUP BY line_id
 UNION ALL
 SELECT 'agg', color, board, NULL, NULL, count(*)::int,
        to_jsonb(count(*) FILTER (WHERE success)::int),
@@ -191,15 +214,25 @@ def _render(fen: str, token: str) -> tuple[str, bool]:
     return board.san(move), True
 
 
-def read(conn: Connection[Any], config: Settings, *, time_class: str, games: int) -> list[Decision]:
-    """Every decision of the effective repertoire with its evidence over the scope's games, the
-    contested boards included (with no evidence, by construction)."""
+def read(
+    conn: Connection[Any], config: Settings, *, time_class: str, games: int
+) -> tuple[list[Decision], dict[int, int]]:
+    """The decisions a line's evidence lists — every tested or contested one (the contested with
+    no evidence, by construction) and every other a line reaches at or before its last such ply — with
+    their evidence over the scope's games, and `{line_id: occurrences}` for every effective line
+    with any (a board the line reaches twice counts twice; a line absent has none)."""
     sql = _DECISIONS_SQL.format(
         window=window_cte(),
         analysable=analysable_sql("cg"),
         time_class=time_class_sql("cg", time_class, config.time_class_focus),
     )
     rows = conn.execute(cast(LiteralString, sql), {"pid": PLAYER_ID, "window": games}).fetchall()
+    totals = {int(cast(int, r["j"])): int(r["n"]) for r in rows if r["kind"] == "tot"}
+    return assemble(conn, [r for r in rows if r["kind"] != "tot"]), totals
+
+
+def assemble(conn: Connection[Any], rows: list[Row]) -> list[Decision]:
+    """The decisions from the statement's `dec` and `agg` rows, merged by (colour, board)."""
     decs: dict[tuple[str, str], Row] = {}
     aggs: dict[tuple[str, str], Row] = {}
     for r in rows:
@@ -271,14 +304,16 @@ CLEAN = "clean"  # tested, never slipped
 SLIPPED = "slipped"
 
 
-def line_evidence(line_id: int, decisions: list[Decision]) -> Row:
+def line_evidence(line_id: int, decisions: list[Decision], total: int) -> Row:
     """What a line's decisions say, in ply order: each decision as `[ply, own move, move, state,
     opportunities, slips]` (compact: a line has many and the page has thousands of lines; the own
     move is the occurrence's own — a board the line reaches twice, or a shared board reached at
     another move count, keeps its number in this line), the
     tested count, the deepest tested own move, the continuously tested successful prefix
     (`correct_through`, an own move or None) and the trouble spot (the decision with the most
-    slips, ties the earliest; None when nothing slipped). `decisions` is the line's own, any order."""
+    slips, ties the earliest; None when nothing slipped). `decisions` is the line's own, any order,
+    and holds at least every one up to its last tested or contested; `total` is the line's
+    occurrence count, `decisions_total`, which the rows given need not reach."""
     owned: list[tuple[int, int, Decision]] = []  # (ply, the line's own move number there, decision)
     for d in decisions:
         for lid, ply, own in d.occurrences:
@@ -319,7 +354,7 @@ def line_evidence(line_id: int, decisions: list[Decision]) -> Row:
     keep = max((i + 1 for i, r in enumerate(rows) if r[3] in (CLEAN, SLIPPED, CONTESTED)), default=0)
     return {
         "decisions": rows[:keep],
-        "decisions_total": len(rows),
+        "decisions_total": total,
         "tested": tested,
         "deepest_tested": deepest,
         "correct_through": through,
