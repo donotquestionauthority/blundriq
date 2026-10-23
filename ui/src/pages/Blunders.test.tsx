@@ -695,6 +695,48 @@ describe("Blunders page", () => {
     expect(await addButton(again)).toBeEnabled();
   });
 
+  it("another activity opened over the card owns it: a read pending under Create puzzle or Explore opens no editor and shows no error", async () => {
+    let reply = deferred<{ status: number; body: unknown }>();
+    const calls = stubFetch({
+      "/settings": () => ({ status: 200, body: SETTINGS }),
+      "/blunders": () => ({ status: 200, body: page([position()]) }),
+      "/blunders/prompts": () => ({ status: 200, body: { prompts: [] } }),
+      "/repertoire/coverage": () => ({ status: 200, body: NONE }),
+      "/repertoire/gap-card": () => reply.promise,
+    });
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    renderPage();
+    fireEvent.click((await screen.findAllByTestId("position-card"))[0]);
+    const dialog = await screen.findByRole("dialog", { name: "Position" });
+
+    // Create puzzle opened while the read is pending: its late success mounts nothing over it.
+    fireEvent.click(await addButton(dialog));
+    fireEvent.click(within(dialog).getByText("Create puzzle"));
+    const puzzle = await screen.findByRole("dialog", { name: "Create puzzle" });
+    expect(gapCardCalls(calls)[0].signal?.aborted).toBe(true);
+    reply.resolve({ status: 200, body: gapCard() });
+    await vi.waitFor(() => expect(screen.queryByRole("button", { name: "Opening…" })).toBeNull());
+    expect(screen.queryByRole("dialog", { name: "Add to repertoire" })).toBeNull();
+    expect(puzzle).toBeInTheDocument();
+    fireEvent.click(within(puzzle).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Create puzzle" })).toBeNull();
+
+    // Explore opened while the read is pending: its late refusal shows nothing, Explore stays.
+    reply = deferred();
+    fireEvent.click(await addButton(dialog));
+    fireEvent.click(within(dialog).getByTestId("explore-launch"));
+    expect(screen.getByTestId("explore-layer")).toBeInTheDocument();
+    expect(gapCardCalls(calls)[1].signal?.aborted).toBe(true);
+    reply.resolve({ status: 422, body: { detail: "stem does not replay" } });
+    await vi.waitFor(() => expect(screen.queryByRole("button", { name: "Opening…" })).toBeNull());
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Add to repertoire" })).toBeNull();
+    expect(screen.getByTestId("explore-layer")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("close explore"));
+    expect(await addButton(dialog)).toBeEnabled();
+    expect(warn).not.toHaveBeenCalled(); // no duplicate-key warning from two dialogs keyed alike
+  });
+
   it("a refusal shows its reason under the badge for that card only, and clears on the next card", async () => {
     stubFetch({
       "/settings": () => ({ status: 200, body: SETTINGS }),

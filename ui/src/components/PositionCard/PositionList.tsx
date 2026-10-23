@@ -12,9 +12,10 @@ const SIZES: BoardSize[] = ["S", "M", "L"];
  * overlay's action buttons for whichever card is showing, and — for a page that lets a board be
  * added to the repertoire — the offer and the repertoire revision the overlay's readers follow.
  * `onShowingChange` tells the page which card the overlay shows — on opening, stepping, a list
- * that shrank under it (the overlay slides to the previous board) — and null once it closes.
+ * that shrank under it (the overlay slides to the previous board) — and null once it closes;
+ * `onLayerOpen` that something now covers the card (the overlay's own layers, or the page's dialog).
  */
-export function PositionList({ items, accent, headerRight, overlayActions, overlaySuspended, addToRepertoire, repertoireRevision, onShowingChange }: { items: PositionCardData[]; accent?: (item: PositionCardData) => string; headerRight?: (item: PositionCardData) => React.ReactNode; overlayActions?: (item: PositionCardData) => React.ReactNode; overlaySuspended?: boolean; addToRepertoire?: (item: PositionCardData) => AddToRepertoire | undefined; repertoireRevision?: number; onShowingChange?: (item: PositionCardData | null) => void }) {
+export function PositionList({ items, accent, headerRight, overlayActions, overlaySuspended, addToRepertoire, repertoireRevision, onShowingChange, onLayerOpen }: { items: PositionCardData[]; accent?: (item: PositionCardData) => string; headerRight?: (item: PositionCardData) => React.ReactNode; overlayActions?: (item: PositionCardData) => React.ReactNode; overlaySuspended?: boolean; addToRepertoire?: (item: PositionCardData) => AddToRepertoire | undefined; repertoireRevision?: number; onShowingChange?: (item: PositionCardData | null) => void; onLayerOpen?: () => void }) {
   const [open, setOpen] = useState<number | null>(null);
   const [showing, setShowing] = useState(0);
   const [boardSize, setBoardSize] = useState<BoardSize>("M");
@@ -52,7 +53,7 @@ export function PositionList({ items, accent, headerRight, overlayActions, overl
           </div>
         ))}
       </div>
-      {open !== null && current && <Overlay items={items} initialIndex={open} onClose={close} onIndexChange={setShowing} actions={overlayActions?.(current)} suspended={overlaySuspended} addToRepertoire={addToRepertoire} repertoireRevision={repertoireRevision} />}
+      {open !== null && current && <Overlay items={items} initialIndex={open} onClose={close} onIndexChange={setShowing} actions={overlayActions?.(current)} suspended={overlaySuspended} addToRepertoire={addToRepertoire} repertoireRevision={repertoireRevision} onLayerOpen={onLayerOpen} />}
     </>
   );
 }

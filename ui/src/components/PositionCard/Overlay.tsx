@@ -52,12 +52,15 @@ function CopyBlock({ label, text }: { label: string; text: string }) {
  *
  * `addToRepertoire` is a page's offer on a board the repertoire does not cover, for the cards it
  * can make it on (undefined for the rest: the badge then reads as on every other page).
+ * `onLayerOpen` fires whenever something covers the card — the page's dialog (`suspended`), the
+ * compare view, Explore — so a page can drop a read that was waiting to open a dialog of its own:
+ * whatever the player opened is the one activity on the card.
  * `repertoireRevision` names the repertoire the readers below were mounted against: the badge and
  * Similar positions are keyed on it with the board, so a page that changed the repertoire remounts
  * both — the badge starts with no answer rather than an actionable stale one, and Similar positions
  * drops its per-mount cache.
  */
-export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, suspended = false, addToRepertoire, repertoireRevision = 0 }: { items: PositionCardData[]; initialIndex: number; onClose: () => void; onIndexChange?: (i: number) => void; actions?: React.ReactNode; suspended?: boolean; addToRepertoire?: (item: PositionCardData) => AddToRepertoire | undefined; repertoireRevision?: number }) {
+export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, suspended = false, addToRepertoire, repertoireRevision = 0, onLayerOpen }: { items: PositionCardData[]; initialIndex: number; onClose: () => void; onIndexChange?: (i: number) => void; actions?: React.ReactNode; suspended?: boolean; addToRepertoire?: (item: PositionCardData) => AddToRepertoire | undefined; repertoireRevision?: number; onLayerOpen?: () => void }) {
   const [index, setIndex] = useState(initialIndex);
   const [compareOpen, setCompareOpen] = useState(false);
   const [exploreSeed, setExploreSeed] = useState<{ fen: string; orientation: "white" | "black" } | null>(null);
@@ -81,8 +84,13 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
     };
   }, []);
 
+  const layered = suspended || compareOpen || exploreSeed !== null;
   useEffect(() => {
-    if (suspended || compareOpen || exploreSeed) return;
+    if (layered) onLayerOpen?.();
+  }, [layered, onLayerOpen]);
+
+  useEffect(() => {
+    if (layered) return;
     const go = (i: number) => {
       setIndex(i);
       onIndexChange?.(i);
@@ -114,7 +122,7 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
       window.removeEventListener("touchstart", onTouchStart);
       window.removeEventListener("touchend", onTouchEnd);
     };
-  }, [at, hasPrev, hasNext, onClose, onIndexChange, suspended, compareOpen, exploreSeed]);
+  }, [at, hasPrev, hasNext, onClose, onIndexChange, layered]);
 
   // Expected always to parse: card lists go through `core.chess.eligibility`. Kept because a
   // disabled button is cheaper than a layer that mounts and throws.

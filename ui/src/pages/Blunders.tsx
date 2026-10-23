@@ -26,8 +26,9 @@ import { errorLabel } from "../utils/errorLabel";
  *
  * A card whose board no line covers offers "Add to repertoire": the card's game at its board is
  * read as a gap card and the line editor opens on it. That read belongs to the card it was made
- * for: stepping to another card, closing the overlay, a new list or a second click aborts it, and
- * an answer is applied only while it is still the current read. A saved line can change what the
+ * for: stepping to another card, closing the overlay, a new list, a second click, or another
+ * activity opening over the card (Create puzzle, Explore, the compare view) aborts it, and an
+ * answer is applied only while it is still the current read — one dialog on a card at a time. A saved line can change what the
  * rows say (their repertoire context comes from the match), so the list is re-read under the
  * visit's marker and the overlay's repertoire readers are remounted.
  */
@@ -270,6 +271,7 @@ function List({ filters, setFilters }: { filters: BlunderFilters; setFilters: (f
                 overlaySuspended={creating !== null || adding !== null}
                 repertoireRevision={repertoireRevision}
                 onShowingChange={onShowingChange}
+                onLayerOpen={abortRead}
                 addToRepertoire={offerAdd}
                 accent={(item) => `${item.topClassification ? ACCENT[item.topClassification] : ""} ${item.dismissed ? "opacity-60" : ""}`}
                 headerRight={(item) => (
@@ -306,7 +308,7 @@ function List({ filters, setFilters }: { filters: BlunderFilters; setFilters: (f
         )}
       </div>
 
-      {adding && <AddLineModal key={adding.fen} card={adding.read.card} destinations={adding.read.destinations} prefillPlies={adding.read.prefill_plies} maxPlies={adding.read.max_plies} onClose={() => setAdding(null)} onAdded={onLineAdded} />}
+      {adding && <AddLineModal key={`add:${adding.fen}`} card={adding.read.card} destinations={adding.read.destinations} prefillPlies={adding.read.prefill_plies} maxPlies={adding.read.max_plies} onClose={() => setAdding(null)} onAdded={onLineAdded} />}
       {creating && <CreatePuzzleModal key={creating.fen} source={creating} onClose={() => setCreating(null)} onCreated={(made) => setToast(made.visible ? "Puzzle created" : "Puzzle created, but hidden for now: this board is dismissed, or your repertoire already covers the position")} />}
       {toast && (
         <div role="status" className="fixed bottom-6 left-1/2 z-[60] max-w-md -translate-x-1/2 rounded-lg border border-zinc-200 bg-white px-4 py-2 text-sm shadow-2xl dark:border-zinc-800 dark:bg-zinc-900">
