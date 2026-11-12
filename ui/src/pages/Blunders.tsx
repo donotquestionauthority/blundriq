@@ -10,7 +10,7 @@ import type { AddToRepertoire } from "../components/PositionCard/RepertoireBadge
 import type { PositionCardData } from "../components/PositionCard/types";
 import { useApi } from "../hooks/useApi";
 import { getGapCard } from "../repertoire";
-import type { GapCardResponse, NewLineResponse } from "../repertoire";
+import type { GapCardResponse, LineAdded } from "../repertoire";
 import { lichessAnalyzeUrl } from "../utils/chess";
 import { errorLabel } from "../utils/errorLabel";
 
@@ -42,11 +42,12 @@ const action = "rounded border border-zinc-300 px-3 py-1.5 text-sm hover:border-
 /** The identity of a card's read: its game at its board, on the board it shows. */
 const cardKey = (item: Pick<PositionCardData, "fen" | "chessGameId" | "ply">) => `${item.chessGameId}:${item.ply}:${item.fen}`;
 
-/** The toast after a save: where the line went and what the rematch did. */
-function addedText(made: NewLineResponse, read: GapCardResponse): string {
-  const chapter = read.destinations.find((ch) => ch.id === made.chapter_id);
+/** The toast after a save: where the line went and, when the save reported it, what the rematch
+ *  did. A catch-all save names the card's catch-all (its chapter is not among the destinations). */
+function addedText(added: LineAdded, read: GapCardResponse): string {
+  const chapter = added.chapterId === null ? undefined : read.destinations.find((ch) => ch.id === added.chapterId);
   const where = chapter ? `${chapter.book} › ${chapter.title}` : `${read.card.catch_all.book} › ${read.card.catch_all.chapter}`;
-  return `Added to ${where} · ${made.rematch.matched} games re-matched`;
+  return added.kind === "saved" ? `Added to ${where} · ${added.rematched} games re-matched` : `Added to ${where}`;
 }
 
 function List({ filters, setFilters }: { filters: BlunderFilters; setFilters: (f: BlunderFilters) => void }) {
@@ -142,9 +143,9 @@ function List({ filters, setFilters }: { filters: BlunderFilters; setFilters: (f
     return { onAdd: () => void addToRepertoire(item, gameId, ply), pending: addPending === k, error: addFailure?.key === k ? addFailure.text : null };
   };
 
-  function onLineAdded(made: NewLineResponse) {
+  function onLineAdded(added: LineAdded) {
     if (!adding) return;
-    setToast(addedText(made, adding.read));
+    setToast(addedText(added, adding.read));
     setAdding(null);
     // The rows read the repertoire: re-read them under the visit's marker, and remount the
     // overlay's repertoire readers so the badge and Similar positions answer for the new book.

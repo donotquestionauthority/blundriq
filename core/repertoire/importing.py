@@ -219,16 +219,22 @@ def decide(existing: dict[str, set[str]], dirty: set[str], batch: list[Prepared]
     return verdicts
 
 
-def existing_index(conn: Connection[Any], exclude: set[int] | None = None) -> tuple[dict[str, set[str]], set[str]]:
+def existing_index(
+    conn: Connection[Any], exclude: set[int] | None = None, colour: str | None = None
+) -> tuple[dict[str, set[str]], set[str]]:
     """Player-turn positions of the effectively-active lines → the moves prescribed there,
     and the positions where the active repertoire already disagrees with itself. `exclude`
-    leaves out lines that are about to be switched off."""
+    leaves out lines that are about to be switched off; `colour` reads that colour's books
+    only, which is the whole index a line of that colour can meet: a key is a full FEN whose
+    side to move is the book's colour, so the two colours never share one."""
     index: dict[str, set[str]] = defaultdict(set)
+    colour_clause = " AND bk.color = %s" if colour is not None else ""
+    params: tuple[Any, ...] = (PLAYER_ID, sorted(exclude or set()), *((colour,) if colour is not None else ()))
     for r in conn.execute(
         "SELECT rl.moves, rl.fen_sequence, bk.color FROM repertoire_lines rl"
         " JOIN chapters ch ON ch.id = rl.chapter_id JOIN books bk ON bk.id = ch.book_id"
-        " WHERE bk.player_id = %s AND rl.active AND ch.active AND bk.active AND NOT (rl.id = ANY(%s))",
-        (PLAYER_ID, sorted(exclude or set())),
+        " WHERE bk.player_id = %s AND rl.active AND ch.active AND bk.active AND NOT (rl.id = ANY(%s))" + colour_clause,
+        params,
     ).fetchall():
         moves, fens = annotations.strings(r["moves"]), annotations.strings(r["fen_sequence"])
         if not moves or len(fens) != len(moves) + 1:

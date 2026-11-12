@@ -24,6 +24,7 @@ miss stored occurrences on that field alone.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal
 
 import chess
@@ -37,6 +38,7 @@ from core.chess.eligibility import TIME_CLASSES
 from core.repertoire import annotations, books, branch_compare, conflicts, lines, neighbourhood, read, report
 
 router = APIRouter(prefix="/repertoire", tags=["repertoire"], dependencies=[auth.Authed])
+_log = logging.getLogger(__name__)
 
 
 def _board_or_400(fen: str) -> chess.Board:
@@ -246,6 +248,18 @@ def add_line(body: NewLineBody) -> Any:
         return JSONResponse({"detail": "duplicate", "duplicate": exc.as_row()}, status_code=409)
     except lines.Refused as exc:
         return JSONResponse({"detail": "activation_conflict", "refusal": exc.refusal.as_row()}, status_code=409)
+    timings, counts = result.pop("timings"), result.pop("counts")
+    _log.info(
+        "add line: plies=%d candidates=%d rematched=%d gate=%.2fs select=%.2fs match=%.2fs write=%.2fs total=%.2fs",
+        counts["plies"],
+        counts["candidates"],
+        counts["rematched"],
+        timings.get("gate", 0.0),
+        timings.get("select", 0.0),
+        timings.get("match", 0.0),
+        timings.get("write", 0.0),
+        timings.get("total", 0.0),
+    )
     return JSONResponse(result, status_code=201)
 
 

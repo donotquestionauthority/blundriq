@@ -16,7 +16,7 @@ from psycopg import Connection
 from core.chess.eligibility import analysable_sql, time_class_sql, window_cte
 from core.constants import PLAYER_ID, STOCKFISH_DEPTH
 from core.repertoire import decisions as decisions_mod
-from core.repertoire import neighbourhood, report
+from core.repertoire import matching, neighbourhood, report
 from core.settings import Settings
 
 RESULT_FIELDS = (
@@ -836,3 +836,51 @@ def decisions_view_every_board(
         for lid, _, _ in d.occurrences:
             totals[lid] = totals.get(lid, 0) + 1
     return report.view_of(conn, config, time_class, sc, decisions, totals)
+
+
+def write_results_per_row(conn: Connection[Any], results: list[matching.MatchResult], no_match_ids: list[int]) -> None:
+    """The per-row writer, a round trip per game: the parity reference for
+    `matching.write_results`."""
+    with conn.transaction():
+        if no_match_ids:
+            conn.execute(
+                "UPDATE player_games SET no_repertoire_match = TRUE WHERE player_id = %s AND chess_game_id = ANY(%s)",
+                (PLAYER_ID, no_match_ids),
+            )
+        ids: list[int] = []
+        for r in results:
+            row = conn.execute(
+                """
+                INSERT INTO game_repertoire_results
+                    (chess_game_id, player_id, book_id, chapter_id, deviated_at_ply,
+                     deviation_by, expected_move, played_move, deviation_fen)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (chess_game_id, player_id) DO UPDATE
+                SET book_id = EXCLUDED.book_id, chapter_id = EXCLUDED.chapter_id,
+                    deviated_at_ply = EXCLUDED.deviated_at_ply, deviation_by = EXCLUDED.deviation_by,
+                    expected_move = EXCLUDED.expected_move, played_move = EXCLUDED.played_move,
+                    deviation_fen = EXCLUDED.deviation_fen
+                RETURNING id
+                """,
+                (
+                    r.chess_game_id,
+                    PLAYER_ID,
+                    r.book_id,
+                    r.chapter_id,
+                    r.deviated_at_ply,
+                    r.deviation_by,
+                    r.expected_move,
+                    r.played_move,
+                    r.deviation_fen,
+                ),
+            ).fetchone()
+            assert row is not None
+            grr_id = int(row["id"])
+            ids.append(grr_id)
+            conn.execute("DELETE FROM game_result_lines WHERE game_repertoire_result_id = %s", (grr_id,))
+            with conn.cursor() as cur:
+                cur.executemany(
+                    "INSERT INTO game_result_lines (game_repertoire_result_id, line_id, matched_ply)"
+                    " VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+                    [(grr_id, line_id, r.deviated_at_ply) for line_id in r.line_ids],
+                )

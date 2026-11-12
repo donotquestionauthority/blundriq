@@ -80,7 +80,8 @@ const STAY = "2026-09-29T12:00:00+00:00";
 const page = (positions: BlunderPosition[], over: Partial<BlundersResponse> = {}): BlundersResponse => ({ positions, active_count: positions.length, dismissed_count: 1, new_count: positions.filter((p) => p.is_new).length, to_acknowledge: positions.filter((p) => p.is_new).map((p) => p.fen), stay: STAY, page: 0, page_size: 50, total_pages: 1, ...over });
 
 type Reply = { status: number; body: unknown };
-function stubFetch(routes: Record<string, (method: string, body: Record<string, unknown> | null, query: URLSearchParams) => Reply | Promise<Reply>>) {
+/** A handler's `"reject"` is a request that fails without an answer (fetch rejects). */
+function stubFetch(routes: Record<string, (method: string, body: Record<string, unknown> | null, query: URLSearchParams) => Reply | "reject" | Promise<Reply>>) {
   const calls: Array<{ path: string; method: string; body: Record<string, unknown> | null; query: URLSearchParams; signal: AbortSignal | null }> = [];
   vi.stubGlobal(
     "fetch",
@@ -92,6 +93,7 @@ function stubFetch(routes: Record<string, (method: string, body: Record<string, 
       const h = routes[rawPath] ?? (rawPath === "/blunders/seen" ? () => ({ status: 200, body: { seen_at: "2026-09-22T10:00:00+00:00" } }) : undefined);
       if (!h) return { ok: false, status: 404, statusText: "Not Found", json: async () => ({ detail: "no route" }) };
       const r = await h(call.method, call.body, call.query);
+      if (r === "reject") throw new TypeError("Load failed");
       return { ok: r.status < 400, status: r.status, statusText: String(r.status), json: async () => r.body };
     }),
   );
@@ -800,5 +802,35 @@ describe("Blunders page", () => {
     coverageAfter.resolve({ status: 200, body: COVERED });
     expect(await within(dialog).findByTestId("repertoire-coverage")).toHaveTextContent("In your repertoire · Italian › Giuoco › Fork trick");
     expect(within(dialog).queryByRole("button", { name: "Add to repertoire" })).toBeNull();
+  });
+
+  it.each([
+    ["the chosen chapter", null, "Added to Italian › Giuoco"],
+    ["the catch-all", "catch-all", "Added to Catch-all (White) › Italian Game"],
+  ])("a save whose first try got no answer and whose retry finds it in %s closes, re-reads like any save and says where without a count", async (_label, destination, toast) => {
+    const replies: Array<Reply | "reject"> = ["reject", { status: 409, body: { detail: "duplicate", duplicate: { line_id: 9, line_name: "Italian Game — after h6", active: true, kind: "identical" } } }];
+    const calls = stubFetch({
+      "/settings": () => ({ status: 200, body: SETTINGS }),
+      "/blunders": () => ({ status: 200, body: page([position(), position({ fen: OTHER, count: 2, chess_game_id: null, context: "Open Game", move_played: "Nf3" })]) }),
+      "/blunders/prompts": () => ({ status: 200, body: { prompts: [] } }),
+      "/repertoire/coverage": () => ({ status: 200, body: NONE }),
+      "/repertoire/gap-card": () => ({ status: 200, body: gapCard() }),
+      "/repertoire/lines": () => replies.shift() ?? "reject",
+    });
+    renderPage();
+    fireEvent.click((await screen.findAllByTestId("position-card"))[0]);
+    const dialog = await screen.findByRole("dialog", { name: "Position" });
+    fireEvent.click(await addButton(dialog));
+    const modal = await screen.findByRole("dialog", { name: "Add to repertoire" });
+    if (destination) fireEvent.change(within(modal).getByLabelText("Book and chapter"), { target: { value: destination } });
+    const listsBefore = calls.filter((c) => c.path === "/blunders").length;
+    const coverageBefore = calls.filter((c) => c.path === "/repertoire/coverage").length;
+    fireEvent.click(within(modal).getByRole("button", { name: "Save line" }));
+    expect((await screen.findByRole("status")).textContent).toBe(`✓ ${toast}`);
+    expect(screen.queryByRole("dialog", { name: "Add to repertoire" })).toBeNull();
+    expect(calls.filter((c) => c.path === "/repertoire/lines")).toHaveLength(2);
+    await vi.waitFor(() => expect(calls.filter((c) => c.path === "/blunders")).toHaveLength(listsBefore + 1));
+    expect(lastList(calls)?.query.get("stay")).toBe(STAY);
+    await vi.waitFor(() => expect(calls.filter((c) => c.path === "/repertoire/coverage").length).toBeGreaterThan(coverageBefore));
   });
 });

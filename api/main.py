@@ -7,7 +7,9 @@ into core/ and never contains SQL of its own.
 
 from __future__ import annotations
 
+import logging
 import re
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -91,9 +93,21 @@ class _ConfiguredCors:
         await self._cors(scope, receive, send)
 
 
+def configure_logging() -> None:
+    """The API's own loggers (`api.*`) print INFO and up to stderr, which Render keeps. Without
+    a handler Python prints only warnings, so an informational line would vanish. Idempotent."""
+    log = logging.getLogger("api")
+    if not log.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter("%(levelname)s: %(name)s: %(message)s"))
+        log.addHandler(handler)
+    log.setLevel(logging.INFO)
+
+
 @asynccontextmanager
 async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
     parse_origins(secrets.api().allowed_origins)  # fail closed at startup, not on first request
+    configure_logging()
     try:
         yield
     finally:

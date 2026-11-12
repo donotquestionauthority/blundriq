@@ -215,3 +215,23 @@ def test_ask_explore_hands_core_the_whole_body(logged_in: TestClient, monkeypatc
     }
     assert logged_in.post("/explore/ask", json=body).status_code == 200
     assert seen == [{**body, "alternative": {"move": "d4", "engine": None}, "dry_run_arg": True}]
+
+
+def test_the_api_loggers_print_info_once_configured() -> None:
+    """Without a handler Python prints warnings only, so the API's informational lines need one;
+    configuring twice adds no second handler."""
+    import logging
+
+    from api.main import configure_logging
+
+    log = logging.getLogger("api")
+    saved = (list(log.handlers), log.level)
+    try:
+        log.handlers.clear()
+        configure_logging()
+        configure_logging()
+        assert len(log.handlers) == 1 and log.level == logging.INFO
+        assert logging.getLogger("api.routes.repertoire").isEnabledFor(logging.INFO)
+    finally:
+        log.handlers[:] = saved[0]
+        log.setLevel(saved[1])
