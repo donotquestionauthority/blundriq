@@ -5,7 +5,7 @@ import { removePuzzle } from "../blunders";
 import { beginRemoval, confirmGone, getUnplayable, isGone, removalFailed, subscribeRemovals } from "../utils/puzzleRemoval";
 import { useApi } from "../hooks/useApi";
 import { disownUnsavedAttempt, getUnsavedAttempt, holdUnsavedAttempt, isUnsavedAttemptOwned, releaseUnsavedAttempt, subscribeUnsavedAttempt, type UnsavedAttempt } from "../utils/unsavedAttempt";
-import { PuzzleEngine } from "../components/PuzzleEngine";
+import { PuzzleEngine, type NavState } from "../components/PuzzleEngine";
 import { getDrill, getExtraPage, getPuzzleById, getPuzzles, getRepertoireScopes, isRotationPuzzle, LAST_N_OPTIONS, recordAttempt, skipPuzzle } from "../practice";
 import { reportPath } from "../repertoire";
 import { clearQueue } from "../utils/drillQueue";
@@ -407,6 +407,21 @@ function RetryLoad({ onRetry }: { onRetry: () => void }) {
  * yet): attempts are sent as extra practice, a skip only moves on (a page is proof of service,
  * not a batch to defer in), and the end of the pages offers the way back to the queue.
  */
+/**
+ * What the solver under `key` last reported about leaving it (`PuzzleEngine` `onNavState`):
+ * `fresh` for a solver that has reported nothing, so a new puzzle, cursor, round or remount
+ * starts there without a reset. The report is synchronous with the verdict, so the controls it
+ * decides never wait on the attempt's storage to disappear.
+ */
+function useSolverNav(key: string): [NavState, (state: NavState) => void] {
+  const [nav, setNav] = useState<{ key: string; state: NavState } | null>(null);
+  // A report belongs to one mount: dropped when the key moves on, so returning to a key (Previous,
+  // then Skip back) is a new mount and starts fresh, not with the old one's report.
+  if (nav !== null && nav.key !== key) setNav(null);
+  const report = useCallback((state: NavState) => setNav({ key, state }), [key]);
+  return [nav?.key === key ? nav.state : "fresh", report];
+}
+
 function PlayMode({
   batch,
   batchId,
@@ -491,7 +506,12 @@ function PlayMode({
   }, [onAttemptRecorded, onNeedRefetch]);
   const attempt = useAttemptSubmit(puzzle?.id ?? -1, recorded, puzzle?.presentation_ply ?? null, undefined, extra ? "extra" : "practice");
   const beingRemoved = puzzle !== undefined && unplayable.has(puzzle.id);
-  const showNext = attempt.lastResult !== null;
+  const solverKey = `${puzzle?.id ?? "none"}|${cursor}`;
+  const [navState, onNavState] = useSolverNav(solverKey);
+  // Skip only before any verdict; Next once a verdict is stored and nothing is owed (a pass's
+  // misses still to review); nothing in between, not even a disabled button.
+  const showNext = navState === "free" && attempt.lastResult !== null;
+  const nextHidden = navState !== "fresh" && !showNext;
   // The showing entry was retired (from a deep link over it, or another copy): step off it to
   // the next live entry, or to the end of the queue and ask for more. Nothing can be owed on
   // it — a removal is refused while any attempt on the puzzle is unsaved — so the hook resets.
@@ -603,7 +623,7 @@ function PlayMode({
     <div className="mx-auto max-w-xl">
       <PuzzleHeader puzzle={puzzle} note={puzzle.attempt_summary.solved > 0 ? "previously solved" : null} noteHidden={attempt.lastResult !== null} />
       <PuzzleEngine
-        key={`${puzzle.id}|${cursor}`}
+        key={solverKey}
         fen={puzzle.fen}
         solutionLine={puzzle.solution_line}
         color={puzzle.color}
@@ -611,10 +631,12 @@ function PlayMode({
         presentationPly={puzzle.presentation_ply}
         acceptanceMap={puzzle.acceptance_map}
         onPrev={handlePrev}
-        onNext={exhausted ? null : showNext ? advance : () => void handleSkip()}
+        onNext={exhausted || nextHidden ? null : showNext ? advance : () => void handleSkip()}
+        nextHidden={nextHidden}
+        onNavState={onNavState}
         prevDisabled={prevLive(cursor - 1) < 0 || attempt.navigationBlocked}
         nextDisabled={exhausted || attempt.navigationBlocked || skipping || beingRemoved}
-        nextLabel={showNext ? "Next Puzzle →" : skipping ? "Skipping…" : "Skip →"}
+        nextLabel={navState !== "fresh" ? "Next Puzzle →" : skipping ? "Skipping…" : "Skip →"}
         nextHighlighted={attempt.lastResult === "solved"}
         showNextButton={showNext && !exhausted}
         isRepertoire={puzzle.is_repertoire}
@@ -739,6 +761,8 @@ function DrillMode({ lineIds, back, onAttemptRecorded, onNavigationLock }: { lin
     [cursor],
   );
   const attempt = useAttemptSubmit(puzzle?.id ?? -1, onAttemptRecorded, puzzle?.presentation_ply ?? null, onVerdict, "drill");
+  const solverKey = `drill|${data?.batch_id ?? "none"}|${round}|${cursor}`;
+  const [navState, onNavState] = useSolverNav(solverKey);
   const navigationBlocked = attempt.navigationBlocked;
   useEffect(() => {
     onNavigationLock(navigationBlocked);
@@ -813,13 +837,14 @@ function DrillMode({ lineIds, back, onAttemptRecorded, onNavigationLock }: { lin
     );
   }
 
-  const showNext = attempt.lastResult !== null;
+  // Next line / Finish (and so Done) only once a verdict is stored and the pass owes no review.
+  const showNext = navState === "free" && attempt.lastResult !== null;
   return (
     <div className="mx-auto max-w-xl">
       {header}
       <PuzzleHeader puzzle={puzzle} note={puzzle.attempt_summary.solved > 0 ? "previously solved" : null} noteHidden={attempt.lastResult !== null} />
       <PuzzleEngine
-        key={`drill|${data.batch_id}|${round}|${cursor}`}
+        key={solverKey}
         fen={puzzle.fen}
         solutionLine={puzzle.solution_line}
         color={puzzle.color}
@@ -827,6 +852,7 @@ function DrillMode({ lineIds, back, onAttemptRecorded, onNavigationLock }: { lin
         presentationPly={puzzle.presentation_ply}
         acceptanceMap={puzzle.acceptance_map}
         onNext={showNext ? advance : null}
+        onNavState={onNavState}
         prevDisabled
         reserveNavRow
         nextDisabled={navigationBlocked}

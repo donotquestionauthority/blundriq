@@ -357,15 +357,16 @@ describe("Practice page", () => {
     expect(await screen.findByText(/Couldn't save your attempt/)).toBeInTheDocument();
     // Nothing reached the durable queue and the page did not move on.
     expect(window.localStorage.getItem("blundriq_pending_attempts_v1")).toBeNull();
-    expect(screen.getByText("Skip →")).toBeDisabled();
+    // A verdict is in and not yet stored: neither Skip nor Next is offered, not even disabled.
+    expect(screen.queryByRole("button", { name: "Skip →" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Next Puzzle →" })).toBeNull();
     const first = calls.find((c) => c.path === "/practice/puzzles/11/attempt")!.body!;
     expect(first).toMatchObject({ solved: true, moves_played: "Ra8#" });
     expect(typeof first.attempt_id).toBe("string");
     expect(typeof first.session_id).toBe("string");
 
     fireEvent.click(screen.getByText("Retry"));
-    expect(await screen.findByText("Next Puzzle →")).toBeInTheDocument();
-    expect(screen.getByText("Next Puzzle →")).not.toBeDisabled();
+    expect(await screen.findByRole("button", { name: "Next Puzzle →" })).not.toBeDisabled();
     const attempts = calls.filter((c) => c.path === "/practice/puzzles/11/attempt");
     expect(attempts).toHaveLength(2);
     // The retry replays the same idempotency key.
@@ -394,7 +395,7 @@ describe("Practice page", () => {
     expect(await screen.findByText("#11")).toBeInTheDocument();
     fireEvent.click(screen.getByText("drop"));
     // Next is offered while the POST is still in flight, because the queue already holds it.
-    expect(await screen.findByText("Next Puzzle →")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Next Puzzle →" })).toBeInTheDocument();
     const queued = JSON.parse(window.localStorage.getItem("blundriq_pending_attempts_v1")!);
     expect(queued).toHaveLength(1);
     expect(queued[0]).toMatchObject({ puzzle_id: 11, solved: true, moves_played: "Ra8#" });
@@ -437,7 +438,7 @@ describe("Practice page", () => {
     expect(screen.getByText("#12")).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("Retry"));
-    expect(await screen.findByText("Next Puzzle →")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Next Puzzle →" })).toBeInTheDocument();
     expect(screen.getByText("← Previous")).not.toBeDisabled();
     expect(screen.getByRole("tab", { name: "Motif" })).not.toBeDisabled();
     const attempts = calls.filter((c) => c.path === "/practice/puzzles/12/attempt");
@@ -474,7 +475,7 @@ describe("Practice page", () => {
     renderPage();
     expect(await screen.findByText("#11")).toBeInTheDocument();
     fireEvent.click(screen.getByText("drop"));
-    fireEvent.click(await screen.findByText("Next Puzzle →"));
+    fireEvent.click(await screen.findByRole("button", { name: "Next Puzzle →" }));
     // The boundary refetch ran before the save committed: nothing new, the page waits.
     expect(await screen.findByText(/Loading next puzzle/)).toBeInTheDocument();
     const servesBefore = serves;
@@ -674,7 +675,7 @@ describe("Practice page", () => {
     expect(held.attempt_id).toBe(attempts()[0].body!.attempt_id);
 
     fireEvent.click(screen.getByText("Retry"));
-    expect(await screen.findByText("Next Puzzle →")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Next Puzzle →" })).toBeInTheDocument();
     expect(attempts()).toHaveLength(2);
     expect(attempts()[1].body!.attempt_id).toBe(held.attempt_id);
     expect(getUnsavedAttempt()).toBeNull();
@@ -705,7 +706,7 @@ describe("Practice page", () => {
     renderPage();
     expect(await screen.findByText("#11")).toBeInTheDocument();
     await solveTruncated();
-    expect(await screen.findByText("Next Puzzle →")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Next Puzzle →" })).toBeInTheDocument();
     const attempts = () => calls.filter((c) => c.path === "/practice/puzzles/11/attempt");
     await vi.waitFor(() => expect(attempts()).toHaveLength(1));
     expect(attempts()[0].body).toMatchObject({ solved: true, moves_played: "Ra7,Rb7", presentation_ply: 2 });
@@ -781,11 +782,16 @@ describe("Practice page", () => {
     expect(getUnsavedAttempt()!.attempt_id).toBe(attempts()[0].body!.attempt_id);
 
     fireEvent.click(screen.getByText("Retry"));
-    expect(await screen.findByText("Next Puzzle →")).toBeInTheDocument();
+    await vi.waitFor(() => expect(screen.getByText("Try Again")).not.toBeDisabled());
     expect(attempts()).toHaveLength(2);
     expect(attempts()[1].body!.attempt_id).toBe(attempts()[0].body!.attempt_id);
     expect(getUnsavedAttempt()).toBeNull();
-    expect(screen.getByText("Try Again")).not.toBeDisabled();
+    // The miss is owed until the puzzle is completed: no way past it yet.
+    expect(screen.queryByRole("button", { name: "Next Puzzle →" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Skip →" })).toBeNull();
+    fireEvent.click(screen.getByText("Try Again"));
+    fireEvent.click(screen.getByText("drop"));
+    expect(await screen.findByRole("button", { name: "Next Puzzle →" })).toBeEnabled();
   });
 
   it("the overlay's Replay and Try Again wait for a failed save as well", async () => {
@@ -1055,7 +1061,7 @@ describe("Practice page", () => {
       expect(screen.queryByText("#23")).not.toBeInTheDocument();
       expect(screen.getByText("Retry")).toBeInTheDocument();
       fireEvent.click(screen.getByText("Retry"));
-      expect(await screen.findByText("Next Puzzle →")).toBeInTheDocument();
+      expect(await screen.findByRole("button", { name: "Next Puzzle →" })).toBeInTheDocument();
       const posts = calls.filter((c) => c.path.endsWith("/attempt")).map((c) => c.path);
       expect(posts).toEqual(["/practice/puzzles/22/attempt", "/practice/puzzles/22/attempt"]); // never 23
       expect(getUnsavedAttempt()).toBeNull();
@@ -1162,7 +1168,7 @@ describe("Practice page", () => {
       expect(screen.queryByRole("status", { name: /^Puzzles today/ })).toBeNull();
       expect(document.body.textContent).not.toMatch(/\d+ \/ \d+ solved/);
       fireEvent.click(screen.getByText("drop"));
-      expect(await screen.findByText("Next Puzzle →")).toBeInTheDocument();
+      expect(await screen.findByRole("button", { name: "Next Puzzle →" })).toBeInTheDocument();
       expect(screen.queryByRole("status", { name: /^Puzzles today/ })).toBeNull();
       expect(document.body.textContent).not.toMatch(/\d+ \/ \d+ solved/);
     });

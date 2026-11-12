@@ -112,6 +112,16 @@ const solveLine = async () => {
   nextDrop = { from: "a7", to: "b7" };
   fireEvent.click(screen.getByText("drop"));
 };
+/** The one missed board (the line's first) answered right `times` times, each in turn. */
+const reviewBoardRight = async (times: number) => {
+  for (let n = 1; n <= times; n++) {
+    await screen.findByText("Find the move");
+    nextDrop = { from: "a1", to: "a7" };
+    fireEvent.click(screen.getByText("drop"));
+    expect(await screen.findByText(`Right — ${n} in a row`)).toBeInTheDocument();
+  }
+  await screen.findByText("Puzzle complete!");
+};
 const failLine = () => {
   nextDrop = { from: "a1", to: "a8" }; // Ra8 is not the line's move
   fireEvent.click(screen.getByText("drop"));
@@ -155,17 +165,20 @@ describe("Practice: a drill", () => {
     expect(nav).toHaveAttribute("aria-hidden", "true");
     expect(screen.queryByRole("button", { name: "← Previous" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Next line →" })).toBeNull();
-    // Line 1: wrong, Try Again, right. One load, two attempts numbered 1 and 2, first wrong.
+    // Line 1: wrong, Try Again, right, then the missed board three times. One load, two attempts
+    // numbered 1 and 2, first wrong; the review sends nothing.
     failLine();
     expect(await screen.findByText("Try Again")).toBeInTheDocument();
-    await enabledButton("Next line →"); // the verdict has landed
+    await vi.waitFor(() => expect(calls.filter((c) => c.path === "/practice/puzzles/11/attempt")).toHaveLength(1));
+    expect(nav.className.split(" ")).toContain("invisible"); // owed: still no way past the line
+    expect(screen.queryByRole("button", { name: "Next line →" })).toBeNull();
+    fireEvent.click(screen.getByText("Try Again"));
+    await solveLine();
+    await reviewBoardRight(3);
+    await enabledButton("Next line →");
     expect(screen.getByTestId("puzzle-nav")).toBe(nav); // the same row, now shown
     expect(nav.className.split(" ")).not.toContain("invisible");
     expect(nav).not.toHaveAttribute("aria-hidden");
-    expect(screen.getByRole("button", { name: "← Previous" })).toBeDisabled();
-    fireEvent.click(screen.getByText("Try Again"));
-    await solveLine();
-    await enabledButton("Next line →");
     expect(screen.getByText("← Previous")).toBeDisabled(); // a drill only goes forward
     const attempts11 = () => calls.filter((c) => c.path === "/practice/puzzles/11/attempt");
     await vi.waitFor(() => expect(attempts11()).toHaveLength(2));
@@ -216,7 +229,7 @@ describe("Practice: a drill", () => {
     expect(note.textContent).toBe("· previously solved");
     expect(note.className.split(" ")).not.toContain("invisible");
     failLine();
-    await enabledButton("Finish →"); // the verdict has landed
+    await vi.waitFor(() => expect(note.className.split(" ")).toContain("invisible")); // the verdict has landed
     expect(screen.getByTestId("puzzle-note")).toBe(note); // the same element, still in the header
     expect(note.className.split(" ")).toContain("invisible");
     expect(note).toHaveAttribute("aria-hidden", "true");
