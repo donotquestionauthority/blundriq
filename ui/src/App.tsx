@@ -7,6 +7,7 @@ import Deviations from "./pages/Deviations";
 import GameReview from "./pages/GameReview";
 import Games from "./pages/Games";
 import Home from "./pages/Home";
+import LatestReview from "./pages/LatestReview";
 import Login from "./pages/Login";
 import Practice from "./pages/Practice";
 import Preferences from "./pages/Preferences";
@@ -45,6 +46,7 @@ export default function App() {
         <Route path="/repertoire/report" element={<RepertoireReport />} />
         <Route path="/review" element={<Review />} />
         <Route path="/review/positions/:colour/:key" element={<ReviewPosition />} />
+        <Route path="/review/latest" element={<LatestReview />} />
         <Route path="/review/:gameId" element={<GameReview />} />
         <Route path="/games" element={<Games />} />
         <Route path="/scout" element={<Scout />} />

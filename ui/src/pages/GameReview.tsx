@@ -30,8 +30,8 @@ import { AskOpusPanel } from "../components/AskOpusPanel";
 import { EvalBar } from "../components/EvalBar";
 import { ExploreLayer } from "../components/ExploreLayer";
 import { AiExplanationPanel } from "../components/PositionCard/AiExplanationPanel";
-import { LineWalkthrough, WholeLineToggle } from "../components/PositionCard/LineReaderPanel";
 import { PromotionChooser } from "../components/PromotionChooser";
+import { ArrowLegend, RepertoirePanel, ReviewLineReader } from "../components/ReviewBits";
 import { getGameReview, getReviewPrefs, markGameReviewed, setReviewPref } from "../games";
 import type { PlyAnalysisEntry, RepertoireEntry, RepertoireProjection, ReviewBlunder, ReviewMode } from "../games";
 import { useApi } from "../hooks/useApi";
@@ -40,7 +40,7 @@ import { appendBookArrow, buildArrows, buildLearnRevealArrows, buildPgn, parsesA
 import type { BoardArrow, RevealArrows } from "../utils/chess";
 import { LEARN_COMMIT_PROMPT, LEARN_COPY, formatElapsed, learnPromptPlies, learnStepPly, useLearnMode } from "./learnMode";
 import type { LearnRep } from "./learnMode";
-import { walkOpenAt, walkSurvives } from "./reviewWalk";
+import { walkSurvives } from "./reviewWalk";
 import type { ReviewWalk } from "./reviewWalk";
 import { returnTarget } from "../utils/returnTo";
 
@@ -54,124 +54,8 @@ const COMMIT_FAILURE_COPY = { network: LEARN_COPY.commitNetwork, conflict: LEARN
 const btn = "rounded border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900 disabled:opacity-40 disabled:pointer-events-none";
 const panel = "rounded border border-zinc-200 p-3 text-sm dark:border-zinc-800";
 const select = "rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900";
-const readLink = "whitespace-nowrap text-xs text-sky-700 hover:underline dark:text-sky-400";
 
 // --- the repertoire panel ---------------------------------------------------------------------------
-
-/** What each arrow on a Review board means, in a fixed order, one entry per colour actually
- *  drawn: nothing is named that is not on the board. On a mistake reviewed after it was played
- *  (stepping one ply at a time) the board shows the player's move, so the opponent arrow is the
- *  move before it, not the last one. */
-const LEGEND_ORDER = [ARROWS.opponent, ARROWS.played, ARROWS.engine, ARROWS.book] as const;
-type LegendPly = "ordinary" | "mistake-before" | "mistake-after";
-function legendLabel(color: string, ply: LegendPly): string {
-  const onMistake = ply !== "ordinary";
-  if (color === ARROWS.opponent) return ply === "mistake-after" ? "their move before yours" : "their last move";
-  if (color === ARROWS.played) return "you played";
-  if (color === ARROWS.engine) return onMistake ? "better" : "best move now";
-  return "your prep";
-}
-
-function ArrowLegend({ arrows, ply }: { arrows: BoardArrow[]; ply: LegendPly }) {
-  const drawn = new Set(arrows.map((a) => a.color));
-  const entries = LEGEND_ORDER.filter((c) => drawn.has(c));
-  if (entries.length === 0) return null;
-  return (
-    <p className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs text-zinc-500" data-testid="arrow-legend">
-      {entries.map((c) => (
-        <span key={c} data-legend={c} className="inline-flex items-center gap-1.5">
-          <span aria-hidden className="inline-block h-1.5 w-5 rounded-sm" style={{ backgroundColor: c }} />
-          {legendLabel(c, ply)}
-        </span>
-      ))}
-    </p>
-  );
-}
-
-/** What the repertoire says at the ply, by status. `none` is a statement, not an empty state. The
- *  swatch appears only beside a `book` arrow that is actually on the board. A ply that names a
- *  line offers to walk it (`walk` says which line is open; the page owns that state): the
- *  selected line's toggle after the copy, or one Read per conflict row, at most one open. */
-function RepertoirePanel({ entry, bookArrowDrawn, walk, onOpen, onClose }: { entry: RepertoireEntry; bookArrowDrawn: boolean; walk: ReviewWalk | null; onOpen: (lineId: number, openAt: number) => void; onClose: () => void }) {
-  const provenance = entry.book && entry.chapter && entry.line_name ? `${entry.book} · ${entry.chapter} · ${entry.line_name}` : null;
-  const selectedOpen = walk != null && entry.line_id != null && walk.lineId === entry.line_id;
-  return (
-    <div className={`${panel} space-y-2`} data-testid="repertoire-panel">
-      {provenance && <p className="break-words text-xs text-zinc-500">{provenance}</p>}
-      {(entry.status === "match" || entry.status === "agree") && entry.book_move && (
-        <p className="break-words">
-          {bookArrowDrawn && <span aria-hidden className="mr-2 inline-block h-2.5 w-2.5 rounded-sm align-middle" style={{ backgroundColor: ARROWS.book }} />}
-          <span className="text-zinc-500">{LEARN_COPY.prepPlays}</span> <span className="font-mono">{entry.book_move}</span>.
-        </p>
-      )}
-      {entry.status === "agree" && entry.more_lines > 0 && <p className="text-xs text-zinc-500">+{entry.more_lines} more lines</p>}
-      {entry.status === "end_of_line" && <p>{LEARN_COPY.lineEndsHere}</p>}
-      {entry.status === "unreadable" && <p>{LEARN_COPY.prepUnreadable}</p>}
-      {entry.status === "none" && <p>{LEARN_COPY.notInRepertoire}</p>}
-      {entry.status === "conflict" && (
-        <>
-          <p>{LEARN_COPY.conflictHeadline}</p>
-          {/* Every distinct move, in the order received: the server owns the grouping. */}
-          <ul className="space-y-1">
-            {(entry.conflict ?? []).map((g, i) => {
-              // A row is one occurrence of a line: the same line can reach the board twice with
-              // two moves, so the open one is told by where it opened, not by the line alone.
-              const open = walk != null && g.line_id != null && g.line_ply != null && walk.lineId === g.line_id && walk.openAt === walkOpenAt(entry.status, g.line_ply);
-              return (
-                <li key={`${g.move}-${i}`} className="break-words">
-                  <span className="font-mono">{g.move}</span>
-                  <span className="text-zinc-500">
-                    {" "}
-                    — {g.book} / {g.chapter} / {g.line_name}
-                    {g.more_lines > 0 ? `, +${g.more_lines} more` : ""}
-                  </span>
-                  {g.line_id != null && g.line_ply != null && (
-                    <>
-                      {" "}
-                      <button type="button" aria-expanded={open} aria-label={open ? `Close the line for ${g.move}` : `Read the line for ${g.move}`} className={readLink} onClick={() => (open ? onClose() : onOpen(g.line_id!, walkOpenAt(entry.status, g.line_ply!)))}>
-                        {open ? "Close" : "📖 Read"}
-                      </button>
-                    </>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        </>
-      )}
-      {entry.transposed === true && <p className="text-xs text-zinc-500">{LEARN_COPY.transposedNote}</p>}
-      {entry.line_id != null && entry.line_ply != null && (
-        <div className="space-y-1 pt-1">
-          <WholeLineToggle open={selectedOpen} onToggle={() => (selectedOpen ? onClose() : onOpen(entry.line_id!, walkOpenAt(entry.status, entry.line_ply!)))} />
-          {!selectedOpen && entry.book_move && (
-            <p className="text-xs text-zinc-500">
-              opens on <span className="font-mono">{entry.book_move}</span>
-            </p>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** The open line, in the review's side column. Mounted by the page wherever the line's
- *  walk-through is visible — on opponent-turn plies too, where no repertoire panel is shown —
- *  so it carries its own Close. Keyed by what was opened, the line and the place in it: a new
- *  line, or another occurrence of the same line, is a fresh walk-through; the review stepping
- *  along the line never changes `walk`, so the walk-through keeps its place. */
-function ReviewLineReader({ walk, onClose }: { walk: ReviewWalk; onClose: () => void }) {
-  return (
-    <div className={`${panel} space-y-3`} data-testid="review-line-reader">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium uppercase tracking-widest text-zinc-500">Your line</span>
-        <button type="button" className={btn} onClick={onClose} aria-label="Close the line">
-          Close
-        </button>
-      </div>
-      <LineWalkthrough key={`${walk.lineId}:${walk.openAt}`} lineId={walk.lineId} initialPly={walk.openAt} />
-    </div>
-  );
-}
 
 // --- the Learn panel ------------------------------------------------------------------------------
 

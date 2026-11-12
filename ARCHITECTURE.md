@@ -94,6 +94,15 @@ Chess.com / Lichess APIs
            panel at a board — Ask Opus, the walk-through's line question, a card's Explain — lists what was
            asked there before, from any of them (GET /ai/history, `components/AskHistory`): a read, no call.
 
+  Review latest game: GET /review/latest?source= fetches the player's newest finished game on one site
+           (core/ingest/latest.py, the importer's own parser), refuses Chess960 and unreadable games, and
+           returns it with the repertoire projection the game review uses; nothing is stored (the
+           Chess.com import resumes after the newest stored game, so storing one game would skip the
+           games before it). The page steps through it with the in-browser engine searching each board
+           (one worker per depth, finished searches kept per board for the visit) and Ask Opus over
+           POST /explore/ask with no stored game. Home offers it for the sites with a handle
+           (`latest_review_sources`, site names only).
+
   Home page reads: due count (Practice eligibility), games today/week, streaks, new blunders — recurring
            boards the Blunders list has never shown (seen_blunder_boards, which that page fills with what it
            rendered; the first look ever records the whole list as known) — one predicate in core/blunders.py,
@@ -121,7 +130,7 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `core/schema.py` | Fresh install (`core/sql/schema.sql`) vs upgrade (`core/sql/migrations/`). |
 | `core/chess/eligibility.py` | The Chess960 rule, as one SQL predicate and one Python check. |
 | `core/chess/board.py`, `openings.py`, `platform.py` | Boards and FEN sequences (Chess960-aware); canonical opening names; termination and time-class vocabularies. |
-| `core/ingest/` | Chess.com and Lichess fetch + parse (`chesscom.py`, `lichess.py`), the only `chess_games` writer (`store.py`), the import step (`run.py`), the one-time opening-prefix backfill (`backfill.py`: Review's own history boundary; Chess.com by monthly archive, Lichess by game id; COPY + one UPDATE per batch, prefix columns only). |
+| `core/ingest/` | Chess.com and Lichess fetch + parse (`chesscom.py`, `lichess.py`), the only `chess_games` writer (`store.py`), the import step (`run.py`), the latest game for Review latest game, fetched and parsed but never stored (`latest.py`), the one-time opening-prefix backfill (`backfill.py`: Review's own history boundary; Chess.com by monthly archive, Lichess by game id; COPY + one UPDATE per batch, prefix columns only). |
 | `core/repertoire/matching.py` | Game-vs-line matching and the match step; rematching after the repertoire changed; the one lock everything that reads the repertoire to publish, or changes it, holds (docs/decisions/007). |
 | `core/repertoire/read.py` | The read side: which effectively-active lines pass through a board (`rep_lines`, by book colour, never defaulted), and the one reduction of many occurrences to a move (`project_ply`, `singular_move`: exact FEN first, canonical moves, fail-closed conflicts). |
 | `core/repertoire/annotations.py` | Notes on positions: the unattached note on a board, notes attached to a line, and the walk-through's projection of a book's notes onto a line. |

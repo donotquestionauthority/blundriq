@@ -31,3 +31,13 @@ def usernames(conn: Connection[Any]) -> dict[str, str | None]:
     if row is None:
         raise RuntimeError("no players row; run `pipeline player set` first")
     return {"chesscom": row["chesscom_username"], "lichess": row["lichess_username"]}
+
+
+def sources_with_handle(conn: Connection[Any]) -> list[str]:
+    """The sites with a non-empty handle, always in the order `chesscom`, `lichess`; no players
+    row is none. Site names only: Home learns which sites it can offer without reading a handle."""
+    try:
+        names = usernames(conn)
+    except RuntimeError:
+        return []
+    return [site for site in ("chesscom", "lichess") if (names[site] or "").strip()]

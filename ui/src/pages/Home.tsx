@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { POLL_MS, START_WAIT_MS, ago, getHome, plural, runLabel, runPipeline } from "../home";
-import type { HomePage } from "../home";
+import type { HomePage, LatestSource } from "../home";
 import { useApi } from "../hooks/useApi";
+import { SITE_LABEL, chosenSource, readStoredSource, storeSource } from "../latestReview";
 
 /**
  * What to do today, and what changed since the last visit. Reads one endpoint and changes
@@ -146,13 +147,49 @@ function SinceLastVisit({ d }: { d: HomePage }) {
   );
 }
 
+/** "Review latest game": the button for the site on show, and a toggle only when both sites
+ *  have a username. Nothing when neither has one. */
+function ReviewLatest({ sources }: { sources: LatestSource[] }) {
+  const navigate = useNavigate();
+  const [stored, setStored] = useState<string | null>(readStoredSource);
+  const source = chosenSource(sources, stored);
+  if (!source) return null;
+  const pick = (s: LatestSource) => {
+    setStored(s);
+    storeSource(s);
+  };
+  return (
+    <div className="mt-3 flex flex-wrap items-center justify-end gap-2 border-t border-zinc-200 pt-3 dark:border-zinc-800" data-testid="review-latest">
+      {sources.length > 1 && (
+        <div role="radiogroup" aria-label="Site" className="inline-flex overflow-hidden rounded border border-zinc-300 text-xs dark:border-zinc-700">
+          {sources.map((s) => (
+            <button
+              key={s}
+              type="button"
+              role="radio"
+              aria-checked={s === source}
+              onClick={() => pick(s)}
+              className={`px-2 py-1.5 ${s === source ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900" : "bg-white dark:bg-zinc-900"}`}
+            >
+              {SITE_LABEL[s]}
+            </button>
+          ))}
+        </div>
+      )}
+      <button type="button" className={linkBtn} onClick={() => navigate(`/review/latest?source=${source}`)}>
+        Review latest game{sources.length === 1 ? ` (${SITE_LABEL[source]})` : ""}
+      </button>
+    </div>
+  );
+}
+
 /**
  * The pipeline's status and a button to start it. The status is the server's `last_run`, never
  * state of the button's own; the button adds one thing: after a request, "Requested…" until the
  * run's first row appears, and a notice if none does within START_WAIT_MS. Polling follows the
  * status: it continues while the newest run is `running` (or awaited) and stops on any result.
  */
-function Pipeline({ p, refetch }: { p: HomePage["pipeline"]; refetch: () => void }) {
+function Pipeline({ p, refetch, sources }: { p: HomePage["pipeline"]; refetch: () => void; sources: LatestSource[] }) {
   const [requestedAt, setRequestedAt] = useState<number | null>(null);
   const [waitedOut, setWaitedOut] = useState(false);
   const [pending, setPending] = useState(false);
@@ -224,6 +261,7 @@ function Pipeline({ p, refetch }: { p: HomePage["pipeline"]; refetch: () => void
           {pending || awaitingStart ? "Requested…" : "Run now"}
         </button>
       </div>
+      <ReviewLatest sources={sources} />
     </section>
   );
 }
@@ -247,7 +285,8 @@ export default function Home() {
             <SinceLastVisit d={data} />
           </div>
           <ActivityStrip a={data.activity} />
-          <Pipeline p={data.pipeline} refetch={refetch} />
+          {/* An API from before the field (the UI deploys first): no button, not a broken page. */}
+          <Pipeline p={data.pipeline} refetch={refetch} sources={data.latest_review_sources ?? []} />
         </>
       )}
     </div>

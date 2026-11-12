@@ -1,9 +1,15 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Home from "./Home";
 import { POLL_MS, START_WAIT_MS, ago, plural } from "../home";
 import type { HomePage, RunStatus } from "../home";
+import { LATEST_SOURCE_KEY, chosenSource } from "../latestReview";
+
+function LocationProbe() {
+  const l = useLocation();
+  return <p data-testid="location">{`${l.pathname}${l.search}`}</p>;
+}
 
 const page = (over: Partial<HomePage> = {}): HomePage => ({
   since: "2026-09-20T14:00:00+00:00",
@@ -16,6 +22,7 @@ const page = (over: Partial<HomePage> = {}): HomePage => ({
   games: { today: 0, week: 5, target: 1, streak: 2 },
   activity: { last_1: 1, last_7: 6, last_30: 21, total: 1234 },
   pipeline: { last_run: null, last_ok_at: new Date(Date.now() - 23 * 60_000).toISOString(), failed: [] },
+  latest_review_sources: ["chesscom", "lichess"],
   ...over,
 });
 
@@ -355,5 +362,112 @@ describe("the pipeline block", () => {
     unmount();
     await tick(POLL_MS * 3);
     expect(gets(calls)).toBe(1);
+  });
+});
+
+describe("Review latest game", () => {
+  const renderRouted = () =>
+    render(
+      <MemoryRouter initialEntries={["/"]}>
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/review/latest" element={<LocationProbe />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+  afterEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("both sites: a toggle and the button, which opens the chosen site and remembers it", async () => {
+    stub(page({ latest_review_sources: ["chesscom", "lichess"] }));
+    renderRouted();
+    const button = await screen.findByRole("button", { name: "Review latest game" });
+    expect(screen.getByRole("radio", { name: "Chess.com" })).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByRole("radio", { name: "Lichess" }));
+    expect(window.localStorage.getItem(LATEST_SOURCE_KEY)).toBe("lichess");
+    fireEvent.click(button);
+    expect(screen.getByTestId("location")).toHaveTextContent("/review/latest?source=lichess");
+  });
+
+  it("one site: the button for that site and no toggle", async () => {
+    stub(page({ latest_review_sources: ["lichess"] }));
+    renderRouted();
+    const button = await screen.findByRole("button", { name: "Review latest game (Lichess)" });
+    expect(screen.queryByRole("radiogroup")).toBeNull();
+    fireEvent.click(button);
+    expect(screen.getByTestId("location")).toHaveTextContent("/review/latest?source=lichess");
+  });
+
+  it("no site: no button", async () => {
+    stub(page({ latest_review_sources: [] }));
+    renderRouted();
+    await screen.findByRole("button", { name: "Run now" });
+    expect(screen.queryByTestId("review-latest")).toBeNull();
+  });
+
+  it("opens on the stored site when it is listed, with no click", async () => {
+    window.localStorage.setItem(LATEST_SOURCE_KEY, "lichess");
+    stub(page({ latest_review_sources: ["chesscom", "lichess"] }));
+    renderRouted();
+    const button = await screen.findByRole("button", { name: "Review latest game" });
+    expect(screen.getByRole("radio", { name: "Lichess" })).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(button);
+    expect(screen.getByTestId("location")).toHaveTextContent("/review/latest?source=lichess");
+  });
+
+  it("an API without the field (deployed after the UI) shows Home with no button", async () => {
+    const p = page();
+    delete (p as Partial<HomePage>).latest_review_sources;
+    stub(p);
+    renderRouted();
+    await screen.findByRole("button", { name: "Run now" });
+    expect(screen.queryByTestId("review-latest")).toBeNull();
+  });
+
+  it("a stored site no longer listed falls back to the first listed site", async () => {
+    window.localStorage.setItem(LATEST_SOURCE_KEY, "chesscom");
+    stub(page({ latest_review_sources: ["lichess"] }));
+    renderRouted();
+    fireEvent.click(await screen.findByRole("button", { name: "Review latest game (Lichess)" }));
+    expect(screen.getByTestId("location")).toHaveTextContent("source=lichess");
+  });
+
+  it("Lichess only, with storage throwing on read: still Lichess", async () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("denied");
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("denied");
+    });
+    stub(page({ latest_review_sources: ["lichess"] }));
+    renderRouted();
+    fireEvent.click(await screen.findByRole("button", { name: "Review latest game (Lichess)" }));
+    expect(screen.getByTestId("location")).toHaveTextContent("/review/latest?source=lichess");
+  });
+
+  it("both sites, storage throwing on read and write: the first site, and a pick still holds for the visit", async () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("denied");
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("denied");
+    });
+    stub(page({ latest_review_sources: ["chesscom", "lichess"] }));
+    renderRouted();
+    await screen.findByRole("button", { name: "Review latest game" });
+    expect(screen.getByRole("radio", { name: "Chess.com" })).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByRole("radio", { name: "Lichess" }));
+    expect(screen.getByRole("radio", { name: "Lichess" })).toHaveAttribute("aria-checked", "true");
+  });
+});
+
+describe("chosenSource", () => {
+  it("is the stored site when listed, else the first listed, else none", () => {
+    expect(chosenSource(["chesscom", "lichess"], "lichess")).toBe("lichess");
+    expect(chosenSource(["chesscom", "lichess"], null)).toBe("chesscom");
+    expect(chosenSource(["lichess"], "chesscom")).toBe("lichess");
+    expect(chosenSource(["lichess"], "garbage")).toBe("lichess");
+    expect(chosenSource([], "lichess")).toBeNull();
   });
 });

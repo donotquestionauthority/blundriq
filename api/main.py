@@ -25,6 +25,7 @@ from api.routes import deviations as deviations_routes
 from api.routes import explore as explore_routes
 from api.routes import games as games_routes
 from api.routes import home as home_routes
+from api.routes import latest as latest_routes
 from api.routes import practice as practice_routes
 from api.routes import puzzles as puzzles_routes
 from api.routes import repertoire as repertoire_routes
@@ -136,6 +137,7 @@ def create_app() -> FastAPI:
     app.include_router(repertoire_routes.router)
     app.include_router(puzzles_routes.router)
     app.include_router(review_routes.router)
+    app.include_router(latest_routes.router)
     app.include_router(explore_routes.router)
     app.include_router(ai_routes.router)
     return app
