@@ -14,6 +14,8 @@
  * attempt is ownerless and the Practice page shows only the recovery banner for it.
  */
 
+import type { AttemptMode } from "../practice";
+
 export interface UnsavedAttempt {
   puzzle_id: number;
   attempt_id: string;
@@ -22,6 +24,7 @@ export interface UnsavedAttempt {
   moves_played: string;
   presentation_ply: number | null;
   attempt_seq?: number | null;
+  mode?: AttemptMode;
 }
 
 let current: UnsavedAttempt | null = null;

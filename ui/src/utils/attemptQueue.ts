@@ -30,6 +30,7 @@
  */
 
 import { errorLabel } from "./errorLabel";
+import type { AttemptMode } from "../practice";
 
 export const QUEUE_STORE = "blundriq_pending_attempts_v1";
 const EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
@@ -46,6 +47,7 @@ export interface PendingAttempt {
   session_id?: string | null; // per play-through; null on older records
   presentation_ply?: number | null; // the segment the solver displayed; absent on older records
   attempt_seq?: number | null; // the attempt's order within its load; absent on older records
+  mode?: AttemptMode; // the path the solver was on; absent on older records, which replay as "practice"
 }
 
 export interface DropLogPayload {
@@ -188,7 +190,8 @@ function isValidPendingAttempt(r: unknown): r is PendingAttempt {
     typeof rec.attempt_count === "number" &&
     (rec.session_id === undefined || rec.session_id === null || typeof rec.session_id === "string") &&
     (rec.presentation_ply === undefined || rec.presentation_ply === null || typeof rec.presentation_ply === "number") &&
-    (rec.attempt_seq === undefined || rec.attempt_seq === null || typeof rec.attempt_seq === "number")
+    (rec.attempt_seq === undefined || rec.attempt_seq === null || typeof rec.attempt_seq === "number") &&
+    (rec.mode === undefined || rec.mode === "practice" || rec.mode === "drill" || rec.mode === "extra")
   );
 }
 

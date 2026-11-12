@@ -10,7 +10,9 @@ credits progress at the current level only once per local day (the anti-farm rul
 attempt is still recorded), and at the threshold the level advances and the window and
 counter reset. A fail demotes one level when the window holds enough fails (pawn floors,
 king is exempt) and reschedules the puzzle soon. Only the first attempt of a play-through
-scores; a retry within the same session leaves the ladder alone.
+scores; a retry within the same session leaves the ladder alone. An attempt that does not
+count (`core.puzzles.attempts`: the puzzle was not due as its session's first attempt was
+recorded) never reaches the ladder.
 
 King demotion: a mastered puzzle un-retires when its pattern recurs in enough distinct
 analysed games played after mastery. It depends only on newly analysed games and is

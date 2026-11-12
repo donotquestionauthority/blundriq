@@ -15,10 +15,10 @@ on its board and compared with the expected move, because `normalize_san` keeps 
 disambiguation (`Ngf3` is `Nf3`) — the rule `attempts.validate_line` grades by.
 
 A **load** and its **first attempt** are `core.puzzles.stats`'s: one per `session_id` (the lowest
-`attempt_seq`, then id), and a sessionless row is a load of its own. Every first attempt of the
-lines is read and classified before any cap, because whether a load reached a decision is known
-only afterwards; the "last five" is the display's, applied per line and, pooled over the
-decision's lines, per decision — among the loads that reached it.
+`attempt_seq`, then id), and a sessionless row is a load of its own; extra practice's are none.
+Every first attempt of the lines is read and classified before any cap, because whether a load
+reached a decision is known only afterwards; the "last five" is the display's, applied per line
+and, pooled over the decision's lines, per decision — among the loads that reached it.
 """
 
 from __future__ import annotations
@@ -45,12 +45,14 @@ WITH firsts AS (
            p.repertoire_line_id AS line_id, pa.puzzle_id, pa.solved, pa.moves_played, pa.attempt_at, pa.id
     FROM puzzle_attempts pa JOIN puzzles p ON p.id = pa.puzzle_id
     WHERE pa.player_id = %(pid)s AND p.repertoire_line_id = ANY(%(lines)s) AND pa.session_id IS NOT NULL
+      AND pa.mode IS DISTINCT FROM 'extra'
     ORDER BY p.repertoire_line_id, pa.session_id, pa.attempt_seq NULLS LAST, pa.id
 ),
 loose AS (
     SELECT p.repertoire_line_id AS line_id, pa.puzzle_id, pa.solved, pa.moves_played, pa.attempt_at, pa.id
     FROM puzzle_attempts pa JOIN puzzles p ON p.id = pa.puzzle_id
     WHERE pa.player_id = %(pid)s AND p.repertoire_line_id = ANY(%(lines)s) AND pa.session_id IS NULL
+      AND pa.mode IS DISTINCT FROM 'extra'
 ),
 every AS (SELECT * FROM firsts UNION ALL SELECT * FROM loose)
 SELECT line_id, puzzle_id, solved, moves_played, attempt_at, id

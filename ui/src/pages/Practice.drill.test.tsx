@@ -174,6 +174,7 @@ describe("Practice: a drill", () => {
       [2, true, 2],
     ]);
     expect(attempts11()[0].body!.session_id).toBe(attempts11()[1].body!.session_id);
+    expect(attempts11().map((c) => c.body!.mode)).toEqual(["drill", "drill"]); // the line report keeps drills
     expect(screen.getByTestId("drill-header").textContent).toContain("1 of 3 · 0 first-try");
     fireEvent.click(screen.getByText("Next line →"));
     // Line 2: right first time.
