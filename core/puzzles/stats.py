@@ -7,7 +7,9 @@ attempt of a load is the one with the lowest `attempt_seq`, the order the solver
 in, which is the player's order whatever order the requests reached the server; rows without a
 sequence (an older client's) sort after the numbered ones and among themselves by id. Replay's
 completion is a later sequence in the same load and counts for nothing here. These are the
-numbers the line report shows and the Repertoire page's delete confirm quotes.
+numbers the line report shows and the Repertoire page's delete confirm quotes. An attempt from
+extra practice (`puzzle_attempts.mode = 'extra'`) is no load here; the queue's, the list's,
+a link's and a drill's are.
 """
 
 from __future__ import annotations
@@ -24,12 +26,14 @@ WITH firsts AS (
            p.repertoire_line_id AS line_id, pa.session_id, pa.solved
     FROM puzzle_attempts pa JOIN puzzles p ON p.id = pa.puzzle_id
     WHERE pa.player_id = %(pid)s AND p.repertoire_line_id = ANY(%(lines)s) AND pa.session_id IS NOT NULL
+      AND pa.mode IS DISTINCT FROM 'extra'
     ORDER BY p.repertoire_line_id, pa.session_id, pa.attempt_seq NULLS LAST, pa.id
 ),
 loose AS (
     SELECT p.repertoire_line_id AS line_id, pa.solved
     FROM puzzle_attempts pa JOIN puzzles p ON p.id = pa.puzzle_id
     WHERE pa.player_id = %(pid)s AND p.repertoire_line_id = ANY(%(lines)s) AND pa.session_id IS NULL
+      AND pa.mode IS DISTINCT FROM 'extra'
 ),
 every AS (SELECT line_id, solved FROM firsts UNION ALL SELECT line_id, solved FROM loose)
 SELECT line_id, count(*)::int AS loads,

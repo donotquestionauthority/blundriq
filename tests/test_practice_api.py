@@ -199,14 +199,33 @@ def test_today_counts_the_attempts_the_attempt_route_recorded(client: tuple[Test
     body = before.json()
     assert set(body) == {"date", "solved", "target", "next_day_at", "now"}
     assert body["solved"] == 0
+    # A miss, then Try Again solves it in the same load: the load counted, so the solve does.
+    session = str(uuid.uuid4())
+    for solved, moves in ((False, "Qh5"), (True, "Nxe5,d4")):
+        r = c.post(
+            f"/practice/puzzles/{pid}/attempt",
+            json={"solved": solved, "moves_played": moves, "attempt_id": str(uuid.uuid4()), "session_id": session},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["counted"] is True
+    after = c.get("/practice/today").json()
+    assert after["solved"] == 1
+
+
+def test_a_sessionless_attempt_is_judged_on_its_own(client: tuple[TestClient, int]) -> None:
+    # An older client's attempts carry no session: after the miss reschedules the puzzle, the
+    # solve finds it not due and counts nothing.
+    c, pid = client
+    verdicts = []
     for solved, moves in ((False, "Qh5"), (True, "Nxe5,d4")):
         r = c.post(
             f"/practice/puzzles/{pid}/attempt",
             json={"solved": solved, "moves_played": moves, "attempt_id": str(uuid.uuid4())},
         )
         assert r.status_code == 200, r.text
-    after = c.get("/practice/today").json()
-    assert after["solved"] == 1
+        verdicts.append(r.json()["counted"])
+    assert verdicts == [True, False]
+    assert c.get("/practice/today").json()["solved"] == 0
 
 
 def test_the_drill_route_serves_whole_lines_and_an_attempt_carries_its_sequence(
@@ -241,3 +260,42 @@ def test_the_drill_route_serves_whole_lines_and_an_attempt_carries_its_sequence(
     sections = c.get("/repertoire/901/sections").json()
     (line,) = sections["sections"][0]["lines"]
     assert line["origin"] == "course" and line["loads"] == 1
+
+
+def test_extra_practice_pages_and_a_body_with_no_mode(
+    client: tuple[TestClient, int], clean: psycopg.Connection[DictRow]
+) -> None:
+    c, pid = client
+    # Nothing is past due-and-attempted yet: the puzzle is the queue's, extra practice is empty.
+    empty = c.get("/practice/puzzles", params={"srs": "extra"}).json()
+    assert empty["puzzles"] == [] and empty["run"] is None and empty["batch_id"] is None
+    r = c.post(
+        f"/practice/puzzles/{pid}/attempt",
+        json={
+            "solved": True,
+            "moves_played": "Nxe5,d4",
+            "attempt_id": str(uuid.uuid4()),
+            "session_id": str(uuid.uuid4()),
+        },
+    )
+    assert r.status_code == 200 and r.json()["counted"] is True
+    row = clean.execute("SELECT mode, counted FROM puzzle_attempts WHERE puzzle_id = %s", (pid,)).fetchone()
+    assert row is not None and (row["mode"], row["counted"]) == ("practice", True)
+    page = c.get("/practice/puzzles", params={"srs": "extra"}).json()
+    assert [p["id"] for p in page["puzzles"]] == [pid] and page["run"] == page["batch_id"] == 1
+    assert page["puzzles"][0]["play_batch_id"] == 1
+    rest = c.get("/practice/puzzles", params={"srs": "extra", "run": page["run"]}).json()
+    assert rest["puzzles"] == [] and rest["run"] == 1
+    extra = c.post(
+        f"/practice/puzzles/{pid}/attempt",
+        json={
+            "solved": True,
+            "moves_played": "Nxe5,d4",
+            "attempt_id": str(uuid.uuid4()),
+            "session_id": str(uuid.uuid4()),
+            "mode": "extra",
+        },
+    ).json()
+    assert extra["counted"] is False and extra["srs"]["transition"] is None
+    assert c.get("/practice/today").json()["solved"] == 1
+    assert c.post(f"/practice/puzzles/{pid}/attempt", json={"solved": True, "mode": "other"}).status_code == 422

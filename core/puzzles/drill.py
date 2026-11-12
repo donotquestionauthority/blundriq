@@ -3,7 +3,8 @@
 A drill is not the queue. It has no batch to compose, nothing due or pending, no skip: the
 player checked lines on the line report and wants each of them from move 1 until the list is
 done. What a drill shares with the queue is the solver, the attempt route and the visibility
-read, so a drill attempt is graded, scored and counted like any other.
+read, so a drill attempt is graded and recorded like any other, and counts only when the
+puzzle is due as it is answered (`core.puzzles.attempts`).
 
 Serving a drill does three things under the repertoire lock and then the queue lock (that
 order, the only order anything takes both in): mints the puzzle of any chosen line that has
@@ -12,7 +13,7 @@ on every served puzzle where it is NULL, which keeps the puzzle in the player's 
 regardless of the deviation gate from then on; and writes one exposure row per served puzzle
 under `DRILL_SCOPE`. That exposure is **proof of service and nothing else**: the attempt route
 grades an attempt on a no-longer-visible puzzle against it for `DRILL_PROOF_DAYS` whether or not
-anything acknowledged it, and the queue ignores the scope entirely (`serve._all_pending_ids`),
+anything acknowledged it, and the queue never reads the scope (a queue reads only its own),
 so an abandoned, reloaded or second-tab drill holds nothing back from regular practice and
 nothing ever closes one. The rows stay; a row per line per drill is the drill's own history.
 

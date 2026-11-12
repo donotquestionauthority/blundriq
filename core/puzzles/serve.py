@@ -14,7 +14,10 @@ skip row names it in its batch. **Pending** is not acknowledged and still visibl
 recomputed on every serve and never stored, ordered oldest first — that order *is* the
 carry-over. The next batch is minted when nothing is pending, or when few enough items
 are pending and fewer than two batches are; one advisory lock serialises the mint so a
-second tab reads the same batch instead of minting another.
+second tab reads the same batch instead of minting another. Each queue scope is its own: a
+puzzle pending in one queue may also be minted into another, and an attempt in either
+acknowledges it in both (an attempt that finds it no longer due scores nothing,
+`core.puzzles.attempts`).
 
 Corpus puzzles are drawn inside a rating window placed around the player's latest rating,
 uniformly from the most popular candidates the player has not *seen* — attempted, skipped
@@ -60,6 +63,7 @@ CC0_SOURCE = "lichess_cc0"
 OWN_MATE_SOURCE = "own_mate"
 PTYPES = ("all", "motif", "repertoire", "blunder", "custom")
 DRILL_SCOPE = "drill"  # never a queue scope: `play_batch` neither mints nor serves it
+EXTRA_SCOPE_PREFIX = "extra:"  # extra practice's scopes, `extra:<queue scope>`: proof of service, never a queue
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
@@ -241,19 +245,6 @@ def pending_members(conn: Connection[Any], scope: str, visible_ids: set[int]) ->
             for r in cur.fetchall()
             if r["puzzle_id"] in visible_ids
         ]
-
-
-def _all_pending_ids(conn: Connection[Any]) -> set[int]:
-    """Pending across every queue scope: a puzzle pending in one queue is not minted into
-    another. A drill's exposures (`core.puzzles.drill`) are proof of service, not queue state,
-    and never hold a puzzle back."""
-    with conn.cursor() as cur:
-        cur.execute(
-            f"SELECT DISTINCT e.puzzle_id FROM player_puzzle_exposure e WHERE e.player_id = %s"
-            f" AND e.scope <> %s AND NOT {_ACKNOWLEDGED}",
-            (PLAYER_ID, DRILL_SCOPE),
-        )
-        return {int(r["puzzle_id"]) for r in cur.fetchall()}
 
 
 def _acknowledged(conn: Connection[Any], scope: str, batch_id: int, puzzle_id: int) -> bool:
@@ -714,7 +705,7 @@ def play_batch(
     pending = pending_members(conn, scope, set(by_id))
     batches = {p.batch_id for p in pending}
     if not pending or (len(pending) <= threshold and len(batches) < PENDING_BATCH_DEPTH_CAP):
-        exclude = {p.puzzle_id for p in pending} | _all_pending_ids(conn)
+        exclude = {p.puzzle_id for p in pending}
         minted = mint_batch(conn, by_bucket, config, scope, ptype, subtype, exclude, now)
         new_ids = [i for i in _batch_ids(conn, scope, minted) if i not in by_id]
         delta = visibility.visible_standard_by_id(conn, new_ids, last_n_games=last_n_games)
@@ -748,6 +739,98 @@ def play_batch(
         latest = p.batch_id if latest is None else max(latest, p.batch_id)
         rows.append(row)
     return Served(rows, latest, scope, threshold)
+
+
+@dataclass
+class ExtraPage:
+    rows: list[dict[str, Any]]
+    batch_id: int | None
+    run: int | None
+
+
+def extra_candidate(row: dict[str, Any], now: datetime) -> bool:
+    """A puzzle extra practice may serve: on the ladder (attempted, not mastered, not corpus)
+    and not due. A pending queue item is always due, so it is never one."""
+    state = row.get("srs")
+    return (
+        state is not None
+        and state["level"] != "king"
+        and CC0_SOURCE not in _sources(row)
+        and not srs.is_due(state, now)
+    )
+
+
+def _extra_order(row: dict[str, Any]) -> tuple[datetime, int, int]:
+    state = row["srs"]
+    return (state["next_show_at"], srs.LEVEL_INDEX.get(state["level"], 0), int(row["id"]))
+
+
+def extra_page(
+    conn: Connection[Any],
+    config: Settings,
+    *,
+    last_n_games: int,
+    ptype: str,
+    subtype: str | None,
+    run: int | None,
+) -> ExtraPage:
+    """The next page of extra practice for one filter: its puzzles that are not yet due, soonest
+    due first, then lower level, then id, a batch's worth at a time. Each page is written as
+    exposure rows under `extra:<scope>` — proof that it was served (`core.puzzles.attempts`),
+    never queue state — and `run`, the batch id of the run's first page, excludes every puzzle
+    a page of the run has served, attempted or skipped. `run` absent, or naming no page of this
+    scope, starts a run. An empty page writes nothing. The caller commits."""
+    conn.execute("SELECT pg_advisory_xact_lock(%s, %s)", (LOCK_PUZZLE_QUEUE, PLAYER_ID))
+    scope = EXTRA_SCOPE_PREFIX + scope_of(ptype, subtype)
+    now = _now(conn)
+    visible = visibility.visible_rows(
+        conn,
+        last_n_games=last_n_games,
+        lookahead_plies=lookahead_plies(config),
+        rep_scope=rep_scope_for(ptype, subtype),
+    )
+    attach(conn, visible)
+    batch_id = _max_batch_id(conn, scope) + 1
+    if run is None or run >= batch_id:
+        run = batch_id
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT puzzle_id FROM player_puzzle_exposure"
+            " WHERE player_id = %s AND scope = %s AND batch_id >= %s",
+            (PLAYER_ID, scope, run),
+        )
+        served = {int(r["puzzle_id"]) for r in cur.fetchall()}
+    candidates = sorted(
+        (
+            r
+            for r in visible
+            if matches_type(r, ptype)
+            and matches_subtype(r, ptype, subtype)
+            and int(r["id"]) not in served
+            and extra_candidate(r, now)
+        ),
+        key=_extra_order,
+    )
+    page = candidates[: max(1, config.puzzle_mix_batch_size)]
+    if not page:
+        return ExtraPage([], None, run if run < batch_id else None)
+    conn.execute(
+        "INSERT INTO player_puzzle_exposure"
+        " (player_id, puzzle_id, bucket, batch_id, scope, served_at, presentation_ply)"
+        " SELECT %s, t.puzzle_id, t.bucket, %s, %s, clock_timestamp(), t.ply"
+        " FROM unnest(%s::int[], %s::text[], %s::int[]) WITH ORDINALITY AS t(puzzle_id, bucket, ply, n) ORDER BY t.n",
+        (
+            PLAYER_ID,
+            batch_id,
+            scope,
+            [int(r["id"]) for r in page],
+            [bucket_of(r) for r in page],
+            [r.get("presentation_ply") for r in page],
+        ),
+    )
+    for r in page:
+        r["play_batch_id"] = batch_id
+    return ExtraPage(page, batch_id, run)
 
 
 def browse(

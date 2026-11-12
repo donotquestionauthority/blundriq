@@ -99,8 +99,10 @@ export interface PuzzlesResponse {
   total: number;
   mastered_count: number;
   advance_threshold: number;
-  /** Newest pending batch id (the prefetch cursor); null unless srs=due. */
+  /** Newest pending batch id (the prefetch cursor); null unless srs=due, or the page's batch for srs=extra. */
   batch_id: number | null;
+  /** srs=extra only: the batch id of the run's first page, sent back to ask for the next. */
+  run?: number | null;
   scope: string | null;
   mint_ahead_threshold?: number | null;
   /** Corpus themes the motif SubType filter may offer. */
@@ -129,6 +131,8 @@ export interface AttemptResponse {
   detail: string;
   /** The server's verdict; may downgrade a client-claimed solve. */
   solved: boolean;
+  /** Whether it counted toward today and the schedule: the puzzle was due as its load's first attempt was recorded. */
+  counted: boolean;
   attempt_summary: { total: number; solved: number; streak: number };
   srs: AttemptResponseSrs;
 }
@@ -174,6 +178,18 @@ export async function getPuzzles(params: { srs?: SrsFilter; ptype?: PracticeType
   return { ...data, puzzles: data.puzzles.map(withThemes) };
 }
 
+/** One page of extra practice: the filter's puzzles that are not due yet, soonest due first. A
+ *  page names its `run`; asking with it gives the run's next page, never one already served. */
+export async function getExtraPage(params: { ptype: PracticeType; subtype: string | null; last_n_games: number; run: number | null }): Promise<PuzzlesResponse> {
+  const q = new URLSearchParams({ srs: "extra" });
+  if (params.ptype !== "all") q.set("ptype", params.ptype);
+  if (params.subtype) q.set("subtype", params.subtype);
+  if (params.last_n_games) q.set("last_n_games", String(params.last_n_games));
+  if (params.run != null) q.set("run", String(params.run));
+  const data = await api.get<PuzzlesResponse>(`/practice/puzzles?${q.toString()}`);
+  return { ...data, puzzles: data.puzzles.map(withThemes) };
+}
+
 export async function getDrill(lineIds: number[]): Promise<DrillResponse> {
   const data = await api.get<DrillResponse>(`/practice/drill?lines=${lineIds.join(",")}`);
   return { ...data, puzzles: data.puzzles.map(withThemes) };
@@ -193,7 +209,12 @@ export interface AttemptBody {
    *  starts again. The server keeps it so the first attempt of a load is known whatever order
    *  the requests arrive in (the line report's practice numbers). */
   attempt_seq?: number;
+  /** The path the solver is on; the server counts by whether the puzzle is due, and the line
+   *  report leaves extra practice out. Absent from an older client: "practice". */
+  mode?: AttemptMode;
 }
+
+export type AttemptMode = "practice" | "drill" | "extra";
 
 /**
  * `attempt_id` is a fresh UUID per submission (the server's idempotency key: a replay returns

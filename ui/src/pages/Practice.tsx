@@ -6,10 +6,10 @@ import { beginRemoval, confirmGone, getUnplayable, isGone, removalFailed, subscr
 import { useApi } from "../hooks/useApi";
 import { disownUnsavedAttempt, getUnsavedAttempt, holdUnsavedAttempt, isUnsavedAttemptOwned, releaseUnsavedAttempt, subscribeUnsavedAttempt, type UnsavedAttempt } from "../utils/unsavedAttempt";
 import { PuzzleEngine } from "../components/PuzzleEngine";
-import { getDrill, getPuzzleById, getPuzzles, getRepertoireScopes, isRotationPuzzle, LAST_N_OPTIONS, recordAttempt, skipPuzzle } from "../practice";
+import { getDrill, getExtraPage, getPuzzleById, getPuzzles, getRepertoireScopes, isRotationPuzzle, LAST_N_OPTIONS, recordAttempt, skipPuzzle } from "../practice";
 import { reportPath } from "../repertoire";
 import { clearQueue } from "../utils/drillQueue";
-import type { PlayablePuzzlePayload, PracticeType, Puzzle, RepertoireScopeBook, PuzzleGameLink, PuzzleSrs, SrsFilter, SrsLevel } from "../practice";
+import type { AttemptMode, PlayablePuzzlePayload, PracticeType, Puzzle, PuzzlesResponse, RepertoireScopeBook, PuzzleGameLink, PuzzleSrs, SrsFilter, SrsLevel } from "../practice";
 import { enqueue as enqueueAttempt, hasPendingAttempt, hasPendingAttemptForPuzzle, initQueueTriggers, isQueueModeAvailable, markCompleted as markAttemptCompleted, type PendingAttempt } from "../utils/attemptQueue";
 import { RepertoireScopeFilter } from "../components/RepertoireScopeFilter";
 import TodayCount from "../components/TodayCount";
@@ -147,8 +147,10 @@ const ATTEMPT_RESOLVED_EVENT = "blundriq:attempt-resolved";
  * of a load was the first whatever order the requests arrive in. `onVerdict` hears every
  * verdict the solver produces with that sequence, before anything is sent.
  */
-function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentationPly: number | null, onVerdict?: (seq: number, solved: boolean) => void) {
+function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentationPly: number | null, onVerdict?: (seq: number, solved: boolean) => void, mode: AttemptMode = "practice") {
   const [lastResult, setLastResult] = useState<"solved" | "wrong" | null>(null);
+  // The server said this load does not count (the puzzle was not due as its first attempt was recorded).
+  const [notCounted, setNotCounted] = useState(false);
   const [serverDowngraded, setServerDowngraded] = useState(false);
   const [attemptStatus, setAttemptStatus] = useState<"in_flight" | "pending_retry" | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -195,6 +197,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
   // A new play-through: clear the previous verdict and start a new session.
   const reset = useCallback(() => {
     setLastResult(null);
+    setNotCounted(false);
     setServerDowngraded(false);
     setAttemptStatus(null);
     setBlockingError(null);
@@ -209,8 +212,8 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
   // started since, nor against a segment the solver was not displaying.
   const post = useCallback(
     (attemptPuzzleId: number, sessionId: string, attemptId: string, solved: boolean, movesPlayed: string[], shownPly: number | null, seq: number) =>
-      recordAttempt(attemptPuzzleId, { solved, moves_played: movesPlayed.join(","), attempt_id: attemptId, session_id: sessionId, presentation_ply: shownPly, attempt_seq: seq }),
-    [],
+      recordAttempt(attemptPuzzleId, { solved, moves_played: movesPlayed.join(","), attempt_id: attemptId, session_id: sessionId, presentation_ply: shownPly, attempt_seq: seq, mode }),
+    [mode],
   );
 
   const runBlockingMode = useCallback(
@@ -219,7 +222,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
       // Held from before the request goes out, not from its failure: the whole app treats the
       // attempt as unsaved until its id is acknowledged, so leaving and returning mid-request
       // cannot open a second one.
-      const payload = { puzzle_id: attemptPuzzleId, attempt_id: attemptId, session_id: sessionId, solved, moves_played: movesPlayed.join(","), presentation_ply: shownPly, attempt_seq: seq };
+      const payload = { puzzle_id: attemptPuzzleId, attempt_id: attemptId, session_id: sessionId, solved, moves_played: movesPlayed.join(","), presentation_ply: shownPly, attempt_seq: seq, mode };
       holdUnsavedAttempt(payload, ownerRef.current);
       setSubmitting(true);
       setBlockingError(null);
@@ -231,6 +234,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
         if (activePuzzleIdRef.current === attemptPuzzleId) {
           setLastResult(response.solved ? "solved" : "wrong");
           if (solved && !response.solved) setServerDowngraded(true);
+          if (response.counted === false) setNotCounted(true);
         }
         onRecorded();
       } catch (err) {
@@ -248,7 +252,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
         inFlightRef.current.delete(attemptId);
       }
     },
-    [post, onRecorded],
+    [post, onRecorded, mode],
   );
 
   const handleComplete = useCallback(
@@ -271,7 +275,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
         return;
       }
       try {
-        await enqueueAttempt({ attempt_id: attemptId, puzzle_id: attemptPuzzleId, solved, moves_played: movesPlayed.join(","), session_id: sessionId, presentation_ply: shownPly, attempt_seq: seq });
+        await enqueueAttempt({ attempt_id: attemptId, puzzle_id: attemptPuzzleId, solved, moves_played: movesPlayed.join(","), session_id: sessionId, presentation_ply: shownPly, attempt_seq: seq, mode });
       } catch (err) {
         console.warn("Queue enqueue failed, falling back to blocking mode:", errorLabel(err));
         inFlightRef.current.delete(attemptId);
@@ -288,6 +292,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
         await markAttemptCompleted(attemptId);
         if (activePuzzleIdRef.current === attemptPuzzleId) {
           setAttemptStatus(null);
+          if (response.counted === false) setNotCounted(true);
           if (response.solved !== solved) {
             setLastResult(response.solved ? "solved" : "wrong");
             if (solved && !response.solved) setServerDowngraded(true);
@@ -309,7 +314,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
         inFlightRef.current.delete(attemptId);
       }
     },
-    [puzzleId, post, runBlockingMode, onRecorded],
+    [puzzleId, post, runBlockingMode, onRecorded, mode],
   );
 
   const retry = useCallback(() => {
@@ -319,7 +324,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
     void runBlockingMode(attemptId, solved, movesPlayed, attemptPuzzleId, sessionId, shownPly, seq);
   }, [blockingError, runBlockingMode]);
 
-  return { lastResult, serverDowngraded, attemptStatus, submitting, blockingError, handleComplete, retry, reset, navigationBlocked: submitting || blockingError !== null };
+  return { lastResult, serverDowngraded, notCounted, attemptStatus, submitting, blockingError, handleComplete, retry, reset, navigationBlocked: submitting || blockingError !== null };
 }
 
 /** Retry for an attempt held across a page change; the same attempt id, so a save that
@@ -329,7 +334,7 @@ function HeldAttemptBanner({ attempt, onSaved }: { attempt: UnsavedAttempt; onSa
   const retry = async () => {
     setSubmitting(true);
     try {
-      await recordAttempt(attempt.puzzle_id, { solved: attempt.solved, moves_played: attempt.moves_played, attempt_id: attempt.attempt_id, session_id: attempt.session_id, presentation_ply: attempt.presentation_ply, ...(attempt.attempt_seq != null ? { attempt_seq: attempt.attempt_seq } : {}) });
+      await recordAttempt(attempt.puzzle_id, { solved: attempt.solved, moves_played: attempt.moves_played, attempt_id: attempt.attempt_id, session_id: attempt.session_id, presentation_ply: attempt.presentation_ply, ...(attempt.attempt_seq != null ? { attempt_seq: attempt.attempt_seq } : {}), ...(attempt.mode ? { mode: attempt.mode } : {}) });
       releaseUnsavedAttempt(attempt.attempt_id);
       onSaved();
     } catch (err) {
@@ -363,6 +368,14 @@ function BlockingBanner({ error, submitting, onRetry }: { error: unknown; submit
   return null;
 }
 
+/** Under the board once the server has said the load does not count: a puzzle that was not due
+ *  as the load's first attempt was recorded moves neither today's count nor its schedule. Below
+ *  the board, so it never moves it. */
+function NotCountedLine({ show }: { show: boolean }) {
+  if (!show) return null;
+  return <p className="mt-3 text-center text-xs text-zinc-500">Not due yet: this one doesn't count toward today or your schedule.</p>;
+}
+
 // ─── Play mode: the streaming queue ─────────────────────────────────────────
 
 /** Where the queue would say "Loading…" after a re-read that failed: the way to ask again. */
@@ -381,7 +394,11 @@ function RetryLoad({ onRetry }: { onRetry: () => void }) {
  * The parent passes the LATEST served batch; PlayMode keeps its own growing `items` queue,
  * appending each row whose `play_batch_id` has not been seen (never a global puzzle-id dedup,
  * and never resetting the cursor). A skip is a server-recorded defer. "All caught up" is
- * terminal only when the server returns an empty batch.
+ * terminal only when the server returns an empty batch, and offers Keep practising.
+ *
+ * `extra` is the same queue over extra practice's pages (the filter's puzzles that are not due
+ * yet): attempts are sent as extra practice, a skip only moves on (a page is proof of service,
+ * not a batch to defer in), and the end of the pages offers the way back to the queue.
  */
 function PlayMode({
   batch,
@@ -394,12 +411,20 @@ function PlayMode({
   onAttemptRecorded,
   onNeedRefetch,
   onNavigationLock,
+  extra = false,
+  onKeepPractising,
+  onBackToQueue,
 }: {
   batch: Puzzle[];
   batchId: number | null;
   ptype: PracticeType;
   subtype: string | null;
   allCaughtUp: boolean;
+  extra?: boolean;
+  /** The queue's empty state: start extra practice over the same filter. */
+  onKeepPractising?: () => void;
+  /** Extra practice's end: back to the queue. */
+  onBackToQueue?: () => void;
   /** The last re-read of the queue failed (the rows shown are the ones before it). */
   refreshFailed: boolean;
   prefetchThreshold: number;
@@ -457,7 +482,7 @@ function PlayMode({
     onAttemptRecorded();
     if (awaitingNextRef.current) onNeedRefetch();
   }, [onAttemptRecorded, onNeedRefetch]);
-  const attempt = useAttemptSubmit(puzzle?.id ?? -1, recorded, puzzle?.presentation_ply ?? null);
+  const attempt = useAttemptSubmit(puzzle?.id ?? -1, recorded, puzzle?.presentation_ply ?? null, undefined, extra ? "extra" : "practice");
   const beingRemoved = puzzle !== undefined && unplayable.has(puzzle.id);
   const showNext = attempt.lastResult !== null;
   // The showing entry was retired (from a deep link over it, or another copy): step off it to
@@ -504,8 +529,15 @@ function PlayMode({
     if (allCaughtUp) {
       return (
         <div className="rounded border border-zinc-200 px-6 py-12 text-center dark:border-zinc-800">
-          <p className="text-lg text-zinc-500">You're all caught up</p>
-          <p className="mt-2 text-sm text-zinc-500">No more puzzles to serve right now.</p>
+          {extra ? (
+            <p className="text-lg text-zinc-500">{queued.length === 0 ? "Nothing else in this filter yet." : "That's every puzzle in this filter."}</p>
+          ) : (
+            <>
+              <p className="text-lg text-zinc-500">You're all caught up</p>
+              <p className="mt-2 text-sm text-zinc-500">No more puzzles to serve right now.</p>
+            </>
+          )}
+          <CaughtUpAction extra={extra} onKeepPractising={onKeepPractising} onBackToQueue={onBackToQueue} />
         </div>
       );
     }
@@ -533,7 +565,7 @@ function PlayMode({
   const handleSkip = async () => {
     if (skipping || beingRemoved) return;
     const itemBatchId = puzzle.play_batch_id ?? batchId;
-    if (itemBatchId == null) {
+    if (extra || itemBatchId == null) {
       advance();
       return;
     }
@@ -585,10 +617,89 @@ function PlayMode({
         submissionLocked={attempt.navigationBlocked || beingRemoved}
       />
       <BlockingBanner error={attempt.blockingError} submitting={attempt.submitting} onRetry={attempt.retry} />
+      {extra ? <p className="mt-3 text-center text-xs text-zinc-500">Extra practice: counts only for puzzles that come due.</p> : <NotCountedLine show={attempt.notCounted} />}
       {((showNext && isLastQueued) || awaitingNext) && !allCaughtUp && (refreshFailed ? <RetryLoad onRetry={onNeedRefetch} /> : <p className="mt-4 text-center text-xs text-zinc-500">Loading more puzzles…</p>)}
-      {exhausted && <p className="mt-4 text-center text-sm text-zinc-500">You're all caught up</p>}
+      {exhausted && (
+        <div className="mt-4 text-center">
+          <p className="text-sm text-zinc-500">{extra ? "That's every puzzle in this filter." : "You're all caught up"}</p>
+          <CaughtUpAction extra={extra} onKeepPractising={onKeepPractising} onBackToQueue={onBackToQueue} disabled={attempt.navigationBlocked} />
+        </div>
+      )}
       <GameLinks puzzle={puzzle} />
     </div>
+  );
+}
+
+/** What the end of a queue offers: Keep practising from the queue, Back to the queue from extra
+ *  practice. Nothing when the page gave no handler. */
+function CaughtUpAction({ extra, onKeepPractising, onBackToQueue, disabled = false }: { extra: boolean; onKeepPractising?: () => void; onBackToQueue?: () => void; disabled?: boolean }) {
+  const action = extra ? onBackToQueue : onKeepPractising;
+  if (!action) return null;
+  return (
+    <button type="button" onClick={action} disabled={disabled} className="mt-4 rounded border border-zinc-300 px-3 py-1.5 text-sm font-medium disabled:opacity-50 dark:border-zinc-700">
+      {extra ? "Back to the queue" : "Keep practising"}
+    </button>
+  );
+}
+
+// ─── Extra practice: past a cleared queue ──────────────────────────────────
+
+const EXTRA_PREFETCH = 4;
+
+/**
+ * Extra practice over one filter (`srs=extra`): its puzzles that are not due yet, soonest due
+ * first, a page at a time. The first page starts a run; every later read names the run, so no
+ * page repeats a puzzle the run has served. An empty page ends it. Played by PlayMode as the
+ * queue is, with attempts sent as extra practice: they count only for a puzzle that is due as the
+ * load's first attempt is recorded. A run's pages are this scope's pages from its first on, so a
+ * second tab's run on the same filter, or a page whose answer was lost, takes its puzzles out of
+ * this run too.
+ */
+function ExtraMode({ ptype, subtype, lastNGames, onBack, onNavigationLock }: { ptype: PracticeType; subtype: string | null; lastNGames: number; onBack: () => void; onNavigationLock: (locked: boolean) => void }) {
+  const runRef = useRef<number | null>(null);
+  // One read at a time: a page is written as it is read, so a second concurrent read would serve
+  // a page whose answer the hook discards, and the run would exclude puzzles nobody was shown.
+  // After the empty page nothing more is asked for.
+  const inFlightRef = useRef<Promise<PuzzlesResponse> | null>(null);
+  const lastRef = useRef<PuzzlesResponse | null>(null);
+  const { data: page, error, refetch } = useApi(
+    () => {
+      if (lastRef.current && lastRef.current.puzzles.length === 0) return Promise.resolve(lastRef.current);
+      if (inFlightRef.current) return inFlightRef.current;
+      const read = getExtraPage({ ptype, subtype, last_n_games: lastNGames, run: runRef.current })
+        .then((data) => {
+          if (data.run != null) runRef.current = data.run;
+          lastRef.current = data;
+          return data;
+        })
+        .finally(() => {
+          inFlightRef.current = null;
+        });
+      inFlightRef.current = read;
+      return read;
+    },
+    [],
+    { keepDataOnError: true },
+  );
+  const failed = error !== null;
+  const ended = page != null && page.puzzles.length === 0;
+
+  if (page == null) return failed ? <RetryLoad onRetry={refetch} /> : <p className="text-sm text-zinc-500">…</p>;
+  return (
+    <PlayMode
+      batch={page.puzzles}
+      batchId={page.batch_id ?? null}
+      ptype={ptype}
+      subtype={subtype}
+      allCaughtUp={ended}
+      refreshFailed={failed}
+      prefetchThreshold={EXTRA_PREFETCH}
+      onAttemptRecorded={noop}
+      onNeedRefetch={refetch}
+      onNavigationLock={onNavigationLock}
+      extra
+      onBackToQueue={onBack}
+    />
   );
 }
 
@@ -620,7 +731,7 @@ function DrillMode({ lineIds, back, onAttemptRecorded, onNavigationLock }: { lin
     },
     [cursor],
   );
-  const attempt = useAttemptSubmit(puzzle?.id ?? -1, onAttemptRecorded, puzzle?.presentation_ply ?? null, onVerdict);
+  const attempt = useAttemptSubmit(puzzle?.id ?? -1, onAttemptRecorded, puzzle?.presentation_ply ?? null, onVerdict, "drill");
   const navigationBlocked = attempt.navigationBlocked;
   useEffect(() => {
     onNavigationLock(navigationBlocked);
@@ -722,6 +833,7 @@ function DrillMode({ lineIds, back, onAttemptRecorded, onNavigationLock }: { lin
         submissionLocked={navigationBlocked}
       />
       <BlockingBanner error={attempt.blockingError} submitting={attempt.submitting} onRetry={attempt.retry} />
+      <NotCountedLine show={attempt.notCounted} />
       <GameLinks puzzle={puzzle} />
     </div>
   );
@@ -814,6 +926,7 @@ function PuzzleOverlay({ puzzle, onClose, onAttemptRecorded, onAttempted, onNavi
           submissionLocked={attempt.navigationBlocked || removing || gone}
         />
         <BlockingBanner error={attempt.blockingError} submitting={attempt.submitting} onRetry={attempt.retry} />
+        <NotCountedLine show={attempt.notCounted} />
         <GameLinks puzzle={puzzle} />
         {removable && (
           <div className="mt-4 flex items-center justify-end gap-3 border-t border-zinc-200 pt-3 text-xs dark:border-zinc-800">
@@ -1232,6 +1345,11 @@ export default function Practice() {
   }, [searchParams]);
   const [listOverlayOpen, setListOverlayOpen] = useState(false);
   const [inPageLock, setInPageLock] = useState(false);
+  // Extra practice is page state for the queue it was started from: another filter, or a
+  // reload, is the queue again.
+  const queueKey = `${type}|${subtype ?? ""}|${lastNGames}`;
+  const [extraFor, setExtraFor] = useState<string | null>(null);
+  const extraActive = extraFor === queueKey && srsFilter === "due";
   // An attempt held from an earlier visit (the page was left, or reloaded into blocking
   // mode) is offered for retry here, above whatever the page serves, until it is saved.
   const held = useSyncExternalStore(subscribeUnsavedAttempt, getUnsavedAttempt, getUnsavedAttempt);
@@ -1301,6 +1419,7 @@ export default function Practice() {
         ...(record.session_id != null ? { session_id: record.session_id } : {}),
         presentation_ply: record.presentation_ply ?? null,
         ...(record.attempt_seq != null ? { attempt_seq: record.attempt_seq } : {}),
+        ...(record.mode ? { mode: record.mode } : {}),
       });
       refetch();
     };
@@ -1382,7 +1501,20 @@ export default function Practice() {
         {((isStale && !error) || (isLoading && data == null)) && <p className="text-sm text-zinc-500">…</p>}
         {error && (data == null || isStale) && <p className="text-sm text-rose-600">{error}</p>}
         {error && data != null && !isStale && <p className="mb-2 text-xs text-rose-600">Could not refresh: {error}</p>}
-        {data != null && !isStale && srsFilter === "due" && (
+        {extraActive && (
+          <ExtraMode
+            key={`extra|${queueKey}`}
+            ptype={type}
+            subtype={subtype}
+            lastNGames={lastNGames}
+            onBack={() => {
+              setExtraFor(null);
+              refetch();
+            }}
+            onNavigationLock={setInPageLock}
+          />
+        )}
+        {!extraActive && data != null && !isStale && srsFilter === "due" && (
           // Keyed on the serve QUERY, not puzzle ids: a filter change resets the queue, but an
           // in-query refetch appends and keeps the cursor.
           <PlayMode
@@ -1397,6 +1529,7 @@ export default function Practice() {
             onAttemptRecorded={noop}
             onNeedRefetch={refetch}
             onNavigationLock={setInPageLock}
+            onKeepPractising={() => setExtraFor(queueKey)}
           />
         )}
         {data != null && !isStale && srsFilter !== "due" && (

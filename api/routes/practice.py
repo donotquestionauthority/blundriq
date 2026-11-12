@@ -1,6 +1,7 @@
 """The Practice page's API: the play queue, attempts, skips and the deep link.
 
-GET  /practice/puzzles              the queue (srs=due), the browse list (all) or the trophies (retired)
+GET  /practice/puzzles              the queue (srs=due), extra practice (extra), the browse list (all)
+                                    or the trophies (retired)
 POST /practice/puzzles/{id}/attempt grade and record one attempt
 POST /practice/skip                 defer a served item
 GET  /practice/puzzles/{id}         the immutable solver payload for `?puzzle=<id>`
@@ -29,18 +30,22 @@ Ptype = Literal["all", "motif", "repertoire", "blunder", "custom"]
 
 @router.get("/puzzles")
 def get_puzzles(
-    srs_view: Literal["due", "all", "retired"] = Query("due", alias="srs"),
+    srs_view: Literal["due", "extra", "all", "retired"] = Query("due", alias="srs"),
     ptype: Ptype = Query("all"),
     subtype: str | None = Query(None, max_length=100),
     last_n_games: int = Query(0, ge=0, le=20000),
+    run: int | None = Query(None, ge=1, le=2**31 - 1),
 ) -> dict[str, Any]:
     rep_scope = _rep_scope(ptype, subtype)
     with db.transaction() as conn:
         config = settings.load(conn)
-        batch_id = scope = threshold = None
+        batch_id = scope = threshold = extra_run = None
         if srs_view == "due":
             served = serve.play_batch(conn, config, last_n_games=last_n_games, ptype=ptype, subtype=subtype)
             rows, batch_id, scope, threshold = served.rows, served.batch_id, served.scope, served.mint_ahead
+        elif srs_view == "extra":
+            page = serve.extra_page(conn, config, last_n_games=last_n_games, ptype=ptype, subtype=subtype, run=run)
+            rows, batch_id, extra_run = page.rows, page.batch_id, page.run
         elif srs_view == "retired":
             rows = serve.retired(conn)
         else:
@@ -62,6 +67,7 @@ def get_puzzles(
         "batch_id": batch_id,
         "scope": scope,
         "mint_ahead_threshold": threshold,
+        "run": extra_run,
         "served_themes": list(CC0_SERVE_THEMES),
     }
 
@@ -131,6 +137,8 @@ class AttemptBody(BaseModel):
     presentation_ply: int | None = Field(None, ge=0, le=1000)
     # The attempt's order within its load, counted by the solver from 1; None from an older client.
     attempt_seq: int | None = Field(None, ge=1, le=100000)
+    # The path the solver was on; an older client sends none and is the regular practice path.
+    mode: attempts.Mode = "practice"
 
 
 @router.post("/puzzles/{puzzle_id}/attempt")
@@ -148,6 +156,7 @@ def post_attempt(puzzle_id: int, body: AttemptBody) -> dict[str, Any]:
                 session_id=str(body.session_id) if body.session_id else None,
                 presentation_ply=body.presentation_ply,
                 attempt_seq=body.attempt_seq,
+                mode=body.mode,
             )
         except attempts.NotAttemptable as exc:
             raise HTTPException(404, "puzzle not found") from exc

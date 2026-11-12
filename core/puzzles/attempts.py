@@ -9,12 +9,24 @@ accepted. A missed-mate puzzle is graded by walking its acceptance map instead: 
 the optimal number of moves, each in the accepted set at its node, the opponent replying
 with the map's canonical defence.
 
-Recording is one transaction in a fixed order: lock the puzzle, insert the attempt row,
-score it, read the state back, and let the caller commit. The lock comes before the
-insert because a concurrent request in the same session would otherwise not see this
-row and both would score. The same response is built on a fresh insert, an idempotent
-replay of an `attempt_id` already recorded, and a lost insert race, so the wire shape
-cannot differ between them; a replay returns the original verdict with the current state.
+Recording is one transaction in a fixed order: answer an idempotent replay, lock the puzzle,
+decide whether it may be attempted and whether the attempt counts, insert the attempt row,
+score it, read the state back, and let the caller commit. Everything after the lock reads what
+every attempt before it committed, so two concurrent requests can neither both consume one
+served proof nor both score one due serving.
+
+**An attempt counts** — toward the day's solved total, the streak and the ladder — when its
+session's first recorded attempt counted, and a session's first attempt counts when the puzzle
+is due as it is recorded. That is one rule for every path: the queue, the list, a link, a
+drill, extra practice. A second copy of a puzzle answered after the first (another queue, a
+second tab, a late retry) finds it rescheduled and counts nothing; with
+`srs_wrong_retry_hours = 0` a missed puzzle is due again at once, so a copy answered after the
+miss is a new due serving and counts. A retry inside a session never turns a session that did
+not count into one that does. `mode` records the path, and only the line report reads it.
+
+The same response is built on a fresh insert, an idempotent replay of an `attempt_id` already
+recorded, and a lost insert race, so the wire shape cannot differ between them; a replay returns
+the original verdict, and whether it counted, with the current state.
 
 A repertoire puzzle is graded against the **segment the solver displayed**, which the attempt
 names (`presentation_ply`, the same value the solver was given). Only the solver knows what it
@@ -35,7 +47,9 @@ queue waiting to be sent. The exposure row is the proof it was served; finishing
 allowed, starting new work on it is not. A **drill's** exposure (`core.puzzles.drill`) is that
 proof for `DRILL_PROOF_DAYS` after it was served, acknowledged or not: every attempt of a drill
 load, Try Again's new id, a first attempt that lands after the second, a retry from the durable
-queue, all finish work the player started, and nothing but time ends the proof.
+queue, all finish work the player started, and nothing but time ends the proof. An **extra
+practice** exposure (`EXTRA_SCOPE_PREFIX`) is proof for the same window until another session
+attempts the puzzle: the load that started it finishes it, Try Again included, and no other.
 
 Every attempt carries `attempt_seq`, its order within its load as the solver counted it, so the
 first attempt of a load is known whatever order the requests arrive in (`core.puzzles.stats`).
@@ -44,7 +58,7 @@ first attempt of a load is known whatever order the requests arrive in (`core.pu
 from __future__ import annotations
 
 import json
-from typing import Any, LiteralString, cast
+from typing import Any, Literal, LiteralString, cast
 
 import chess
 from psycopg import Connection
@@ -56,7 +70,7 @@ from core.chess.san import parse as parse_san
 from core.constants import DRILL_PROOF_DAYS, PLAYER_ID
 from core.puzzles import srs, visibility
 from core.puzzles.lines import fen_sequence, is_mate_line
-from core.puzzles.serve import CC0_SOURCE, DRILL_SCOPE, OWN_MATE_SOURCE, lookahead_plies
+from core.puzzles.serve import CC0_SOURCE, DRILL_SCOPE, EXTRA_SCOPE_PREFIX, OWN_MATE_SOURCE, lookahead_plies
 from core.puzzles.serve import acknowledged_sql as serve_acknowledged
 from core.settings import Settings
 
@@ -144,10 +158,13 @@ def _line(value: object) -> list[str]:
     return [str(m) for m in cast(list[object], value)] if isinstance(value, list) else []
 
 
-def _response(detail: str, solved: bool, state: dict[str, Any], transition: dict[str, Any] | None) -> dict[str, Any]:
+def _response(
+    detail: str, solved: bool, state: dict[str, Any], transition: dict[str, Any] | None, counted: bool
+) -> dict[str, Any]:
     return {
         "detail": detail,
         "solved": solved,
+        "counted": counted,
         "attempt_summary": {"total": state["total"], "solved": state["solved"], "streak": state["streak"]},
         "srs": {
             "level": state["level"],
@@ -204,21 +221,36 @@ _SERVED_PENDING = cast(
     WHERE p.id = %(id)s AND p.player_id = %(pid)s
       AND NOT (p.source_types @> ARRAY['own_mate'] AND p.acceptance_map IS NULL)
       AND NOT (p.source_types @> ARRAY['custom'] AND NOT p.active)
-      AND ((e.scope <> %(drill)s AND NOT {serve_acknowledged()})
-           OR (e.scope = %(drill)s AND e.served_at >= now() - make_interval(days => %(proof_days)s)))
+      AND ((e.scope <> %(drill)s AND e.scope NOT LIKE %(extra)s AND NOT {serve_acknowledged()})
+           OR (e.scope = %(drill)s AND e.served_at >= now() - make_interval(days => %(proof_days)s))
+           OR (e.scope LIKE %(extra)s AND e.served_at >= now() - make_interval(days => %(proof_days)s)
+               AND NOT EXISTS (
+                   SELECT 1 FROM puzzle_attempts pa
+                   WHERE pa.player_id = e.player_id AND pa.puzzle_id = e.puzzle_id AND pa.attempt_at >= e.served_at
+                     AND (%(session)s::uuid IS NULL OR pa.session_id IS DISTINCT FROM %(session)s::uuid))))
     ORDER BY e.served_at DESC
     LIMIT 1
     """,
 )
 
 
-def _served_pending(conn: Connection[Any], puzzle_id: int) -> dict[str, Any] | None:
-    """The puzzle row if it was served in a batch and nothing has acknowledged that yet, or
-    served by a drill within the proof window, with the ply it was truncated to when served. A
-    hand-made puzzle that was removed is not finished: its removal was the player's own act."""
+def _served_pending(conn: Connection[Any], puzzle_id: int, session_id: str | None) -> dict[str, Any] | None:
+    """The puzzle row if it was served in a batch and nothing has acknowledged that yet, served
+    by a drill within the proof window, or served by extra practice within the proof window and
+    attempted since by no other session than `session_id`, with the ply it was truncated to when
+    served. A hand-made puzzle that was removed is not finished: its removal was the player's
+    own act. Read under the puzzle's lock (`record`), so two sessions cannot both pass it."""
     with conn.cursor() as cur:
         cur.execute(
-            _SERVED_PENDING, {"id": puzzle_id, "pid": PLAYER_ID, "drill": DRILL_SCOPE, "proof_days": DRILL_PROOF_DAYS}
+            _SERVED_PENDING,
+            {
+                "id": puzzle_id,
+                "pid": PLAYER_ID,
+                "drill": DRILL_SCOPE,
+                "extra": f"{EXTRA_SCOPE_PREFIX}%",
+                "proof_days": DRILL_PROOF_DAYS,
+                "session": session_id,
+            },
         )
         row = cur.fetchone()
     return dict(row) if row else None
@@ -227,10 +259,48 @@ def _served_pending(conn: Connection[Any], puzzle_id: int) -> dict[str, Any] | N
 def _existing(conn: Connection[Any], puzzle_id: int, attempt_id: str) -> dict[str, Any] | None:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT solved FROM puzzle_attempts WHERE player_id = %s AND puzzle_id = %s AND attempt_id = %s",
+            "SELECT solved, counted FROM puzzle_attempts WHERE player_id = %s AND puzzle_id = %s AND attempt_id = %s",
             (PLAYER_ID, puzzle_id, attempt_id),
         )
         return cur.fetchone()
+
+
+Mode = Literal["practice", "drill", "extra"]
+
+
+def _replay(conn: Connection[Any], puzzle_id: int, attempt_id: str | None, config: Settings) -> dict[str, Any] | None:
+    """The response for an `attempt_id` already recorded, or None."""
+    existing = _existing(conn, puzzle_id, attempt_id) if attempt_id is not None else None
+    if existing is None:
+        return None
+    return _response(
+        "attempt recorded (idempotent)",
+        bool(existing["solved"]),
+        srs.post_attempt_state(conn, puzzle_id, config),
+        None,
+        bool(existing["counted"]),
+    )
+
+
+def _counts(conn: Connection[Any], puzzle_id: int, session_id: str | None) -> bool:
+    """Whether a new attempt counts toward the day and the ladder: what its session's first
+    recorded attempt decided, else whether the puzzle is due now. Read under the puzzle's lock;
+    the clock is `clock_timestamp()`, not the transaction's start, so an attempt that waited
+    for the lock sees what the attempt before it scheduled."""
+    with conn.cursor() as cur:
+        if session_id is not None:
+            cur.execute(
+                "SELECT counted FROM puzzle_attempts WHERE player_id = %s AND puzzle_id = %s AND session_id = %s"
+                " ORDER BY id LIMIT 1",
+                (PLAYER_ID, puzzle_id, session_id),
+            )
+            first = cur.fetchone()
+            if first is not None:
+                return bool(first["counted"])
+        cur.execute("SELECT clock_timestamp() AS now")
+        clock = cur.fetchone()
+    assert clock is not None
+    return srs.is_due(srs.states(conn, [puzzle_id]).get(puzzle_id), clock["now"])
 
 
 def record(
@@ -244,26 +314,26 @@ def record(
     session_id: str | None,
     presentation_ply: int | None = None,
     attempt_seq: int | None = None,
+    mode: Mode = "practice",
 ) -> dict[str, Any]:
     """Grade, record and score one attempt; the caller commits. `presentation_ply` is the
     segment the solver displayed (None for a standard puzzle, or from a client that cannot
     say); `attempt_seq` the attempt's order within its load (None from a client that does not
-    number them). Raises NotAttemptable, or SegmentMismatch for a segment the puzzle does not
-    have."""
-    if attempt_id is not None:
-        # A replay of an attempt already recorded is always answerable, whatever the puzzle's
-        # visibility has become since: the client only wants the verdict it never received.
-        existing = _existing(conn, puzzle_id, attempt_id)
-        if existing is not None:
-            return _response(
-                "attempt recorded (idempotent)",
-                bool(existing["solved"]),
-                srs.post_attempt_state(conn, puzzle_id, config),
-                None,
-            )
+    number them); `mode` the path the solver was on. Raises NotAttemptable, or SegmentMismatch
+    for a segment the puzzle does not have."""
+    # A replay of an attempt already recorded is always answerable, whatever the puzzle's
+    # visibility has become since: the client only wants the verdict it never received. Asked
+    # once unlocked, and again under the lock for a copy that waited on the original's commit.
+    if (replay := _replay(conn, puzzle_id, attempt_id, config)) is not None:
+        return replay
+    # Everything from here is read under the puzzle's lock: whether it may be attempted (a
+    # served proof one session consumes), whether it counts, the insert and the score.
+    srs.lock_attempt(conn, puzzle_id)
+    if (replay := _replay(conn, puzzle_id, attempt_id, config)) is not None:
+        return replay
     # Visible, or served and not yet acknowledged: either way the attempt may be finished.
     visible = visibility.attemptable(conn, puzzle_id)
-    pending = _served_pending(conn, puzzle_id)
+    pending = _served_pending(conn, puzzle_id, session_id)
     puzzle = visible if visible is not None else pending
     if puzzle is None:
         raise NotAttemptable(puzzle_id)
@@ -292,17 +362,17 @@ def record(
         acceptance_map=puzzle.get("acceptance_map"),
         is_own_mate=OWN_MATE_SOURCE in sources,
     )
-    srs.lock_attempt(conn, puzzle_id)
+    counted = _counts(conn, puzzle_id, session_id)
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO puzzle_attempts
-                (puzzle_id, player_id, solved, moves_played, attempt_id, session_id, attempt_seq)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                (puzzle_id, player_id, solved, moves_played, attempt_id, session_id, attempt_seq, mode, counted)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (player_id, attempt_id) WHERE attempt_id IS NOT NULL DO NOTHING
             RETURNING id
             """,
-            (puzzle_id, PLAYER_ID, solved, moves_played, attempt_id, session_id, attempt_seq),
+            (puzzle_id, PLAYER_ID, solved, moves_played, attempt_id, session_id, attempt_seq, mode, counted),
         )
         inserted = cur.fetchone()
     if inserted is None:
@@ -315,14 +385,15 @@ def record(
             bool(winner["solved"]),
             srs.post_attempt_state(conn, puzzle_id, config),
             None,
+            bool(winner["counted"]),
         )
 
     transition = None
-    if CC0_SOURCE not in sources:
+    if counted and CC0_SOURCE not in sources:
         transition = srs.apply_attempt(
             conn, puzzle_id, solved, attempt_row_id=int(inserted["id"]), session_id=session_id, config=config
         )
-    return _response("attempt recorded", solved, srs.post_attempt_state(conn, puzzle_id, config), transition)
+    return _response("attempt recorded", solved, srs.post_attempt_state(conn, puzzle_id, config), transition, counted)
 
 
 # --- game links for the list views ---------------------------------------------------------

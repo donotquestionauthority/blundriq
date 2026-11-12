@@ -545,7 +545,7 @@ CREATE SEQUENCE public.players_id_seq
 
 ALTER SEQUENCE public.players_id_seq OWNED BY public.players.id;
 
--- Every attempt, with an idempotency key so a retried request scores once.
+-- Every attempt, with an idempotency key so a retried request scores once. counted: whether it counts toward the day, the streak and the ladder (a session's first attempt counts when the puzzle is due as it is recorded; later attempts inherit; true before migration 016). mode: practice, drill or extra (NULL = before migration 016, any path but extra).
 CREATE TABLE public.puzzle_attempts (
     id integer NOT NULL,
     puzzle_id integer NOT NULL,
@@ -555,7 +555,10 @@ CREATE TABLE public.puzzle_attempts (
     attempt_at timestamp with time zone DEFAULT now(),
     attempt_id uuid,
     session_id uuid,
-    attempt_seq integer
+    attempt_seq integer,
+    mode text,
+    counted boolean DEFAULT true NOT NULL,
+    CONSTRAINT puzzle_attempts_mode_check CHECK ((mode = ANY (ARRAY['practice'::text, 'drill'::text, 'extra'::text])))
 )
 WITH (autovacuum_vacuum_scale_factor='0.02', autovacuum_vacuum_threshold='50', autovacuum_analyze_scale_factor='0.01');
 

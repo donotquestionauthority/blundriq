@@ -882,9 +882,10 @@ def test_a_scope_has_its_own_batches_and_draws_only_its_content(clean: psycopg.C
     assert all("pin" in r["themes"] for r in pins.rows) and own not in _ids(pins.rows)
     blunders = serve.play_batch(clean, config, last_n_games=0, ptype="blunder", subtype=None)
     assert _ids(blunders.rows) == [own]
-    # The 'all' scope is untouched by the others, and a puzzle pending elsewhere is not re-minted.
+    # The 'all' scope has its own batches, and a due puzzle pending in another queue is served
+    # here too: no queue holds a puzzle back from another.
     everything = serve.play_batch(clean, config, last_n_games=0, ptype="all", subtype=None)
-    assert everything.batch_id == 1 and not (set(_ids(everything.rows)) & set(_ids(pins.rows)))
+    assert everything.batch_id == 1 and own in _ids(everything.rows)
 
 
 def test_a_missed_share_is_never_repaid(clean: psycopg.Connection[DictRow]) -> None:

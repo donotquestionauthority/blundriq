@@ -56,7 +56,7 @@ def _per_day(conn: Connection[Any], sql: LiteralString, tz: str) -> dict[date, i
 
 _PUZZLE_DAYS: LiteralString = """
 SELECT (attempt_at AT TIME ZONE %(tz)s)::date AS d, count(DISTINCT puzzle_id) AS n
-FROM puzzle_attempts WHERE player_id = %(pid)s AND solved GROUP BY 1
+FROM puzzle_attempts WHERE player_id = %(pid)s AND solved AND counted GROUP BY 1
 """
 
 _GAME_DAYS: LiteralString = """
@@ -91,7 +91,7 @@ e AS (
     FROM b
 )
 SELECT e.today, e.next_day_at, e.at,
-       count(DISTINCT a.puzzle_id) FILTER (WHERE a.solved) AS solved
+       count(DISTINCT a.puzzle_id) FILTER (WHERE a.solved AND a.counted) AS solved
 FROM e LEFT JOIN puzzle_attempts a
   ON a.player_id = %(pid)s
  AND a.attempt_at >= e.lo AND a.attempt_at < e.late_end + interval '3 hours'
