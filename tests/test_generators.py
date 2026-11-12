@@ -913,7 +913,7 @@ def test_the_steady_state_and_a_retitle_fetch_no_line_payload(clean: psycopg.Con
     _deviation(clean, 1)
     _deviation(clean, 2)
     rows = _worklist_rows(clean)
-    assert [(r["line_id"], r["moves"] is not None) for r in rows] == [(1, True), (2, False)]
+    assert sorted((r["line_id"], r["moves"] is not None) for r in rows) == [(1, True), (2, False)]
     repertoire.generate(clean, _config())
     assert all(r["moves"] is None and r["fen_sequence"] is None for r in _worklist_rows(clean))
     clean.execute("UPDATE chapters SET title = 'Renamed' WHERE id = 1")
