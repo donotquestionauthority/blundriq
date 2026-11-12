@@ -17,6 +17,8 @@ a rerun.
 
 from __future__ import annotations
 
+import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, LiteralString, cast
 
@@ -119,12 +121,18 @@ _ACTIVE_LINES = """
 """
 
 
-def active_lines(conn: Connection[Any]) -> list[Line]:
-    rows = conn.execute(
-        f"SELECT rl.id AS line_id, bk.id AS book_id, ch.id AS chapter_id, bk.color, rl.moves, rl.fen_sequence"
-        f" {_ACTIVE_LINES} ORDER BY rl.id",
-        (PLAYER_ID,),
-    ).fetchall()
+def active_lines(conn: Connection[Any], colours: Iterable[str] | None = None) -> list[Line]:
+    """Every active line, or only those of `colours` — exact for matching, since `match_game`
+    compares a game only with lines of the player's colour in it."""
+    query = (
+        "SELECT rl.id AS line_id, bk.id AS book_id, ch.id AS chapter_id, bk.color, rl.moves, rl.fen_sequence"
+        f" {_ACTIVE_LINES}"
+    )
+    params: tuple[Any, ...] = (PLAYER_ID,)
+    if colours is not None:
+        query += " AND bk.color = ANY(%s)"
+        params = (PLAYER_ID, sorted(set(colours)))
+    rows = conn.execute(query + " ORDER BY rl.id", params).fetchall()
     return [
         Line(r["line_id"], r["book_id"], r["chapter_id"], r["color"], list(r["moves"]), list(r["fen_sequence"]))
         for r in rows
@@ -154,54 +162,72 @@ def unmatched_games(conn: Connection[Any], window: int) -> list[dict[str, Any]]:
 
 
 def write_results(conn: Connection[Any], results: list[MatchResult], no_match_ids: list[int]) -> None:
-    """One transaction: upsert result rows, replace their line rows, flag the rest."""
+    """One transaction: upsert result rows, replace their line rows, flag the rest. A fixed
+    number of statements whatever the number of games; each game appears at most once."""
+    if len({r.chess_game_id for r in results}) != len(results):
+        raise ValueError("a game appears twice in one write")
     with conn.transaction():
         if no_match_ids:
             conn.execute(
                 "UPDATE player_games SET no_repertoire_match = TRUE WHERE player_id = %s AND chess_game_id = ANY(%s)",
                 (PLAYER_ID, no_match_ids),
             )
-        ids: list[int] = []
+        if not results:
+            return
+        rows = conn.execute(
+            """
+            INSERT INTO game_repertoire_results
+                (chess_game_id, player_id, book_id, chapter_id, deviated_at_ply,
+                 deviation_by, expected_move, played_move, deviation_fen)
+            SELECT u.game, %(pid)s, u.book, u.chapter, u.ply, u.by, u.expected, u.played, u.fen
+            FROM unnest(%(game)s::bigint[], %(book)s::int[], %(chapter)s::int[], %(ply)s::int[],
+                        %(by)s::text[], %(expected)s::text[], %(played)s::text[], %(fen)s::text[])
+                 AS u(game, book, chapter, ply, by, expected, played, fen)
+            ON CONFLICT (chess_game_id, player_id) DO UPDATE
+            SET book_id = EXCLUDED.book_id, chapter_id = EXCLUDED.chapter_id,
+                deviated_at_ply = EXCLUDED.deviated_at_ply, deviation_by = EXCLUDED.deviation_by,
+                expected_move = EXCLUDED.expected_move, played_move = EXCLUDED.played_move,
+                deviation_fen = EXCLUDED.deviation_fen
+            RETURNING id, chess_game_id
+            """,
+            {
+                "pid": PLAYER_ID,
+                "game": [r.chess_game_id for r in results],
+                "book": [r.book_id for r in results],
+                "chapter": [r.chapter_id for r in results],
+                "ply": [r.deviated_at_ply for r in results],
+                "by": [r.deviation_by for r in results],
+                "expected": [r.expected_move for r in results],
+                "played": [r.played_move for r in results],
+                "fen": [r.deviation_fen for r in results],
+            },
+        ).fetchall()
+        result_id = {int(row["chess_game_id"]): int(row["id"]) for row in rows}
+        conn.execute(
+            "DELETE FROM game_result_lines WHERE game_repertoire_result_id = ANY(%s)", (list(result_id.values()),)
+        )
+        grr: list[int] = []
+        line: list[int] = []
+        ply: list[int] = []
         for r in results:
-            row = conn.execute(
-                """
-                INSERT INTO game_repertoire_results
-                    (chess_game_id, player_id, book_id, chapter_id, deviated_at_ply,
-                     deviation_by, expected_move, played_move, deviation_fen)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (chess_game_id, player_id) DO UPDATE
-                SET book_id = EXCLUDED.book_id, chapter_id = EXCLUDED.chapter_id,
-                    deviated_at_ply = EXCLUDED.deviated_at_ply, deviation_by = EXCLUDED.deviation_by,
-                    expected_move = EXCLUDED.expected_move, played_move = EXCLUDED.played_move,
-                    deviation_fen = EXCLUDED.deviation_fen
-                RETURNING id
-                """,
-                (
-                    r.chess_game_id,
-                    PLAYER_ID,
-                    r.book_id,
-                    r.chapter_id,
-                    r.deviated_at_ply,
-                    r.deviation_by,
-                    r.expected_move,
-                    r.played_move,
-                    r.deviation_fen,
-                ),
-            ).fetchone()
-            assert row is not None
-            grr_id = int(row["id"])
-            ids.append(grr_id)
-            conn.execute("DELETE FROM game_result_lines WHERE game_repertoire_result_id = %s", (grr_id,))
-            with conn.cursor() as cur:
-                cur.executemany(
-                    "INSERT INTO game_result_lines (game_repertoire_result_id, line_id, matched_ply)"
-                    " VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-                    [(grr_id, line_id, r.deviated_at_ply) for line_id in r.line_ids],
-                )
+            for line_id in r.line_ids:
+                grr.append(result_id[r.chess_game_id])
+                line.append(line_id)
+                ply.append(r.deviated_at_ply)
+        conn.execute(
+            "INSERT INTO game_result_lines (game_repertoire_result_id, line_id, matched_ply)"
+            " SELECT * FROM unnest(%s::bigint[], %s::int[], %s::int[]) ON CONFLICT DO NOTHING",
+            (grr, line, ply),
+        )
 
 
-def _match_all(conn: Connection[Any], games: list[dict[str, Any]]) -> dict[str, int]:
-    lines = active_lines(conn)
+def _match_all(
+    conn: Connection[Any], games: list[dict[str, Any]], timings: dict[str, float] | None = None
+) -> dict[str, int]:
+    """Match and write these games. `lines` in the counts is the active lines of the games'
+    colours, the lines they were matched against."""
+    started = time.perf_counter()
+    lines = active_lines(conn, {str(g["player_color"]) for g in games})
     results: list[MatchResult] = []
     no_match: list[int] = []
     for g in games:
@@ -210,7 +236,11 @@ def _match_all(conn: Connection[Any], games: list[dict[str, Any]]) -> dict[str, 
             no_match.append(g["chess_game_id"])
         else:
             results.append(r)
+    matched_at = time.perf_counter()
     write_results(conn, results, no_match)
+    if timings is not None:
+        timings["match"] = matched_at - started
+        timings["write"] = time.perf_counter() - matched_at
     return {"candidates": len(games), "matched": len(results), "no_match": len(no_match), "lines": len(lines)}
 
 
@@ -275,8 +305,11 @@ def games_touched_by(conn: Connection[Any], line_ids: list[int], *, activated: b
     return [int(r["id"]) for r in rows]
 
 
-def rematch_games(conn: Connection[Any], game_ids: list[int]) -> dict[str, int]:
-    """Match these games again from scratch against the current active lines."""
+def rematch_games(
+    conn: Connection[Any], game_ids: list[int], timings: dict[str, float] | None = None
+) -> dict[str, int]:
+    """Match these games again from scratch against the current active lines. `timings`, when
+    given, receives the seconds spent matching and writing."""
     if not game_ids:
         return {"candidates": 0, "matched": 0, "no_match": 0, "lines": 0}
     with conn.transaction():
@@ -300,4 +333,42 @@ def rematch_games(conn: Connection[Any], game_ids: list[int]) -> dict[str, int]:
             """,
         )
         games = conn.execute(query, {"pid": PLAYER_ID, "ids": game_ids}).fetchall()
-        return _match_all(conn, games)
+        return _match_all(conn, games, timings)
+
+
+def games_a_new_line_can_change(
+    conn: Connection[Any], line_id: int, colour: str, line_fens: list[str], window: int
+) -> tuple[list[int], int]:
+    """The in-window games holding the line's first position after the start whose rows a
+    rematch can change now that this active line exists, and how many games were candidates.
+    A game of the line's colour whose result matched some line to ply b keeps it unless the new
+    line matches it at least as far (m >= b: it ties or wins, and the unchanged matcher
+    decides); one with no result row, flagged or not, is rematched. A game of the other colour
+    never consults the line, so a result row it holds stands; one without a row is rematched as
+    any rematch would — pending (imported since the last match), or flagged by a match that may
+    predate lines added while the game was outside the window. Relies on what every repertoire
+    change keeps true of a stored result: it is `match_game` over the active lines as they were
+    before this one."""
+    query = cast(
+        LiteralString,
+        f"""
+        WITH {window_cte()},
+        keys AS (SELECT array_agg(DISTINCT rl.position_keys[2]) AS ks FROM repertoire_lines rl
+                 WHERE rl.id = %(line)s AND array_length(rl.position_keys, 1) >= 2)
+        SELECT cg.id, cg.fen_sequence, grr.deviated_at_ply
+        FROM chess_games cg
+        CROSS JOIN keys
+        JOIN player_games pg ON pg.chess_game_id = cg.id AND pg.player_id = %(pid)s
+        LEFT JOIN game_repertoire_results grr ON grr.chess_game_id = cg.id AND grr.player_id = %(pid)s
+        WHERE cg.id IN (SELECT chess_game_id FROM window_games) AND cg.position_keys && keys.ks
+          AND (pg.player_color = %(colour)s OR grr.id IS NULL)
+        """,
+    )
+    rows = conn.execute(query, {"pid": PLAYER_ID, "window": window, "line": line_id, "colour": colour}).fetchall()
+    changed: list[int] = []
+    for r in rows:
+        fens = r["fen_sequence"]
+        stored = r["deviated_at_ply"]
+        if fens is None or stored is None or subsequence_match_length(list(fens), line_fens) >= int(stored):
+            changed.append(int(r["id"]))
+    return changed, len(rows)

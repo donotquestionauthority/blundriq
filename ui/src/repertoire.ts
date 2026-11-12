@@ -476,7 +476,16 @@ export interface DuplicateLine {
   active: boolean;
   kind: "identical" | "prefix";
 }
-export const addLine = (body: NewLineBody) => api.post<NewLineResponse>("/repertoire/lines", body);
+/** A save the server confirmed: by its 201 (`saved`), or, after a first try that got no answer,
+ *  by refusing the retry as an identical line of the same name already in the chapter the modal
+ *  named (`recovered`: the destination it sent — `null` for the catch-all — and no rematch count,
+ *  which nothing reported). */
+export type LineAdded = { kind: "saved"; lineId: number; chapterId: number; bookId: number; rematched: number } | { kind: "recovered"; lineId: number; chapterId: number | null };
+export const addLine = (body: NewLineBody, signal?: AbortSignal) => api.post<NewLineResponse>("/repertoire/lines", body, signal);
+/** A line name as the server stores it: trimmed, inner whitespace one space. JavaScript's `\s`
+ *  and Python's `str.split()` differ only on a few control separators and U+FEFF; a name holding
+ *  one fails to match here and is shown as a duplicate, never as saved. */
+export const storedLineName = (name: string) => name.trim().split(/\s+/).join(" ");
 export const deleteLine = (lineId: number) => api.del<{ detail: string; loads: number }>(`/repertoire/lines/${lineId}`);
 export function duplicateOf(err: unknown): DuplicateLine | null {
   if (!(err instanceof ApiError) || err.status !== 409) return null;

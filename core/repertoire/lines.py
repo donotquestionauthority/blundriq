@@ -28,6 +28,7 @@ its spaced-repetition state and attempts, the result rows citing the line, and i
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Literal
 
 import chess
@@ -171,12 +172,15 @@ def add_manual(
 ) -> Row:
     """Insert one manual line from the start position and match the window games it can
     reach. Exactly one of `chapter_id` or `catch_all=(colour, family)` names the destination.
-    Returns `{id, chapter_id, book_id, rematch}`. The caller commits."""
+    Returns `{id, chapter_id, book_id, rematch}` and, for the caller's log, `timings` (seconds
+    per step) and `counts` (plies, candidate games, games rematched). The caller commits."""
     name = " ".join(line_name.split())
     if not 1 <= len(name) <= MAX_LINE_NAME:
         raise InvalidLine(f"a line name has 1 to {MAX_LINE_NAME} characters")
     if (chapter_id is None) == (catch_all is None):
         raise InvalidLine("one destination: a chapter or the catch-all")
+    started = time.perf_counter()
+    timings: dict[str, float] = {}
     with conn.transaction():
         matching.lock(conn)
         if chapter_id is None:
@@ -189,8 +193,10 @@ def add_manual(
         prepared = importing.Prepared(
             0, 0, importing.LineIn(name=name, moves=sans), fens, importing.signatures(sans, fens, colour)
         )
-        existing, dirty = importing.existing_index(conn)
+        gate_at = time.perf_counter()
+        existing, dirty = importing.existing_index(conn, colour=colour)
         (verdict,) = importing.decide(existing, dirty, [prepared])
+        timings["gate"] = time.perf_counter() - gate_at
         if not verdict.active:
             assert verdict.fen is not None and verdict.move is not None and verdict.reason is not None
             rivals = conflicts.holders(conn, verdict.fen, verdict.move)
@@ -203,9 +209,19 @@ def add_manual(
         ).fetchone()
         assert row is not None
         line_id = int(row["id"])
-        touched = matching.games_touched_by(conn, [line_id], activated=True, window=window)
-        rematch = matching.rematch_games(conn, touched)
-    return {"id": line_id, "chapter_id": int(chapter["id"]), "book_id": int(chapter["book_id"]), "rematch": rematch}
+        select_at = time.perf_counter()
+        changed, candidates = matching.games_a_new_line_can_change(conn, line_id, colour, fens, window)
+        timings["select"] = time.perf_counter() - select_at
+        rematch = matching.rematch_games(conn, changed, timings)
+    timings["total"] = time.perf_counter() - started
+    return {
+        "id": line_id,
+        "chapter_id": int(chapter["id"]),
+        "book_id": int(chapter["book_id"]),
+        "rematch": rematch,
+        "timings": timings,
+        "counts": {"plies": len(sans), "candidates": candidates, "rematched": len(changed)},
+    }
 
 
 def delete(conn: Connection[Any], line_id: int) -> Row | None:

@@ -1,14 +1,57 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import { DEFAULT_DEPTH, useStockfish } from "../engine/useStockfish";
-import { addLine, duplicateOf, refusalOf } from "../repertoire";
-import type { Destination, GapCard, NewLineBody, NewLineResponse, Refusal } from "../repertoire";
+import { addLine, duplicateOf, refusalOf, storedLineName } from "../repertoire";
+import type { Destination, GapCard, LineAdded, NewLineBody, NewLineResponse, Refusal } from "../repertoire";
+import { errorLabel } from "../utils/errorLabel";
 import { played, seedFor, START, turnAfter } from "./lineSeed";
 import { MoveBuilder } from "./MoveBuilder";
 import type { MoveBuilderState } from "./MoveBuilder";
 
 const input = "mt-1 w-full rounded border border-zinc-300 bg-white px-3 py-1.5 text-sm disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900";
 const CATCH_ALL = "catch-all";
+/** How long one save may go unanswered (a sleeping free-tier API takes ~50 s to wake). */
+export const SAVE_BOUND_MS = 90_000;
+const NO_ANSWER = "The save did not answer, so the line may or may not be in. Check the chapter before saving again.";
+
+/** A save that ended without the server's answer: aborted at the bound, or the request failed. */
+class NoAnswer extends Error {
+  name = "NoAnswer";
+}
+
+async function postBounded(body: NewLineBody): Promise<NewLineResponse> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), SAVE_BOUND_MS);
+  try {
+    return await addLine(body, ctl.signal);
+  } catch (e) {
+    throw e instanceof ApiError ? e : new NoAnswer();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const saved = (made: NewLineResponse): LineAdded => ({ kind: "saved", lineId: made.id, chapterId: made.chapter_id, bookId: made.book_id, rematched: made.rematch.matched });
+
+/** The save, retried once when the first try got no answer. The retry's answer decides: a 201
+ *  saved it now; an identical line of the same name in the chapter sent means the first try
+ *  landed. Throws the answer to show, or `NoAnswer` when neither try got one. */
+async function saveLine(body: NewLineBody, onRetry: () => void): Promise<LineAdded> {
+  try {
+    return saved(await postBounded(body));
+  } catch (e) {
+    if (!(e instanceof NoAnswer)) throw e;
+  }
+  onRetry();
+  try {
+    return saved(await postBounded(body));
+  } catch (e) {
+    const dup = duplicateOf(e);
+    // A first try that landed inserted the line switched on; a switched-off twin is the duplicate it always was.
+    if (dup?.kind === "identical" && dup.active && storedLineName(dup.line_name) === storedLineName(body.line_name)) return { kind: "recovered", lineId: dup.line_id, chapterId: body.chapter_id ?? null };
+    throw e;
+  }
+}
 
 function defaultName(card: GapCard): string {
   const family = card.family ?? "Unnamed opening";
@@ -30,7 +73,7 @@ function refusalText(r: Refusal): string {
  * a name. Save is enabled only while the line ends on the player's move and has at least one own
  * move past the gap; the server's rule is the same rule. Mount it only while open, keyed per card.
  */
-export function AddLineModal({ card, destinations, prefillPlies, maxPlies, onClose, onAdded }: { card: GapCard; destinations: Destination[]; prefillPlies: number; maxPlies: number; onClose: () => void; onAdded: (made: NewLineResponse) => void }) {
+export function AddLineModal({ card, destinations, prefillPlies, maxPlies, onClose, onAdded }: { card: GapCard; destinations: Destination[]; prefillPlies: number; maxPlies: number; onClose: () => void; onAdded: (added: LineAdded) => void }) {
   const colour = card.colour === "white" ? "w" : "b";
   const stemLength = useMemo(() => played(card.stem ?? []).length, [card.stem]);
   const seed = useMemo(() => seedFor(card, prefillPlies, maxPlies), [card, prefillPlies, maxPlies]);
@@ -43,6 +86,7 @@ export function AddLineModal({ card, destinations, prefillPlies, maxPlies, onClo
   });
   const [name, setName] = useState(() => defaultName(card));
   const [submitting, setSubmitting] = useState(false);
+  const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // The browser engine for Extend, at the saved Explore depth (read once; the hook's default until
@@ -82,21 +126,32 @@ export function AddLineModal({ card, destinations, prefillPlies, maxPlies, onClo
   async function save() {
     if (!canSave) return;
     setSubmitting(true);
+    setChecking(false);
     setError(null);
     const body: NewLineBody = { moves: line.solutionLine, line_name: name.trim() };
     if (destination === CATCH_ALL) body.catch_all = { colour: card.colour, family: card.family };
     else body.chapter_id = Number(destination);
+    let added: LineAdded;
     try {
-      const made = await addLine(body);
-      onAdded(made);
-      onClose();
+      added = await saveLine(body, () => setChecking(true));
     } catch (e) {
       const dup = duplicateOf(e);
       const refusal = refusalOf(e);
-      if (dup) setError(dup.kind === "identical" ? `This line is already in the chapter as “${dup.line_name}”${dup.active ? "" : " (switched off)"}.` : `“${dup.line_name}” already teaches this and goes further.`);
+      if (e instanceof NoAnswer) setError(NO_ANSWER);
+      else if (dup) setError(dup.kind === "identical" ? `This line is already in the chapter as “${dup.line_name}”${dup.active ? "" : " (switched off)"}.` : `“${dup.line_name}” already teaches this and goes further.`);
       else if (refusal) setError(refusalText(refusal));
       else setError(e instanceof ApiError ? e.message : "Could not add the line.");
+      setChecking(false);
       setSubmitting(false);
+      return;
+    }
+    // The line is in: whatever the page's own refresh does, the dialog closes and shows no error.
+    try {
+      onAdded(added);
+    } catch (e) {
+      console.error("the page could not take the saved line:", errorLabel(e));
+    } finally {
+      onClose();
     }
   }
 
@@ -134,7 +189,7 @@ export function AddLineModal({ card, destinations, prefillPlies, maxPlies, onClo
               Line name
               <input type="text" aria-label="Line name" value={name} maxLength={120} disabled={submitting} onChange={(e) => setName(e.target.value)} className={`${input} normal-case tracking-normal text-zinc-900 dark:text-zinc-100`} />
             </label>
-            <p className="min-h-[20px] text-xs text-zinc-500">{hint}</p>
+            <p className="min-h-[20px] text-xs text-zinc-500">{checking ? "Checking whether the line was saved…" : hint}</p>
             <p role="alert" className="min-h-[20px] text-xs text-red-600 dark:text-red-400">
               {error}
             </p>
@@ -143,7 +198,7 @@ export function AddLineModal({ card, destinations, prefillPlies, maxPlies, onClo
                 Cancel
               </button>
               <button type="button" disabled={!canSave} onClick={save} className="rounded bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900">
-                {submitting ? "Saving…" : "Save line"}
+                {checking ? "Checking…" : submitting ? "Saving…" : "Save line"}
               </button>
             </div>
           </div>

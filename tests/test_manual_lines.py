@@ -13,11 +13,11 @@ import pytest
 from psycopg import sql
 from psycopg.rows import DictRow, dict_row
 
-from core import schema
+from core import oracle, schema
 from core.constants import CATCH_ALL_TITLE, PLAYER_ID
 from core.puzzles import stats
 from core.puzzles.generate import repertoire as gen
-from core.repertoire import importing, lines, read
+from core.repertoire import importing, lines, matching, read
 from core.settings import Settings
 from tests import repertoire_helpers as h
 from tests.test_schema import FIXTURES, _scratch
@@ -149,6 +149,164 @@ def test_a_manual_line_is_effective_for_the_read_side(db: psycopg.Connection[Dic
     lines.add_manual(db, moves=SCANDI_GAP, line_name="Scandi: 4.d4", window=0, chapter_id=901)
     fen = importing.spine(None, SCANDI_GAP[:-1])[-1]
     assert read.coverage(db, fen)["status"] in ("covered", "match")
+
+
+# --- which games a new line rematches ----------------------------------------------------
+
+NAJDORF = ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6"]
+ALAPIN = ["e4", "c5", "c3", "d5"]
+QGD = ["d4", "d5", "c4", "e6"]
+
+
+def _rematch_fixture(db: psycopg.Connection[DictRow]) -> None:
+    """Both colours' books and games through shared first moves, matched once by the matcher;
+    then one Black game imported after the match, so it has no result row and no flag."""
+    h.book(db, 902, "Black", "black")
+    h.chapter(db, 902, 902, "Lines")
+    h.line(db, 902, 902, "Najdorf", NAJDORF)
+    h.line(db, 903, 902, "Alapin", ALAPIN)
+    h.line(db, 904, 902, "QGD", QGD)
+    games = {
+        11: (NAJDORF + ["Be2", "e5", "Nb3", "Be7"], "black"),  # the Najdorf whole: b = 10
+        12: (["e4", "c5", "Nf3", "d6", "Bb5+", "Bd7", "Bxd7+", "Qxd7"], "black"),  # leaves at Bb5+: b = 4
+        13: (ALAPIN + ["exd5", "Qxd5", "d4", "Nf6"], "black"),  # the Alapin whole: b = 4
+        14: (["e4", "c5", "Nc3", "Nc6", "g3", "g6"], "black"),  # Najdorf and Alapin tied: b = 2
+        15: (["c4", "e5", "Nc3", "Nf6", "g3", "d5"], "black"),  # no Black line: flagged no-match
+        16: (QGD + ["Nc3", "Nf6"], "black"),  # never holds 1.e4
+        21: (ITALIAN + ["Nf6", "d4"], "white"),  # the Italian whole: b = 7
+        22: (["e4", "c5", "Nf3", "d6", "d4", "cxd4"], "white"),  # White through Black's Sicilian: b = 1
+        23: (["e4", "e5", "Nf3", "Nc6", "Bb5", "a6"], "white"),  # leaves the Italian at Bb5: b = 4
+    }
+    for gid, (moves, colour) in games.items():
+        h.game(db, gid, moves, color=colour, days_ago=gid)
+    matching.match_player(db, 100)
+    h.game(db, 17, ["e4", "c5", "Nf3", "d6", "d4", "Nf6"], color="black", days_ago=0.5)  # after the match
+
+
+def _tables(conn: psycopg.Connection[DictRow], new_line: int) -> tuple[Any, ...]:
+    """Every matcher output, keyed so two runs that minted different ids compare equal."""
+    fields = ", ".join(f"grr.{f}" for f in oracle.RESULT_FIELDS)
+    results = conn.execute(
+        f"SELECT grr.chess_game_id, {fields} FROM game_repertoire_results grr ORDER BY 1"  # type: ignore[arg-type]
+    ).fetchall()
+    cited = conn.execute(
+        "SELECT grr.chess_game_id, grl.line_id, grl.matched_ply FROM game_result_lines grl"
+        " JOIN game_repertoire_results grr ON grr.id = grl.game_repertoire_result_id ORDER BY 1, 2"
+    ).fetchall()
+    flags = conn.execute("SELECT chess_game_id, no_repertoire_match FROM player_games ORDER BY 1").fetchall()
+    return (
+        [tuple(r.values()) for r in results],
+        [(r["chess_game_id"], "new" if r["line_id"] == new_line else r["line_id"], r["matched_ply"]) for r in cited],
+        [tuple(r.values()) for r in flags],
+    )
+
+
+def _reference_selection(
+    conn: psycopg.Connection[Any], line_id: int, colour: str, line_fens: list[str], window: int
+) -> tuple[list[int], int]:
+    touched = matching.games_touched_by(conn, [line_id], activated=True, window=window)
+    return touched, len(touched)
+
+
+def _add_both_ways(
+    db: psycopg.Connection[DictRow],
+    monkeypatch: pytest.MonkeyPatch,
+    moves: list[str],
+    chapter_id: int,
+    window: int = 100,
+) -> tuple[tuple[Any, ...], tuple[Any, ...], dict[str, int]]:
+    """The tables after add_manual and after the reference (every touched game rematched,
+    written a round trip per game), each in its own rolled-back savepoint."""
+    out: list[tuple[Any, ...]] = []
+    counts: dict[str, int] = {}
+    for reference in (False, True):
+        with monkeypatch.context() as m:
+            if reference:
+                m.setattr(matching, "games_a_new_line_can_change", _reference_selection)
+                m.setattr(matching, "write_results", oracle.write_results_per_row)
+            try:
+                with db.transaction():
+                    made = lines.add_manual(db, moves=moves, line_name="new", window=window, chapter_id=chapter_id)
+                    out.append(_tables(db, int(made["id"])))
+                    if not reference:
+                        counts = made["counts"]
+                    raise psycopg.Rollback
+            except psycopg.Rollback:
+                pass
+    return out[0], out[1], counts
+
+
+@pytest.mark.parametrize(
+    ("moves", "chapter_id", "candidates", "rematched"),
+    [
+        # Candidates are the games holding the line's first move of its colour, and pending games
+        # (no row, no flag) of the other: Black 1.e4 games 11, 12, 13, 14 and 17; Black 1.c4 game
+        # 15; White 1.e4 games 21, 22, 23 with pending Black game 17.
+        (NAJDORF + ["Be2", "e5"], 902, 5, 4),  # 11 beaten (12 > 10), 12 tied (4), 14 (2), 17 (no row)
+        (["e4", "c5", "Nf3", "d6", "Bb5+", "Bd7"], 902, 5, 3),  # 12 beaten (6 > 4), 14, 17
+        (["e4", "c5", "Nf3", "d6", "Bb5+", "Nd7"], 902, 5, 3),  # 12 beaten by a line it leaves (5 > 4)
+        (["e4", "c5", "Nf3", "d6", "c3", "Nf6"], 902, 5, 3),  # 12 tied at its stored ply (4 = 4)
+        (["e4", "c5", "Nc3", "Nc6", "Nf3", "g6"], 902, 5, 2),  # 14 beaten (4 > 2), 17; short of 11-13
+        (["c4", "e5", "Nc3", "Nf6"], 902, 1, 1),  # the no-match game becomes a match
+        (["e4", "c5", "Nf3", "d6", "d4"], 901, 4, 2),  # White through Black's Sicilian: 22, pending 17
+    ],
+)
+def test_a_new_line_rematches_only_games_it_can_change_and_the_tables_match_a_full_rematch(
+    db: psycopg.Connection[DictRow],
+    monkeypatch: pytest.MonkeyPatch,
+    moves: list[str],
+    chapter_id: int,
+    candidates: int,
+    rematched: int,
+) -> None:
+    _rematch_fixture(db)
+    new, reference, counts = _add_both_ways(db, monkeypatch, moves, chapter_id)
+    assert new == reference
+    assert (counts["candidates"], counts["rematched"]) == (candidates, rematched)
+
+
+def test_a_game_flagged_before_lines_it_now_matches_is_rematched_whatever_the_new_lines_colour(
+    db: psycopg.Connection[DictRow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Black game flagged no-match, then a Black line it matches added while the game was
+    outside the window (so the flag is stale), then a White line through the same first move:
+    the save rematches the Black game as a full rematch would, because a flag can predate lines
+    the game never met."""
+    h.book(db, 902, "Black", "black")
+    h.chapter(db, 902, 902, "Lines")
+    h.line(db, 902, 902, "QGD", QGD)
+    h.game(db, 31, ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5"], color="black", days_ago=60)  # no Black 1.e4 line
+    h.game(db, 32, ITALIAN + ["Nf6"], color="white", days_ago=1)
+    matching.match_player(db, 100)
+    flagged = db.execute("SELECT no_repertoire_match FROM player_games WHERE chess_game_id = 31").fetchone()
+    assert flagged == {"no_repertoire_match": True}
+    lines.add_manual(db, moves=["e4", "e5", "Nf3", "Nc6"], line_name="Open", window=1, chapter_id=902)
+    new, reference, counts = _add_both_ways(db, monkeypatch, ITALIAN + ["Nf6", "d4"], 901)
+    assert new == reference
+    assert any(row[0] == 31 for row in new[0])  # the stale flag is healed: game 31 now has a result
+    assert (counts["candidates"], counts["rematched"]) == (2, 2)  # White's game 32, Black's flagged 31
+
+
+def test_a_narrow_window_leaves_the_games_outside_it_as_a_full_rematch_does(
+    db: psycopg.Connection[DictRow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _rematch_fixture(db)
+    new, reference, counts = _add_both_ways(db, monkeypatch, NAJDORF + ["Be2", "e5"], 902, window=4)
+    assert new == reference
+    assert counts["candidates"] < 5
+
+
+def test_the_gate_index_of_one_colour_is_that_colours_part_of_the_whole(db: psycopg.Connection[DictRow]) -> None:
+    """A key is a full FEN whose side to move is the book's colour, so reading one colour's books
+    gives exactly the entries of the whole index for that side, and the same disagreements."""
+    _rematch_fixture(db)
+    h.line(db, 905, 902, "Rival", ["e4", "c5", "Nf3", "Nc6"])  # disagrees with the Najdorf at Nf3
+    whole, whole_dirty = importing.existing_index(db)
+    for colour, side in (("white", "w"), ("black", "b")):
+        part, dirty = importing.existing_index(db, colour=colour)
+        assert part == {k: v for k, v in whole.items() if k.split(" ")[1] == side} and part
+        assert dirty == {k for k in whole_dirty if k.split(" ")[1] == side}
+    assert importing.existing_index(db, colour="black")[1]  # the disagreement is Black's
 
 
 # --- the catch-all ----------------------------------------------------------------------

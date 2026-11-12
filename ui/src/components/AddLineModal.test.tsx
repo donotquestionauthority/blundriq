@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EngineEval } from "../engine/useStockfish";
 import type { GapCard } from "../repertoire";
-import { AddLineModal } from "./AddLineModal";
+import { AddLineModal, SAVE_BOUND_MS } from "./AddLineModal";
 import { seedFor } from "./lineSeed";
 
 // A board whose "play" button drops the next queued move.
@@ -31,7 +31,10 @@ vi.mock("../engine/useStockfish", async (importOriginal) => {
 });
 
 type Reply = { status: number; body: unknown };
-function stubFetch(routes: Record<string, (method: string, body: Record<string, unknown> | null) => Reply>) {
+/** `"reject"`: the request fails without an answer (fetch rejects); `"hang"`: no answer until the
+ *  caller aborts it. */
+type Outcome = Reply | "reject" | "hang";
+function stubFetch(routes: Record<string, (method: string, body: Record<string, unknown> | null) => Outcome | Promise<Reply>>) {
   const calls: Array<{ path: string; method: string; body: Record<string, unknown> | null }> = [];
   vi.stubGlobal(
     "fetch",
@@ -41,7 +44,12 @@ function stubFetch(routes: Record<string, (method: string, body: Record<string, 
       calls.push(call);
       const h = routes[rawPath];
       if (!h) return { ok: false, status: 404, statusText: "Not Found", json: async () => ({ detail: "no route" }) };
-      const r = h(call.method, call.body);
+      const r = await h(call.method, call.body);
+      if (r === "reject") throw new TypeError("Load failed");
+      if (r === "hang")
+        return new Promise((_, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")));
+        });
       return { ok: r.status < 400, status: r.status, statusText: String(r.status), json: async () => r.body };
     }),
   );
@@ -195,3 +203,131 @@ describe("AddLineModal", () => {
     expect(screen.getByRole("button", { name: "Save line" })).toBeEnabled();
   });
 });
+
+describe("a save that gets no answer", () => {
+  const MADE = { id: 77, chapter_id: 1, book_id: 1, rematch: { candidates: 5, matched: 2, no_match: 0, lines: 9 } };
+  const identical = (name: string) => ({ status: 409, body: { detail: "duplicate", duplicate: { line_id: 77, line_name: name, active: true, kind: "identical" } } });
+  /** `/repertoire/lines` answers each try with the next outcome. */
+  function tries(...outcomes: Outcome[]) {
+    const queue = [...outcomes];
+    const calls = stubFetch({ "/settings": () => ({ status: 200, body: {} }), "/repertoire/lines": () => queue.shift() ?? "reject" });
+    return () => calls.filter((c) => c.path === "/repertoire/lines");
+  }
+  function open(onAdded = vi.fn(), onClose = vi.fn()) {
+    render(<AddLineModal card={card()} destinations={DESTINATIONS} prefillPlies={10} maxPlies={60} onClose={onClose} onAdded={onAdded} />);
+    return { onAdded, onClose };
+  }
+
+  it("is retried once; a 201 then is a normal save", async () => {
+    const posts = tries("reject", { status: 201, body: MADE });
+    const { onAdded, onClose } = open();
+    fireEvent.click(screen.getByRole("button", { name: "Save line" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(onAdded).toHaveBeenCalledWith({ kind: "saved", lineId: 77, chapterId: 1, bookId: 1, rematched: 2 });
+    expect(posts()).toHaveLength(2);
+    expect(posts()[1].body).toEqual(posts()[0].body);
+  });
+
+  it("is confirmed by the retry finding an identical line of the same name in the chosen chapter", async () => {
+    const posts = tries("reject", identical("Italian: d6 sideline"));
+    const { onAdded, onClose } = open();
+    fireEvent.change(screen.getByLabelText("Line name"), { target: { value: "  Italian:   d6 sideline " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save line" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(onAdded).toHaveBeenCalledWith({ kind: "recovered", lineId: 77, chapterId: 1 });
+    expect(posts()).toHaveLength(2);
+    expect(screen.getByRole("alert")).toHaveTextContent("");
+  });
+
+  it("names no chapter when the catch-all was sent", async () => {
+    tries("reject", identical("Italian Game — after d6"));
+    const { onAdded } = open();
+    fireEvent.change(screen.getByLabelText("Book and chapter"), { target: { value: "catch-all" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save line" }));
+    await waitFor(() => expect(onAdded).toHaveBeenCalledWith({ kind: "recovered", lineId: 77, chapterId: null }));
+  });
+
+  it("a switched-off identical line of the same name is the duplicate it always was", async () => {
+    tries("reject", { status: 409, body: { detail: "duplicate", duplicate: { line_id: 5, line_name: "Italian Game — after d6", active: false, kind: "identical" } } });
+    const { onAdded } = open();
+    fireEvent.click(screen.getByRole("button", { name: "Save line" }));
+    await screen.findByText("This line is already in the chapter as “Italian Game — after d6” (switched off).");
+    expect(onAdded).not.toHaveBeenCalled();
+  });
+
+  it("says it is checking while the retry is out", async () => {
+    let answer: (r: Reply) => void = () => undefined;
+    const second = new Promise<Reply>((resolve) => (answer = resolve));
+    const queue: Array<Outcome | Promise<Reply>> = ["reject", second];
+    stubFetch({ "/settings": () => ({ status: 200, body: {} }), "/repertoire/lines": () => queue.shift() ?? "reject" });
+    const { onAdded } = open();
+    fireEvent.click(screen.getByRole("button", { name: "Save line" }));
+    expect(await screen.findByRole("button", { name: "Checking…" })).toBeDisabled();
+    expect(screen.getByText("Checking whether the line was saved…")).toBeInTheDocument();
+    answer({ status: 201, body: MADE });
+    await waitFor(() => expect(onAdded).toHaveBeenCalledWith(expect.objectContaining({ kind: "saved" })));
+  });
+
+  it("an identical line under another name is the duplicate it always was", async () => {
+    tries("reject", identical("Older"));
+    const { onAdded, onClose } = open();
+    fireEvent.click(screen.getByRole("button", { name: "Save line" }));
+    await screen.findByText("This line is already in the chapter as “Older”.");
+    expect(onAdded).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("twice says so and never that the line could not be added", async () => {
+    const posts = tries("reject", "reject");
+    const { onAdded, onClose } = open();
+    fireEvent.click(screen.getByRole("button", { name: "Save line" }));
+    await screen.findByText("The save did not answer, so the line may or may not be in. Check the chapter before saving again.");
+    expect(screen.queryByText("Could not add the line.")).toBeNull();
+    expect(screen.getByRole("button", { name: "Save line" })).toBeEnabled();
+    expect(posts()).toHaveLength(2);
+    expect(onAdded).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("is given up at the bound, then retried", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const posts = tries("hang", { status: 201, body: MADE });
+      const { onAdded } = open();
+      fireEvent.click(screen.getByRole("button", { name: "Save line" }));
+      await vi.advanceTimersByTimeAsync(SAVE_BOUND_MS - 1000);
+      expect(posts()).toHaveLength(1);
+      expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
+      await vi.advanceTimersByTimeAsync(1000);
+      await waitFor(() => expect(onAdded).toHaveBeenCalledWith(expect.objectContaining({ kind: "saved" })));
+      expect(posts()).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("an answer on the first try is never retried", async () => {
+    const posts = tries(identical("Main"));
+    open();
+    fireEvent.click(screen.getByRole("button", { name: "Save line" }));
+    await screen.findByText("This line is already in the chapter as “Main”.");
+    expect(posts()).toHaveLength(1);
+  });
+});
+
+describe("a confirmed save", () => {
+  it("closes the dialog without an error when the page's own handler throws", async () => {
+    stubFetch({ "/settings": () => ({ status: 200, body: {} }), "/repertoire/lines": () => ({ status: 201, body: { id: 77, chapter_id: 1, book_id: 1, rematch: { candidates: 1, matched: 1, no_match: 0, lines: 1 } } }) });
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const onClose = vi.fn();
+    const onAdded = vi.fn(() => {
+      throw new RangeError("the page broke with a message that must not be logged");
+    });
+    render(<AddLineModal card={card()} destinations={DESTINATIONS} prefillPlies={10} maxPlies={60} onClose={onClose} onAdded={onAdded} />);
+    fireEvent.click(screen.getByRole("button", { name: "Save line" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(screen.getByRole("alert")).toHaveTextContent("");
+    expect(logged).toHaveBeenCalledWith("the page could not take the saved line:", "RangeError");
+  });
+});
+

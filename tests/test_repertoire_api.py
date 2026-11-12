@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 import psycopg
@@ -250,7 +251,7 @@ def test_the_gap_card_route(client: TestClient, clean: psycopg.Connection[DictRo
     assert before == after
 
 
-def test_the_manual_line_routes(client: TestClient) -> None:
+def test_the_manual_line_routes(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
     """POST /repertoire/lines: 201 into a chapter and into the catch-all, 409 for a duplicate and
     for a conflict, 404 for a chapter that is not a destination, 422 for a line that does not
     play or no destination; DELETE /repertoire/lines/{id}: 200 then 404."""
@@ -261,9 +262,14 @@ def test_the_manual_line_routes(client: TestClient) -> None:
     with _db.transaction() as conn:
         for seq in ("repertoire_lines_id_seq", "books_id_seq", "chapters_id_seq"):
             conn.execute(f"SELECT setval('{seq}', 1000)")  # type: ignore[arg-type]  # test literals
-    made = client.post("/repertoire/lines", json={"moves": scandi, "line_name": "Scandi", "chapter_id": 1})
+    with caplog.at_level(logging.INFO, logger="api.routes.repertoire"):
+        made = client.post("/repertoire/lines", json={"moves": scandi, "line_name": "Scandi", "chapter_id": 1})
     assert made.status_code == 201
     assert made.json()["chapter_id"] == 1 and made.json()["book_id"] == 1 and "rematch" in made.json()
+    assert "timings" not in made.json() and "counts" not in made.json()
+    (logged,) = [r.getMessage() for r in caplog.records if r.name == "api.routes.repertoire"]
+    assert logged.startswith(f"add line: plies={len(scandi)} candidates=") and "total=" in logged
+    assert "Scandi" not in logged and "Qxd5" not in logged  # counts and durations only
     dup = client.post("/repertoire/lines", json={"moves": scandi, "line_name": "again", "chapter_id": 1})
     assert dup.status_code == 409 and dup.json()["detail"] == "duplicate"
     winawer = ["e4", "e6", "d4", "d5", "Nc3", "Bb4", "e5", "c5", "a3", "Bxc3+", "bxc3"]

@@ -3,7 +3,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import RepertoireReport, { PAGE } from "./RepertoireReport";
 import { decisionKey, decisionLineCount, decisionLines, filterDecisions, filterRows, flatten, sortDecisions, sortRows } from "./reportRows";
-import type { DecisionRow, DecisionsResponse, GapCard, GapsResponse, LineEvidenceOrCount, PracticeNumbers, ReportBook, ReportLine, ReportResponse, ReportTally } from "../repertoire";
+import type { DecisionRow, DecisionsResponse, GapCard, GapsResponse, LineAdded, LineEvidenceOrCount, PracticeNumbers, ReportBook, ReportLine, ReportResponse, ReportTally } from "../repertoire";
 import { readQueue, resetQueueForTests } from "../utils/drillQueue";
 import pageSource from "./RepertoireReport?raw";
 
@@ -14,17 +14,27 @@ vi.mock("../components/PositionCard/LineReaderPanel", () => ({
   LineWalkthrough: ({ lineId, initialPly }: { lineId: number; initialPly?: number }) => <div data-testid="walkthrough" data-line={lineId} data-ply={initialPly} />,
 }));
 vi.mock("../components/AddLineModal", () => ({
-  AddLineModal: ({ card, destinations, prefillPlies, maxPlies, onClose, onAdded }: { card: GapCard; destinations: { id: number }[]; prefillPlies: number; maxPlies: number; onClose: () => void; onAdded: (r: { id: number }) => void }) => (
+  AddLineModal: ({ card, destinations, prefillPlies, maxPlies, onClose, onAdded }: { card: GapCard; destinations: { id: number }[]; prefillPlies: number; maxPlies: number; onClose: () => void; onAdded: (r: LineAdded) => void }) => (
     <div role="dialog" aria-label="Add to repertoire" data-fen={card.fen} data-destinations={destinations.map((d) => d.id).join(",")} data-prefill={prefillPlies} data-max={maxPlies}>
       <button
         type="button"
         onClick={() => {
           // The real modal's sequence after a confirmed save: onAdded, then onClose, same turn.
-          onAdded({ id: 42 });
+          onAdded({ kind: "saved", lineId: 42, chapterId: 1, bookId: 1, rematched: 1 });
           onClose();
         }}
       >
         fake-save
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          // A save the retry confirmed: the line id and the destination sent, no count.
+          onAdded({ kind: "recovered", lineId: 42, chapterId: null });
+          onClose();
+        }}
+      >
+        fake-recovered
       </button>
       <button type="button" onClick={onClose}>
         fake-close
@@ -918,6 +928,26 @@ describe("the line report page", () => {
     fireEvent.click(screen.getByLabelText("Select Added line"));
     expect(readQueue()).toEqual([42]);
     expect(screen.getByRole("button", { name: "Drill queue" })).toBeEnabled();
+  });
+
+  it("a save the retry confirmed marks the card and re-reads both reads like any save", async () => {
+    let saved = false;
+    const calls = stubFetch({
+      "/repertoire/report/decisions": () => ({ status: 200, body: decisionsBody({ rows: [], lines: saved ? { "42": { decisions_total: 3 } } : {} }) }),
+      "/repertoire/report": () => ({ status: 200, body: reportBody(saved ? [{ ...books()[0], chapters: [{ ...books()[0].chapters[0], lines: [line({ id: 42, title: "Added line", games: 0, origin: "manual" })] }] }] : [], { gaps: [card()] }) }),
+    });
+    renderPage();
+    const cards = await screen.findAllByTestId("gap-card");
+    fireEvent.click(within(cards[0]).getByRole("button", { name: "Add to repertoire" }));
+    const before = calls.filter((c) => c.path === "/repertoire/report").length;
+    const beforeDecisions = calls.filter((c) => c.path === "/repertoire/report/decisions").length;
+    saved = true;
+    fireEvent.click(screen.getByText("fake-recovered"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(within(screen.getAllByTestId("gap-card")[0]).getByText(/Added to your repertoire/)).toBeInTheDocument();
+    await waitFor(() => expect(calls.filter((c) => c.path === "/repertoire/report").length).toBe(before + 1));
+    expect(calls.filter((c) => c.path === "/repertoire/report/decisions")).toHaveLength(beforeDecisions + 1);
+    await screen.findByLabelText("Select Added line");
   });
 
   it("after a save, the new rows and the new evidence are joined only as a pair, in either order", async () => {

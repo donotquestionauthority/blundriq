@@ -4,20 +4,24 @@ unmatched games flagged)."""
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import psycopg
 from psycopg.rows import DictRow
 
+from core import oracle
 from core.chess.board import moves_to_fen_sequence
 from core.constants import PLAYER_ID
 from core.repertoire.matching import (
     Line,
+    active_lines,
     match_game,
     match_player,
     player_committed,
     subsequence_match_length,
     who_deviated,
+    write_results,
 )
 
 
@@ -174,3 +178,77 @@ def test_a_run_with_nothing_to_match_reads_no_line(clean: psycopg.Connection[Dic
         c.commit()
     assert Recording.payload_rows == 0
     assert len(Recording.statements) == 3  # the lock, the unmatched games, the count
+
+
+def _written(conn: psycopg.Connection[DictRow]) -> tuple[list[tuple[object, ...]], list[tuple[object, ...]], list[int]]:
+    results = conn.execute(
+        "SELECT chess_game_id, book_id, chapter_id, deviated_at_ply, deviation_by, expected_move, played_move,"
+        " deviation_fen FROM game_repertoire_results ORDER BY chess_game_id"
+    ).fetchall()
+    cited = conn.execute(
+        "SELECT grr.chess_game_id, grl.line_id, grl.matched_ply FROM game_result_lines grl"
+        " JOIN game_repertoire_results grr ON grr.id = grl.game_repertoire_result_id ORDER BY 1, 2"
+    ).fetchall()
+    flagged = conn.execute("SELECT chess_game_id FROM player_games WHERE no_repertoire_match ORDER BY 1").fetchall()
+    return (
+        [tuple(r.values()) for r in results],
+        [tuple(r.values()) for r in cited],
+        [r["chess_game_id"] for r in flagged],
+    )
+
+
+def test_the_batched_writer_writes_what_the_per_row_writer_wrote(clean: psycopg.Connection[DictRow]) -> None:
+    """Same results, same no-match ids: identical rows from `write_results` and the oracle's
+    per-row writer, over an empty table and over rows it replaces; a second call is a no-op."""
+    conn = clean
+    _seed(conn)
+    games = {
+        1: (["e4", "d5", "exd5", "Qxd5", "Nc3", "Qd8"], "black"),  # tied lines, deviates at ply 5
+        2: (["e4", "d5", "exd5", "Qxd5", "Nc3", "Qa5", "d4"], "black"),  # line 1 whole
+        3: (["e4", "c5", "Nf3"], "black"),  # no match
+        4: (["e4", "d5", "Nc3", "d4"], "black"),  # leaves at ply 2
+    }
+    for gid, (moves, colour) in games.items():
+        _game(conn, gid, moves, colour)
+    lines = [
+        _line(1, "black", ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qa5"]),
+        _line(2, "black", ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qd6"]),
+    ]
+    out = [
+        match_game(gid, colour, moves, moves_to_fen_sequence(moves), lines) for gid, (moves, colour) in games.items()
+    ]
+    results = [r for r in out if r is not None]
+    no_match = [gid for gid, r in zip(games, out, strict=True) if r is None]
+    assert len(results) == 3 and no_match == [3] and any(len(r.line_ids) == 2 for r in results)
+    # Rows the next write must replace: game 1 written first as matched to line 2 alone at ply 3.
+    stale = [dataclasses.replace(results[0], line_ids=[2], deviated_at_ply=3, deviation_by="opponent")]
+    seen: list[object] = []
+    for writer in (write_results, oracle.write_results_per_row):
+        try:
+            with conn.transaction():
+                writer(conn, stale, [])
+                writer(conn, results, no_match)
+                first = _written(conn)
+                writer(conn, results, no_match)
+                assert _written(conn) == first
+                seen.append(first)
+                raise psycopg.Rollback
+        except psycopg.Rollback:
+            pass
+    assert seen[0] == seen[1] and len(seen[0][1]) == 5  # type: ignore[arg-type]
+
+
+def test_active_lines_by_colour(clean: psycopg.Connection[DictRow]) -> None:
+    conn = clean
+    _seed(conn)
+    conn.execute("INSERT INTO books (id, title, color, player_id) VALUES (2, 'Italian', 'white', %s)", (PLAYER_ID,))
+    conn.execute("INSERT INTO chapters (id, book_id, title) VALUES (2, 2, 'Main')")
+    moves = ["e4", "e5", "Nf3"]
+    conn.execute(
+        "INSERT INTO repertoire_lines (id, chapter_id, line_name, moves, fen_sequence) VALUES (3, 2, 'w', %s, %s)",
+        (json.dumps(moves), json.dumps(moves_to_fen_sequence(moves))),
+    )
+    assert [ln.line_id for ln in active_lines(conn)] == [1, 2, 3]
+    assert [ln.line_id for ln in active_lines(conn, ["black"])] == [1, 2]
+    assert [ln.line_id for ln in active_lines(conn, {"white"})] == [3]
+    assert active_lines(conn, []) == []
