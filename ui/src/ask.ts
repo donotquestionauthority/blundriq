@@ -30,7 +30,8 @@ export interface ExploreAskRequest {
   orientation: "white" | "black";
   moves: string[];
   engine: EngineSnapshot;
-  game?: { id: number; ply: number };
+  /** The stored game and ply the board came from; null for a board with no stored game. */
+  game?: { id: number; ply: number } | null;
 }
 
 type Body = Record<string, unknown>;

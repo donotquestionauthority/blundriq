@@ -3,10 +3,12 @@
 What the old system learned about this API (the 429 and User-Agent rules are
 in core/ingest/chesscom.py and hold here too):
 
-- Never pass a server-side `max`: eligibility (variant, no moves, a FEN that
-  will not parse) is decided here after the stream arrives, so a server cap
-  would let skipped rows consume it and starve older eligible games. A caller
-  that wants N games stops consuming after N are stored.
+- An importer never passes a server-side `max`: eligibility (variant, no moves,
+  a FEN that will not parse) is decided here after the stream arrives, so a
+  server cap would let skipped rows consume it and starve older eligible games.
+  A caller that wants N games stops consuming after N are stored. The one
+  exception is the latest-game read (core/ingest/latest.py), which wants the
+  newest finished game whatever it is and refuses it rather than skipping it.
 - It is one stream with no archive boundaries, so the importer commits every
   N games, and a connection dropped mid-stream is an INCOMPLETE import that
   must not advance the boundary; it says nothing about the platform's health,
@@ -54,23 +56,34 @@ def is_ongoing(game: dict[str, Any]) -> bool:
 
 
 def stream_games(
-    client: httpx.Client, username: str, since_ms: int, *, finished: bool = True, sort: str = "dateDesc"
+    client: httpx.Client,
+    username: str,
+    since_ms: int,
+    *,
+    finished: bool = True,
+    sort: str = "dateDesc",
+    ongoing: bool = True,
+    max_games: int | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Yield raw game dicts, ONGOING GAMES INCLUDED (`ongoing=true`): an importer never
-    stores them, but it needs their creation times to place the next import's boundary
+    """Yield raw game dicts, ONGOING GAMES INCLUDED by default (`ongoing=true`): an importer
+    never stores them, but it needs their creation times to place the next import's boundary
     (see core/ingest/run.py and core/scout/importing.py). `since` filters by creation time.
     `finished=False` asks for the games in progress only — the cheap request the opponent
-    importer discovers its boundary with. A transport failure mid-stream raises FetchError."""
-    params = {
+    importer discovers its boundary with. `ongoing=False` with `max_games` is the latest-game
+    read (core/ingest/latest.py), which places no boundary. A transport failure mid-stream
+    raises FetchError."""
+    params: dict[str, str | int] = {
         "since": since_ms,
         "sort": sort,
         "moves": "true",
         "opening": "true",
         "clocks": "true",
         "evals": "false",
-        "ongoing": "true",
+        "ongoing": "true" if ongoing else "false",
         "finished": "true" if finished else "false",
     }
+    if max_games is not None:
+        params["max"] = max_games
     try:
         with client.stream("GET", f"{API}/games/user/{username}", params=params, headers=HEADERS, timeout=TIMEOUT) as r:
             if r.status_code == 429:

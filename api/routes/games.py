@@ -106,7 +106,7 @@ def _gate(exc: Exception) -> HTTPException:
     return HTTPException(422, "not_analysable")
 
 
-def _projection(conn: Any, color: str, fen_sequence: Any) -> dict[str, Any] | None:
+def repertoire_projection(conn: Any, color: str, fen_sequence: Any) -> dict[str, Any] | None:
     """Non-fatal: a failure is `null` on the wire (the page shows no panel) and a class chain
     in the log, never the game's failure."""
     try:
@@ -126,7 +126,7 @@ def game_review(game_id: int) -> dict[str, Any]:
         except (games.GameNotFound, games.NotAnalysable) as exc:
             raise _gate(exc) from exc
         blunders = games.blunders_for_game(conn, game_id)
-        projection = _projection(conn, g["player_color"], g["fen_sequence"])
+        projection = repertoire_projection(conn, g["player_color"], g["fen_sequence"])
     for k in ("played_at", "reviewed_at"):
         if g.get(k) is not None:
             g[k] = g[k].isoformat()
@@ -224,7 +224,7 @@ def learn_commit(game_id: int, body: LearnCommitBody) -> Any:
             bm = analysis[body.ply].get("best_move")
             engine_move = str(bm) if bm else None
         book_move: str | None = None
-        entry = _projection(conn, g["player_color"], [fen])
+        entry = repertoire_projection(conn, g["player_color"], [fen])
         if entry is not None:
             book_move = entry["by_ply"][0].get("book_move")
         result = learn.insert_commit(

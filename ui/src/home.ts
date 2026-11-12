@@ -26,7 +26,12 @@ export interface HomePage {
     /** Hourly steps whose most recent run failed, in chain order. */
     failed: Array<{ step: string; started_at: string | null; error: string | null }>;
   };
+  /** The sites with a username set, always Chess.com before Lichess: which sites "Review latest
+   *  game" can offer. Site names only, never a handle. */
+  latest_review_sources: LatestSource[];
 }
+
+export type LatestSource = "chesscom" | "lichess";
 
 export type RunStatus = "ok" | "failed" | "running" | "incomplete";
 

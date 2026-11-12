@@ -25,7 +25,7 @@ from typing import Any, LiteralString
 
 from psycopg import Connection
 
-from core import activity, blunders, deviations, runs
+from core import activity, blunders, deviations, player, runs
 from core.constants import PLAYER_ID
 from core.puzzles import serve
 from core.settings import Settings
@@ -159,4 +159,5 @@ def page(conn: Connection[Any], config: Settings) -> dict[str, Any]:
         },
         "activity": activity.counts(conn, activity.Player()),
         "pipeline": runs.hourly_status(conn),
+        "latest_review_sources": player.sources_with_handle(conn),
     }

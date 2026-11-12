@@ -184,6 +184,33 @@ export interface GameReviewResponse {
 }
 
 export const getGameReview = (gameId: number) => api.get<GameReviewResponse>(`/games/${gameId}/review`);
+/** GET /review/latest: the latest finished game on one site, fetched and parsed by the server,
+ *  never stored — so it has no id. */
+export interface LatestGame {
+  source: "chesscom" | "lichess";
+  url: string | null;
+  played_at: string | null;
+  time_control: string | null;
+  time_class: string | null;
+  opening_name: string | null;
+  opening_eco: string | null;
+  termination: string | null;
+  player_color: "white" | "black";
+  opponent_username: string | null;
+  opponent_rating: number | null;
+  player_rating: number | null;
+  result: "win" | "loss" | "draw";
+  moves: string[];
+  fen_sequence: string[];
+}
+
+export interface LatestReviewResponse {
+  game: LatestGame;
+  repertoire: RepertoireProjection | null;
+}
+
+export const getLatestReview = (source: "chesscom" | "lichess") => api.get<LatestReviewResponse>(`/review/latest?source=${source}`);
+
 export const markGameReviewed = (gameId: number) => api.post<unknown>(`/games/${gameId}/reviewed`);
 
 export interface LearnCommitBody {
