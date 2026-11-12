@@ -138,6 +138,11 @@ async function solveInOverlay(id: number) {
   fireEvent.click(within(await screen.findByRole("dialog", { name: `Puzzle ${id}` })).getByText("drop"));
   await screen.findByText(/Checkmate!|Puzzle complete!/);
 }
+/** The stepper's button once a verdict has enabled it (its row is in the DOM, reserved, before one). */
+const enabledButton = async (name: string) => {
+  await vi.waitFor(() => expect(screen.getByRole("button", { name })).toBeEnabled());
+  return screen.getByRole("button", { name });
+};
 const solveLine = async () => {
   nextDrop = { from: "a1", to: "a7" };
   fireEvent.click(screen.getByText("drop"));
@@ -449,7 +454,7 @@ describe("Practice: Drill these", () => {
     expect(await screen.findByTestId("drill-header")).toBeInTheDocument();
     expect(screen.getByTestId("location").textContent).toBe(drillUrl);
     await solveLine();
-    expect(await screen.findByText("Next line →")).toBeInTheDocument();
+    await enabledButton("Next line →");
     const stop = screen.getByRole("link", { name: "Stop" });
     expect(stop).toHaveAttribute("href", "/practice?type=repertoire&srs=all&last_n_games=100&subtype=chapter%3A7");
     await vi.waitFor(() => expect(stop).toHaveAttribute("aria-disabled", "false"));
@@ -476,7 +481,7 @@ describe("Practice: Drill these", () => {
     fireEvent.click(await screen.findByRole("link", { name: "Drill these (1 line)" }));
     expect(await screen.findByTestId("drill-header")).toBeInTheDocument();
     await solveLine();
-    fireEvent.click(await screen.findByText("Finish →"));
+    fireEvent.click(await enabledButton("Finish →"));
     expect(await screen.findByTestId("drill-done")).toBeInTheDocument();
     expect(readQueue()).toEqual([901, 902]);
     const back = screen.getByRole("link", { name: "Back to the list" });
@@ -506,7 +511,7 @@ describe("Practice: Drill these", () => {
     expect(screen.getByTestId("location").textContent).toBe("/practice?drill=901&from=list&type=repertoire&srs=all&last_n_games=100&subtype=chapter%3A7");
     expect(screen.getByRole("link", { name: "Stop" })).toHaveAttribute("href", "/practice?type=repertoire&srs=all&last_n_games=100&subtype=chapter%3A7");
     await solveLine();
-    const finish = await screen.findByText("Finish →");
+    const finish = await enabledButton("Finish →");
     await vi.waitFor(() => expect(screen.getByRole("link", { name: "Stop" })).toHaveAttribute("aria-disabled", "false"));
     fireEvent.click(finish);
     await screen.findByTestId("drill-done");

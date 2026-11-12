@@ -105,7 +105,8 @@ function GameLinks({ puzzle }: { puzzle: Puzzle }) {
   );
 }
 
-function PuzzleHeader({ puzzle, note }: { puzzle: Puzzle; note?: string | null }) {
+/** `noteHidden` keeps the note's space (invisible), so the board below does not move when it goes. */
+function PuzzleHeader({ puzzle, note, noteHidden = false }: { puzzle: Puzzle; note?: string | null; noteHidden?: boolean }) {
   return (
     <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
       <span className="font-mono">#{puzzle.id}</span>
@@ -116,7 +117,7 @@ function PuzzleHeader({ puzzle, note }: { puzzle: Puzzle; note?: string | null }
       {(puzzle.themes ?? []).length > 0 && <span>{(puzzle.themes ?? []).join(", ")}</span>}
       {puzzle.title && <span className="text-zinc-700 dark:text-zinc-300">{puzzle.title}</span>}
       {puzzle.occurrence_count > 0 && <span>encountered {puzzle.occurrence_count}× in your games</span>}
-      {note && <span className="text-emerald-600 dark:text-emerald-400">· {note}</span>}
+      {note && <span data-testid="puzzle-note" aria-hidden={noteHidden || undefined} className={`text-emerald-600 dark:text-emerald-400${noteHidden ? " invisible" : ""}`}>· {note}</span>}
     </div>
   );
 }
@@ -561,7 +562,7 @@ function PlayMode({
 
   return (
     <div className="mx-auto max-w-xl">
-      <PuzzleHeader puzzle={puzzle} note={puzzle.attempt_summary.solved > 0 && !attempt.lastResult ? "previously solved" : null} />
+      <PuzzleHeader puzzle={puzzle} note={puzzle.attempt_summary.solved > 0 ? "previously solved" : null} noteHidden={attempt.lastResult !== null} />
       <PuzzleEngine
         key={`${puzzle.id}|${cursor}`}
         fen={puzzle.fen}
@@ -698,7 +699,7 @@ function DrillMode({ lineIds, back, onAttemptRecorded, onNavigationLock }: { lin
   return (
     <div className="mx-auto max-w-xl">
       {header}
-      <PuzzleHeader puzzle={puzzle} note={puzzle.attempt_summary.solved > 0 && !attempt.lastResult ? "previously solved" : null} />
+      <PuzzleHeader puzzle={puzzle} note={puzzle.attempt_summary.solved > 0 ? "previously solved" : null} noteHidden={attempt.lastResult !== null} />
       <PuzzleEngine
         key={`drill|${data.batch_id}|${round}|${cursor}`}
         fen={puzzle.fen}
@@ -709,6 +710,7 @@ function DrillMode({ lineIds, back, onAttemptRecorded, onNavigationLock }: { lin
         acceptanceMap={puzzle.acceptance_map}
         onNext={showNext ? advance : null}
         prevDisabled
+        reserveNavRow
         nextDisabled={navigationBlocked}
         nextLabel={cursor + 1 < puzzles.length ? "Next line →" : "Finish →"}
         nextHighlighted={attempt.lastResult === "solved"}

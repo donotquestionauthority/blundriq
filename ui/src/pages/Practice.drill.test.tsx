@@ -100,6 +100,11 @@ function renderPage(entry: string) {
   );
 }
 
+/** The stepper's button once a verdict has enabled it (its row is in the DOM, reserved, before one). */
+const enabledButton = async (name: string) => {
+  await vi.waitFor(() => expect(screen.getByRole("button", { name })).toBeEnabled());
+  return screen.getByRole("button", { name });
+};
 const solveLine = async () => {
   nextDrop = { from: "a1", to: "a7" };
   fireEvent.click(screen.getByText("drop"));
@@ -144,13 +149,23 @@ describe("Practice: a drill", () => {
     expect(screen.queryByText("Skip →")).toBeNull();
     expect(screen.getByText("#11")).toBeInTheDocument();
     expect(screen.getByTestId("location").textContent).toBe("/practice?drill=901,902,903,777"); // kept: a reload serves it again
-    expect(screen.queryByText("← Previous")).toBeNull(); // no stepper row before a verdict: no Skip, no Previous
+    // No stepper before a verdict (no Skip, no Previous), but its row holds its space so the board stays put.
+    const nav = screen.getByTestId("puzzle-nav");
+    expect(nav.className.split(" ")).toContain("invisible");
+    expect(nav).toHaveAttribute("aria-hidden", "true");
+    expect(screen.queryByRole("button", { name: "← Previous" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Next line →" })).toBeNull();
     // Line 1: wrong, Try Again, right. One load, two attempts numbered 1 and 2, first wrong.
     failLine();
     expect(await screen.findByText("Try Again")).toBeInTheDocument();
+    await enabledButton("Next line →"); // the verdict has landed
+    expect(screen.getByTestId("puzzle-nav")).toBe(nav); // the same row, now shown
+    expect(nav.className.split(" ")).not.toContain("invisible");
+    expect(nav).not.toHaveAttribute("aria-hidden");
+    expect(screen.getByRole("button", { name: "← Previous" })).toBeDisabled();
     fireEvent.click(screen.getByText("Try Again"));
     await solveLine();
-    expect(await screen.findByText("Next line →")).toBeInTheDocument();
+    await enabledButton("Next line →");
     expect(screen.getByText("← Previous")).toBeDisabled(); // a drill only goes forward
     const attempts11 = () => calls.filter((c) => c.path === "/practice/puzzles/11/attempt");
     await vi.waitFor(() => expect(attempts11()).toHaveLength(2));
@@ -164,14 +179,14 @@ describe("Practice: a drill", () => {
     // Line 2: right first time.
     expect(await screen.findByText("#12")).toBeInTheDocument();
     await solveLine();
-    expect(await screen.findByText("Next line →")).toBeInTheDocument();
+    await enabledButton("Next line →");
     await vi.waitFor(() => expect(calls.filter((c) => c.path === "/practice/puzzles/12/attempt")).toHaveLength(1));
     expect(screen.getByTestId("drill-header").textContent).toContain("2 of 3 · 1 first-try");
     fireEvent.click(screen.getByText("Next line →"));
     // Line 3: a new load, the sequence from 1.
     expect(await screen.findByText("#13")).toBeInTheDocument();
     await solveLine();
-    expect(await screen.findByText("Finish →")).toBeInTheDocument();
+    await enabledButton("Finish →");
     await vi.waitFor(() => expect(calls.filter((c) => c.path === "/practice/puzzles/13/attempt")).toHaveLength(1));
     expect(calls.find((c) => c.path === "/practice/puzzles/13/attempt")!.body!.attempt_seq).toBe(1);
     fireEvent.click(screen.getByText("Finish →"));
@@ -187,6 +202,23 @@ describe("Practice: a drill", () => {
     await vi.waitFor(() => expect(attempts11()).toHaveLength(3));
     expect(attempts11()[2].body!.attempt_seq).toBe(1);
     expect(new Set(attempts11().map((c) => c.body!.session_id)).size).toBe(2); // round 1's load, round 2's load
+  });
+
+  it("a previously solved line's note keeps its place after the verdict, hidden", async () => {
+    const solvedBefore = { ...line(11, 901), attempt_summary: { total: 1, solved: 1, last_attempt_at: null, streak: 1 } };
+    stubFetch({
+      "/practice/drill": () => ({ status: 200, body: drill([solvedBefore]) }),
+      "/practice/puzzles/11/attempt": () => ({ status: 200, body: { ...OK.body, solved: false } }),
+    });
+    renderPage("/practice?drill=901");
+    const note = await screen.findByTestId("puzzle-note");
+    expect(note.textContent).toBe("· previously solved");
+    expect(note.className.split(" ")).not.toContain("invisible");
+    failLine();
+    await enabledButton("Finish →"); // the verdict has landed
+    expect(screen.getByTestId("puzzle-note")).toBe(note); // the same element, still in the header
+    expect(note.className.split(" ")).toContain("invisible");
+    expect(note).toHaveAttribute("aria-hidden", "true");
   });
 
   it("Stop waits for a posting verdict, then returns to the report; an empty drill says so", async () => {
