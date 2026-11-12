@@ -57,6 +57,9 @@ export interface PuzzleEngineProps {
   submissionLocked?: boolean;
   /** The repertoire line a deviation puzzle came from: offers its walk-through under the board. */
   repertoireLineId?: number | null;
+  /** Keep the navigation row's space while neither handler is set (invisible), so the board
+   *  does not move when one arrives. */
+  reserveNavRow?: boolean;
 }
 
 const btn = "rounded border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900 disabled:opacity-40 disabled:pointer-events-none";
@@ -84,6 +87,7 @@ export function PuzzleEngine({
   attemptStatus = null,
   submissionLocked = false,
   repertoireLineId = null,
+  reserveNavRow = false,
 }: PuzzleEngineProps) {
   const solutionLine = useMemo(
     () => (presentationPly != null && presentationPly > 0 ? solutionLineProp.slice(0, presentationPly + 1) : solutionLineProp),
@@ -461,6 +465,7 @@ export function PuzzleEngine({
   const totalUserMoves = userMovesFirst ? Math.ceil(activeSolutionLine.length / 2) : Math.floor(activeSolutionLine.length / 2);
   const completedUserMoves = Math.min(userMovesFirst ? Math.ceil(moveIndex / 2) : Math.floor(moveIndex / 2), totalUserMoves);
 
+  const navReserved = reserveNavRow && onPrev == null && onNext == null;
   const isPendingRetry = attemptStatus === "pending_retry" && puzzleState !== "playing";
   const isDowngradedSolve = puzzleState === "solved" && serverDowngraded;
   const tone: PuzzleState = isPendingRetry || isDowngradedSolve ? "wrong" : puzzleState;
@@ -478,8 +483,8 @@ export function PuzzleEngine({
         {message}
       </div>
 
-      {(onPrev != null || onNext != null) && (
-        <div className="flex w-full items-center justify-between gap-2">
+      {(onPrev != null || onNext != null || navReserved) && (
+        <div data-testid="puzzle-nav" aria-hidden={navReserved || undefined} className={`flex w-full items-center justify-between gap-2${navReserved ? " invisible" : ""}`}>
           <button type="button" onClick={onPrev ?? undefined} disabled={prevDisabled || onPrev == null} className={btn}>
             ← Previous
           </button>

@@ -135,6 +135,24 @@ describe("Practice page", () => {
     expect(screen.getByText("← Previous")).toBeDisabled();
   });
 
+  it("a previously solved puzzle's note keeps its place after the verdict, hidden, so the board below does not move", async () => {
+    stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1, { attempt_summary: { total: 1, solved: 1, last_attempt_at: null, streak: 1 } })], 1, 1) }),
+      "/practice/puzzles/11/attempt": () => ({ status: 200, body: { detail: "attempt recorded", solved: false, attempt_summary: { total: 2, solved: 1, streak: 0 }, srs: { level: "knight", correct_at_level: 0, advance_threshold: 1, transition: null } } }),
+    });
+    renderPage();
+    const note = await screen.findByTestId("puzzle-note");
+    expect(note.textContent).toBe("· previously solved");
+    expect(note.className.split(" ")).not.toContain("invisible");
+    expect(note).not.toHaveAttribute("aria-hidden");
+    nextDrop = { from: "a1", to: "a7" }; // not the mate
+    fireEvent.click(screen.getByText("drop"));
+    expect(await screen.findByText("Try Again")).toBeInTheDocument();
+    await vi.waitFor(() => expect(note.className.split(" ")).toContain("invisible")); // once the verdict lands
+    expect(screen.getByTestId("puzzle-note")).toBe(note); // the same element, still in the header
+    expect(note).toHaveAttribute("aria-hidden", "true");
+  });
+
   it("the Filters panel spans the toolbar's edges (a phone's Filters button sits wherever the row wrapped it to) and hangs 288 px from the right edge from sm up", async () => {
     stubFetch({ "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, 1)], 1, 1) }) });
     renderPage();
