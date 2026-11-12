@@ -215,6 +215,70 @@ describe("Practice past a cleared queue", () => {
     expect(screen.queryByText(/Not due yet/)).not.toBeInTheDocument();
   });
 
+  it.each([
+    [false, true],
+    [true, false],
+  ])("a save the durable queue makes after the foreground one failed carries its receipt (counted %s → line %s)", async (counted, line) => {
+    Object.defineProperty(navigator, "locks", { value: { request: (_n: string, cb: () => Promise<unknown>) => cb() }, configurable: true });
+    _resetProbesForTests();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    let tries = 0;
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: { ...page([puzzle(41, 1), puzzle(42, 1)], 1), scope: "all", run: null, mint_ahead_threshold: 1 } }),
+      "/practice/puzzles/41/attempt": () => {
+        tries += 1;
+        return tries === 1 ? { status: 503, body: { detail: "unavailable" } } : answer(counted);
+      },
+    });
+    renderPage("/practice");
+    expect(await screen.findByText("#41")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("drop"));
+    // The foreground save failed; the attempt waits in the durable queue.
+    await vi.waitFor(() => expect(tries).toBe(1));
+    expect(screen.queryByText(/Not due yet/)).not.toBeInTheDocument();
+    window.dispatchEvent(new Event("online")); // the queue drains
+    await vi.waitFor(() => expect(tries).toBe(2));
+    await vi.waitFor(() => expect(JSON.parse(window.localStorage.getItem(QUEUE_STORE) ?? "[]")).toHaveLength(0));
+    if (line) {
+      expect(await screen.findByText("Not due yet: this one doesn't count toward today or your schedule.")).toBeInTheDocument();
+    } else {
+      await new Promise((r) => setTimeout(r, 20));
+      expect(screen.queryByText(/Not due yet/)).not.toBeInTheDocument();
+    }
+    const ids = calls.filter((c) => c.path === "/practice/puzzles/41/attempt").map((c) => c.body!.attempt_id);
+    expect(ids).toHaveLength(2);
+    expect(ids[1]).toBe(ids[0]); // the queue retried the same attempt
+  });
+
+  it("a background save that lands before the foreground request fails still carries its receipt", async () => {
+    Object.defineProperty(navigator, "locks", { value: { request: (_n: string, cb: () => Promise<unknown>) => cb() }, configurable: true });
+    _resetProbesForTests();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let tries = 0;
+    stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: { ...page([puzzle(41, 1), puzzle(42, 1)], 1), scope: "all", run: null, mint_ahead_threshold: 1 } }),
+      "/practice/puzzles/41/attempt": async () => {
+        tries += 1;
+        if (tries === 1) {
+          await gate; // the foreground request: held, then lost
+          return { status: 503, body: { detail: "unavailable" } };
+        }
+        return answer(false); // the queue's drain, while the foreground one is still out
+      },
+    });
+    renderPage("/practice");
+    expect(await screen.findByText("#41")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("drop"));
+    await vi.waitFor(() => expect(tries).toBe(1));
+    window.dispatchEvent(new Event("online"));
+    await vi.waitFor(() => expect(tries).toBe(2));
+    await vi.waitFor(() => expect(JSON.parse(window.localStorage.getItem(QUEUE_STORE) ?? "[]")).toHaveLength(0));
+    release();
+    expect(await screen.findByText("Not due yet: this one doesn't count toward today or your schedule.")).toBeInTheDocument();
+  });
+
   it("a queued attempt keeps its mode through a replay; one from before the field sends none", async () => {
     Object.defineProperty(navigator, "locks", { value: { request: (_n: string, cb: () => Promise<unknown>) => cb() }, configurable: true });
     _resetProbesForTests();

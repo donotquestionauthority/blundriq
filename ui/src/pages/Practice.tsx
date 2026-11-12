@@ -184,11 +184,14 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
   }, [onVerdict]);
 
   useEffect(() => {
+    // The durable queue saved the attempt this solver is waiting on: its receipt says whether it
+    // counted, as a foreground answer would have.
     const onResolved = (e: Event) => {
-      const detail = (e as CustomEvent<{ attempt_id: string }>).detail;
+      const detail = (e as CustomEvent<{ attempt_id: string; counted?: boolean }>).detail;
       if (!detail || pendingRetryUuidRef.current !== detail.attempt_id) return;
       pendingRetryUuidRef.current = null;
       setAttemptStatus(null);
+      if (detail.counted === false) setNotCounted(true);
     };
     window.addEventListener(ATTEMPT_RESOLVED_EVENT, onResolved);
     return () => window.removeEventListener(ATTEMPT_RESOLVED_EVENT, onResolved);
@@ -287,8 +290,12 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
       setLastResult(solved ? "solved" : "wrong");
       setServerDowngraded(false);
       setAttemptStatus("in_flight");
+      // Listen for the queue's save from now: a background drain can land this attempt before the
+      // foreground request answers, and its receipt is the only one if that request then fails.
+      pendingRetryUuidRef.current = attemptId;
       try {
         const response = await post(attemptPuzzleId, sessionId, attemptId, solved, movesPlayed, shownPly, seq);
+        if (pendingRetryUuidRef.current === attemptId) pendingRetryUuidRef.current = null;
         await markAttemptCompleted(attemptId);
         if (activePuzzleIdRef.current === attemptPuzzleId) {
           setAttemptStatus(null);
@@ -1411,8 +1418,10 @@ export default function Practice() {
 
   // Background processor for the durable attempt queue.
   useEffect(() => {
+    // Each saved attempt's `counted`, from its response to its success notification.
+    const counted = new Map<string, boolean>();
     const handler = async (record: PendingAttempt) => {
-      await recordAttempt(record.puzzle_id, {
+      const response = await recordAttempt(record.puzzle_id, {
         solved: record.solved,
         moves_played: record.moves_played,
         attempt_id: record.attempt_id,
@@ -1421,10 +1430,13 @@ export default function Practice() {
         ...(record.attempt_seq != null ? { attempt_seq: record.attempt_seq } : {}),
         ...(record.mode ? { mode: record.mode } : {}),
       });
+      counted.set(record.attempt_id, response.counted);
       refetch();
     };
     const onSuccess = (record: PendingAttempt) => {
-      window.dispatchEvent(new CustomEvent(ATTEMPT_RESOLVED_EVENT, { detail: { attempt_id: record.attempt_id, puzzle_id: record.puzzle_id } }));
+      const receipt = counted.get(record.attempt_id);
+      counted.delete(record.attempt_id);
+      window.dispatchEvent(new CustomEvent(ATTEMPT_RESOLVED_EVENT, { detail: { attempt_id: record.attempt_id, puzzle_id: record.puzzle_id, counted: receipt } }));
     };
     return initQueueTriggers(handler, onSuccess);
   }, [refetch]);
