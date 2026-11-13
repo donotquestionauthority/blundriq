@@ -43,6 +43,33 @@ describe("attemptQueue", () => {
     expect(hasPendingAttempt("zz")).toBe(false);
   });
 
+  it("while a write waits for the lock the browser asks before unloading, and not once it is written or refused", async () => {
+    const unload = () => {
+      const e = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(e);
+      return e.defaultPrevented;
+    };
+    let open!: () => void;
+    const gate = new Promise<void>((r) => (open = r));
+    Object.defineProperty(navigator, "locks", {
+      value: { request: async (_n: string, cb: () => Promise<unknown>) => (await gate, cb()) },
+      configurable: true,
+    });
+    _resetProbesForTests();
+    expect(unload()).toBe(false);
+    const first = enqueue({ attempt_id: "a1", puzzle_id: 7, solved: true, moves_played: "Nf3" });
+    const second = enqueue({ attempt_id: "a2", puzzle_id: 8, solved: false, moves_played: "e4" });
+    expect(unload()).toBe(true); // only in memory yet
+    open();
+    await Promise.all([first, second]);
+    expect(JSON.parse(window.localStorage.getItem(QUEUE_STORE)!)).toHaveLength(2);
+    expect(unload()).toBe(false); // written: the queue has them
+    Object.defineProperty(navigator, "locks", { value: { request: async () => Promise.reject(new Error("lock refused")) }, configurable: true });
+    _resetProbesForTests();
+    await expect(enqueue({ attempt_id: "a3", puzzle_id: 9, solved: true, moves_played: "d4" })).rejects.toThrow();
+    expect(unload()).toBe(false); // refused: the caller's blocking mode holds it now
+  });
+
   it("enqueue throws without locks so the caller falls back to blocking mode", async () => {
     Object.defineProperty(navigator, "locks", { value: undefined, configurable: true });
     _resetProbesForTests();

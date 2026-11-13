@@ -142,6 +142,28 @@ async function reviewBoth() {
   await screen.findByText("Puzzle complete!");
 }
 
+/** A durable queue whose lock can be held from the test: while `held`, each request waits for `release()`. */
+function heldQueue() {
+  let held = false;
+  let gate: Promise<void> = Promise.resolve();
+  let open: () => void = () => {};
+  queueMode(async (_n, cb) => {
+    if (held) await gate;
+    return cb();
+  });
+  return {
+    hold: () => {
+      held = true;
+      gate = new Promise<void>((r) => (open = r));
+    },
+    release: () => {
+      held = false;
+      open();
+    },
+  };
+}
+const pendingInStorage = () => JSON.parse(window.localStorage.getItem("blundriq_pending_attempts_v1") ?? "[]") as Array<{ solved: boolean; attempt_seq: number }>;
+
 describe("Practice: the missed-board review", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -328,6 +350,95 @@ describe("Practice: the missed-board review", () => {
     open();
     await vi.waitFor(() => expect(screen.getByText("Try Again")).toBeEnabled());
     noWayPast(); // stored, and still owed
+  });
+
+  it("queue: an earlier stored miss does not open Next while the completing attempt still waits for the queue", async () => {
+    const q = heldQueue();
+    const calls = stubFetch({ "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11), puzzle(12)]) }), "/practice/puzzles/11/attempt": attemptRoute });
+    renderPage("/practice");
+    await screen.findByText("#11");
+    drop("a1a8"); // the miss: stored and sent
+    await vi.waitFor(() => expect(posts(calls, 11)).toHaveLength(1));
+    await vi.waitFor(() => expect(pendingInStorage()).toHaveLength(0));
+    fireEvent.click(screen.getByText("Try Again"));
+    drop("a1a7");
+    await screen.findByText("Your turn", { exact: true });
+    q.hold();
+    drop("a7b7"); // the completion: waits for the queue's lock
+    for (let n = 1; n <= 3; n++) await reviewRight("a1a7", n);
+    await screen.findByText("Puzzle complete!");
+    await flush();
+    noWayPast(); // the review is done, the miss is stored, the completion is not
+    expect(posts(calls, 11)).toHaveLength(1);
+    q.release();
+    expect(await screen.findByRole("button", { name: "Next Puzzle →" })).toBeEnabled();
+    await vi.waitFor(() => expect(posts(calls, 11)).toHaveLength(2));
+    expect(posts(calls, 11).map((c) => [c.body!.attempt_seq, c.body!.solved])).toEqual([
+      [1, false],
+      [2, true],
+    ]);
+  });
+
+  it("queue: a store that lands after the solver was left counts for nothing on the next one", async () => {
+    const q = heldQueue();
+    const solvedBefore = { total: 1, solved: 1, last_attempt_at: null, streak: 1 };
+    const calls = stubFetch({
+      "/practice/puzzles": () => ({ status: 200, body: serve([puzzle(11, { attempt_summary: solvedBefore }), puzzle(12)]) }),
+      "/practice/puzzles/11/attempt": attemptRoute,
+      "/practice/puzzles/12/attempt": attemptRoute,
+    });
+    renderPage("/practice");
+    await screen.findByText("#11");
+    drop("a1a7");
+    await screen.findByText("Your turn", { exact: true });
+    drop("a7b7");
+    fireEvent.click(await screen.findByRole("button", { name: "Next Puzzle →" }));
+    await screen.findByText("#12");
+    q.hold();
+    drop("a1a7");
+    await screen.findByText("Your turn", { exact: true });
+    drop("a7b7"); // #12's completion waits for the queue
+    await screen.findByText("Puzzle complete!");
+    fireEvent.click(screen.getByText("← Previous")); // leave it waiting
+    await screen.findByText("#11");
+    expect(screen.getByTestId("puzzle-note").className.split(" ")).not.toContain("invisible"); // #11 is fresh
+    q.release(); // #12's store lands now, for a play-through already left
+    await vi.waitFor(() => expect(posts(calls, 12)).toHaveLength(1));
+    await flush();
+    expect(screen.getByTestId("puzzle-note").className.split(" ")).not.toContain("invisible"); // and stays so
+    q.hold();
+    drop("a1a7");
+    await screen.findByText("Your turn", { exact: true });
+    drop("a7b7"); // #11's own completion, not yet stored
+    await screen.findByText("Puzzle complete!");
+    await flush();
+    noWayPast();
+    q.release();
+    expect(await screen.findByRole("button", { name: "Next Puzzle →" })).toBeEnabled();
+  });
+
+  it("drill: Finish waits for the completing attempt, and Stop before it lands loses nothing", async () => {
+    const q = heldQueue();
+    const calls = stubFetch({ "/practice/drill": () => ({ status: 200, body: drill([puzzle(11, { is_repertoire: true, presentation_ply: 2, repertoire_line_id: 901 })]) }), "/practice/puzzles/11/attempt": attemptRoute });
+    renderPage("/practice?drill=901");
+    await screen.findByText("#11");
+    drop("a1a8");
+    await vi.waitFor(() => expect(posts(calls, 11)).toHaveLength(1));
+    await vi.waitFor(() => expect(pendingInStorage()).toHaveLength(0));
+    fireEvent.click(screen.getByText("Try Again"));
+    drop("a1a7");
+    await screen.findByText("Your turn", { exact: true });
+    q.hold();
+    drop("a7b7");
+    for (let n = 1; n <= 3; n++) await reviewRight("a1a7", n);
+    await screen.findByText("Puzzle complete!");
+    await flush();
+    noWayPast();
+    fireEvent.click(screen.getByRole("link", { name: "Stop" })); // leave before the completion is stored
+    await screen.findByText("report page");
+    q.release();
+    await vi.waitFor(() => expect(posts(calls, 11)).toHaveLength(2));
+    expect(posts(calls, 11)[1].body).toMatchObject({ attempt_seq: 2, solved: true, mode: "drill" });
   });
 
   it("queue, blocking mode: while the POST is out, neither Skip nor Next is offered", async () => {
