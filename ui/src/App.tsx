@@ -9,6 +9,7 @@ import Games from "./pages/Games";
 import Home from "./pages/Home";
 import LatestReview from "./pages/LatestReview";
 import Login from "./pages/Login";
+import OpeningExplorer from "./pages/OpeningExplorer";
 import Practice from "./pages/Practice";
 import Preferences from "./pages/Preferences";
 import Repertoire from "./pages/Repertoire";
@@ -41,6 +42,7 @@ export default function App() {
         <Route path="/" element={<Home />} />
         <Route path="/blunders" element={<Blunders />} />
         <Route path="/deviations" element={<Deviations />} />
+        <Route path="/explorer" element={<OpeningExplorer />} />
         <Route path="/repertoire" element={<Repertoire />} />
         <Route path="/repertoire/conflicts" element={<RepertoireConflicts />} />
         <Route path="/repertoire/report" element={<RepertoireReport />} />

@@ -374,6 +374,13 @@ class Settings(BaseModel):
     review_history_months: int = Field(
         default=12, ge=1, le=36, description="Months of games counted toward a position's numbers."
     )
+    # The Opening Explorer counts the player's games over this many months back from the newest
+    # game (the same anchor as review_history_months, a separate value). It reads only the stored
+    # opening prefix: a game older than the opening backfill's reach carries none and counts for
+    # nothing, however far back this reaches.
+    explorer_history_months: int = Field(
+        default=12, ge=1, le=36, description="Months of games the Opening Explorer counts."
+    )
     review_position_min_games: int = Field(
         default=5, ge=3, le=100, description="Games in which you moved from a position before it can be ranked."
     )
@@ -470,6 +477,24 @@ def load(conn: Connection[Any]) -> Settings:
         return Settings()
     data = row[0]
     return Settings.model_validate(data if isinstance(data, dict) else json.loads(data))
+
+
+def load_fields(conn: Connection[Any], *names: str) -> dict[str, Any]:
+    """The named settings, each as `load` would give it, reading only those keys of the row: a
+    route asked on every move needs two numbers, not the whole row with its prompts."""
+    unknown = [n for n in names if n not in Settings.model_fields]
+    if unknown:
+        raise ValueError(f"unknown settings: {unknown}")
+    with conn.cursor(row_factory=tuple_row) as cur:
+        cur.execute(
+            "SELECT (SELECT jsonb_object_agg(k, data -> k) FROM unnest(%s::text[]) AS k WHERE data ? k)"
+            " FROM settings WHERE id = 1",
+            (list(names),),
+        )
+        row = cur.fetchone()
+    data: Any = row[0] if row is not None and row[0] is not None else {}
+    values = Settings.model_validate(data if isinstance(data, dict) else json.loads(data))
+    return {n: getattr(values, n) for n in names}
 
 
 def save(conn: Connection[Any], values: Settings) -> None:

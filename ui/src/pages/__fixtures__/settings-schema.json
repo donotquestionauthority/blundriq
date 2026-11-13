@@ -413,6 +413,14 @@
       "title": "Explore Engine Depth",
       "type": "integer"
     },
+    "explorer_history_months": {
+      "default": 12,
+      "description": "Months of games the Opening Explorer counts.",
+      "maximum": 36,
+      "minimum": 1,
+      "title": "Explorer History Months",
+      "type": "integer"
+    },
     "games_columns": {
       "default": [
         "Date",

@@ -5,7 +5,7 @@ import { api } from "../api";
 import { getUnplayable, isGone, subscribeRemovals } from "../utils/puzzleRemoval";
 import { getUnsavedAttempt, subscribeUnsavedAttempt } from "../utils/unsavedAttempt";
 
-// A grouped compact top bar: the four primary pages inline, the rest under "More", and on a
+// A grouped compact top bar: the primary pages inline, the rest under "More", and on a
 // narrow screen a hamburger that lists everything. The header fetches nothing.
 type Item = { to: string; label: string };
 const PRIMARY: Item[] = [
@@ -13,6 +13,7 @@ const PRIMARY: Item[] = [
   { to: "/practice", label: "Practice" },
   { to: "/blunders", label: "Blunders" },
   { to: "/deviations", label: "Deviations" },
+  { to: "/explorer", label: "Opening Explorer" },
 ];
 const MORE: Item[] = [
   { to: "/scout", label: "Scout" },

@@ -105,6 +105,7 @@
   "deviations_default_min_ply": 1,
   "deviations_default_window_days": 20,
   "explore_engine_depth": 16,
+  "explorer_history_months": 12,
   "games_columns": [
     "Date",
     "Color",
