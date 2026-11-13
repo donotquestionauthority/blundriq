@@ -20,12 +20,13 @@ argued for, which were labelled provisional, and which were never explained.
 from __future__ import annotations
 
 import json
-from typing import Any, Literal
+from functools import cache
+from typing import Annotated, Any, Literal, cast
 
 from jinja2 import TemplateSyntaxError
 from psycopg import Connection
 from psycopg.rows import tuple_row
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, TypeAdapter, field_validator
 
 from core.constants import AI_THINKING_ALWAYS_ON_MODELS
 from core.prompts import ASK_PROMPT, DEFAULT_PROMPTS, LINE_PROMPT, compile_template
@@ -480,8 +481,10 @@ def load(conn: Connection[Any]) -> Settings:
 
 
 def load_fields(conn: Connection[Any], *names: str) -> dict[str, Any]:
-    """The named settings, each as `load` would give it, reading only those keys of the row: a
-    route asked on every move needs two numbers, not the whole row with its prompts."""
+    """The named settings, each as `load` would give it for that key, reading only those keys of
+    the row and validating each against its own field, without building the model (whose default
+    prompts are validated whenever one is built). A stored key not asked for is not read, so a bad
+    value there does not refuse these, as it refuses `load`."""
     unknown = [n for n in names if n not in Settings.model_fields]
     if unknown:
         raise ValueError(f"unknown settings: {unknown}")
@@ -492,9 +495,33 @@ def load_fields(conn: Connection[Any], *names: str) -> dict[str, Any]:
             (list(names),),
         )
         row = cur.fetchone()
-    data: Any = row[0] if row is not None and row[0] is not None else {}
-    values = Settings.model_validate(data if isinstance(data, dict) else json.loads(data))
-    return {n: getattr(values, n) for n in names}
+    raw: Any = row[0] if row is not None and row[0] is not None else {}
+    data = cast(dict[str, Any], raw if isinstance(raw, dict) else json.loads(raw))
+    return {n: _field_adapter(n).validate_python(data[n]) if n in data else _field_default(n) for n in names}
+
+
+@cache
+def _field_adapter(name: str) -> TypeAdapter[Any]:
+    """A validator for one field alone: its type with its constraints (bounds, literals). Refused
+    while the model validates anything beyond its fields (a validator of its own, a configuration,
+    a post-init): the adapter would not run it."""
+    decorators = Settings.__pydantic_decorators__
+    model_level = (
+        any(name in d.info.fields or "*" in d.info.fields for d in decorators.field_validators.values())
+        or decorators.model_validators
+        or decorators.root_validators
+        or Settings.model_config != BaseModel.model_config
+        or Settings.model_post_init is not BaseModel.model_post_init
+    )
+    if model_level:
+        raise ValueError(f"{name} is validated by the model, not by its field alone")
+    field = Settings.model_fields[name]
+    # The FieldInfo as metadata carries the field's constraints.
+    return TypeAdapter(cast(Any, Annotated)[field.annotation, field])
+
+
+def _field_default(name: str) -> Any:
+    return Settings.model_fields[name].get_default(call_default_factory=True, validated_data={})
 
 
 def save(conn: Connection[Any], values: Settings) -> None:

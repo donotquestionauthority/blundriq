@@ -14,6 +14,7 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 from psycopg.rows import DictRow
+from pydantic import ValidationError
 
 from core import explorer
 from core.constants import EXPLORER_LINES_PAGE, EXPLORER_MAX_PLIES, OPENING_PREFIX_PLIES, PLAYER_ID
@@ -474,8 +475,6 @@ def test_lines_route_pages(client: TestClient) -> None:
 
 
 def test_the_setting_defaults_to_twelve_months_and_is_bounded() -> None:
-    from pydantic import ValidationError
-
     assert Settings().explorer_history_months == 12
     assert Settings(explorer_history_months=36).explorer_history_months == 36
     for bad in (0, 37):
@@ -494,3 +493,75 @@ def test_the_scope_is_the_explorer_settings_and_load_fields_refuses_unknown_name
         settings.load_fields(conn, "no_such_setting")
     conn.execute("DELETE FROM settings")
     conn.commit()
+
+
+def test_load_fields_gives_what_load_gives_for_every_setting_without_building_the_model(
+    conn: Conn, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from core import settings
+
+    names = list(Settings.model_fields)
+    stored = Settings(explorer_history_months=5, time_class_focus="all", review_history_months=30)
+    settings.save(conn, stored)
+    expected = settings.load(conn)
+    conn.execute("UPDATE settings SET data = data - 'daily_puzzle_target' WHERE id = 1")  # a key the row lacks
+    whole = settings.load(conn)
+
+    def refuse(*_: Any, **__: Any) -> Any:
+        raise AssertionError("load_fields built the whole model")
+
+    monkeypatch.setattr(Settings, "model_validate", refuse)
+    monkeypatch.setattr(Settings, "__init__", refuse)
+    got = settings.load_fields(conn, *names)
+    monkeypatch.undo()
+    assert got == {n: getattr(whole, n) for n in names}
+    assert got["explorer_history_months"] == expected.explorer_history_months == 5
+    conn.execute("UPDATE settings SET data = jsonb_set(data, '{explorer_history_months}', '99') WHERE id = 1")
+    with pytest.raises(ValidationError):
+        settings.load_fields(conn, "explorer_history_months")  # out of bounds, as load refuses it
+    with pytest.raises(ValidationError):
+        settings.load(conn)
+    conn.execute("DELETE FROM settings")
+    conn.commit()
+
+
+def test_a_field_is_validated_alone_only_while_the_model_adds_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    from core import settings
+
+    settings._field_adapter.cache_clear()  # pyright: ignore[reportPrivateUsage]
+    assert settings._field_adapter("explorer_history_months") is not None  # pyright: ignore[reportPrivateUsage]
+    from pydantic import BaseModel, field_validator, model_validator
+
+    class AnyField(BaseModel):
+        x: int = 0
+
+        @field_validator("*")
+        @classmethod
+        def every(cls, v: Any) -> Any:
+            return v
+
+    class OneField(BaseModel):
+        explorer_history_months: int = 0
+
+        @field_validator("explorer_history_months")
+        @classmethod
+        def one(cls, v: Any) -> Any:
+            return v
+
+    class WholeModel(BaseModel):
+        x: int = 0
+
+        @model_validator(mode="after")
+        def whole(self) -> WholeModel:
+            return self
+
+    decorators = [(m.__name__, m.__pydantic_decorators__) for m in (AnyField, OneField, WholeModel)]
+    changes: list[tuple[str, Any]] = [("model_config", {"strict": True}), ("model_post_init", lambda self, ctx: None)]
+    changes += [("__pydantic_decorators__", d) for _, d in decorators]
+    for name, value in changes:
+        settings._field_adapter.cache_clear()  # pyright: ignore[reportPrivateUsage]
+        with monkeypatch.context() as m:
+            m.setattr(Settings, name, value)
+            with pytest.raises(ValueError):
+                settings._field_adapter("explorer_history_months")  # pyright: ignore[reportPrivateUsage]
+    settings._field_adapter.cache_clear()  # pyright: ignore[reportPrivateUsage]
