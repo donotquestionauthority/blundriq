@@ -292,7 +292,7 @@ describe("Practice: the All list is one visit", () => {
     expect(screen.getByText("4 mastered")).toBeInTheDocument();
     nextDrop = { from: "a1", to: "a8" };
     fireEvent.click(screen.getByText("drop"));
-    expect(await screen.findByText("Next Puzzle →")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Next Puzzle →" })).toBeInTheDocument();
     // The save's re-read failed: the solved puzzle stays showing, and where "Loading more
     // puzzles…" would be there is the way to ask again.
     expect(await screen.findByText(/More puzzles could not be loaded/)).toBeInTheDocument();
@@ -303,7 +303,7 @@ describe("Practice: the All list is one visit", () => {
     await vi.waitFor(() => expect(reads).toBe(3));
     await vi.waitFor(() => expect(screen.queryByText(/More puzzles could not be loaded/)).not.toBeInTheDocument());
     expect(screen.queryByText(/Could not refresh/)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByText("Next Puzzle →"));
+    fireEvent.click(screen.getByRole("button", { name: "Next Puzzle →" }));
     expect(await screen.findByText("Your turn — find the best move")).toBeInTheDocument(); // the next batch
   });
 

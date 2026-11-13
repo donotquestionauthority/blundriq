@@ -205,6 +205,13 @@ function writeQueue(records: PendingAttempt[]): void {
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
+// An attempt waiting for the lock exists only in memory until its write: the browser asks before
+// unloading while any is waiting.
+let _waitingWrites = 0;
+function onBeforeUnloadWhileWaiting(e: BeforeUnloadEvent) {
+  e.preventDefault();
+}
+
 /**
  * Add a pending attempt. Throws when storage or locking is unavailable, when the write fails, or
  * when the existing queue cannot be read safely; the call site must then block navigation.
@@ -212,12 +219,17 @@ function writeQueue(records: PendingAttempt[]): void {
  * attempt_count are not reset). A new gameplay attempt on the same puzzle uses a fresh UUID.
  */
 export async function enqueue(record: Omit<PendingAttempt, "enqueued_at" | "last_attempted_at" | "attempt_count">): Promise<void> {
-  await withQueueLock(() => {
-    const queue = readQueueStrict();
-    if (queue.some((r) => r.attempt_id === record.attempt_id)) return;
-    const fresh: PendingAttempt = { ...record, enqueued_at: Date.now(), last_attempted_at: null, attempt_count: 0 };
-    writeQueue([...queue, fresh]);
-  });
+  if (_waitingWrites++ === 0) window.addEventListener("beforeunload", onBeforeUnloadWhileWaiting);
+  try {
+    await withQueueLock(() => {
+      const queue = readQueueStrict();
+      if (queue.some((r) => r.attempt_id === record.attempt_id)) return;
+      const fresh: PendingAttempt = { ...record, enqueued_at: Date.now(), last_attempted_at: null, attempt_count: 0 };
+      writeQueue([...queue, fresh]);
+    });
+  } finally {
+    if (--_waitingWrites === 0) window.removeEventListener("beforeunload", onBeforeUnloadWhileWaiting);
+  }
 }
 
 /**

@@ -163,12 +163,12 @@ describe("Practice past a cleared queue", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Keep practising" }));
     expect(await screen.findByText("#21")).toBeInTheDocument();
     fireEvent.click(screen.getByText("drop"));
-    expect(await screen.findByText("Next Puzzle →")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Next Puzzle →" })).toBeInTheDocument();
     await vi.waitFor(() => expect(calls.filter((c) => c.path === "/practice/puzzles/21/attempt")).toHaveLength(1));
     expect(calls.find((c) => c.path === "/practice/puzzles/21/attempt")!.body).toMatchObject({ mode: "extra" });
     // In extra practice the not-due line is the standing line above; it is not repeated.
     expect(screen.queryByText(/Not due yet/)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByText("Next Puzzle →"));
+    fireEvent.click(screen.getByRole("button", { name: "Next Puzzle →" }));
     expect(await screen.findByText("#22")).toBeInTheDocument();
     await vi.waitFor(() => expect(reads(calls, "extra").length).toBeGreaterThanOrEqual(2));
     expect(reads(calls, "extra")[1].query.get("run")).toBe("1");
@@ -206,11 +206,11 @@ describe("Practice past a cleared queue", () => {
     const line = await screen.findByText("Not due yet: this one doesn't count toward today or your schedule.");
     expect(before(screen.getByTestId("board"), line)).toBe(true);
     counted = true;
-    fireEvent.click(screen.getByText("Next Puzzle →"));
+    fireEvent.click(screen.getByRole("button", { name: "Next Puzzle →" }));
     expect(await screen.findByText("#32")).toBeInTheDocument();
     expect(screen.queryByText(/Not due yet/)).not.toBeInTheDocument(); // a new load starts clean
     fireEvent.click(screen.getByText("drop"));
-    expect(await screen.findByText("Next Puzzle →")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Next Puzzle →" })).toBeInTheDocument();
     await new Promise((r) => setTimeout(r, 20));
     expect(screen.queryByText(/Not due yet/)).not.toBeInTheDocument();
   });

@@ -5,7 +5,7 @@ import { removePuzzle } from "../blunders";
 import { beginRemoval, confirmGone, getUnplayable, isGone, removalFailed, subscribeRemovals } from "../utils/puzzleRemoval";
 import { useApi } from "../hooks/useApi";
 import { disownUnsavedAttempt, getUnsavedAttempt, holdUnsavedAttempt, isUnsavedAttemptOwned, releaseUnsavedAttempt, subscribeUnsavedAttempt, type UnsavedAttempt } from "../utils/unsavedAttempt";
-import { PuzzleEngine } from "../components/PuzzleEngine";
+import { PuzzleEngine, type NavState } from "../components/PuzzleEngine";
 import { getDrill, getExtraPage, getPuzzleById, getPuzzles, getRepertoireScopes, isRotationPuzzle, LAST_N_OPTIONS, recordAttempt, skipPuzzle } from "../practice";
 import { reportPath } from "../repertoire";
 import { clearQueue } from "../utils/drillQueue";
@@ -149,6 +149,11 @@ const ATTEMPT_RESOLVED_EVENT = "blundriq:attempt-resolved";
  */
 function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentationPly: number | null, onVerdict?: (seq: number, solved: boolean) => void, mode: AttemptMode = "practice") {
   const [lastResult, setLastResult] = useState<"solved" | "wrong" | null>(null);
+  // The play-through's newest attempt (its sequence) and the newest one storage holds: the durable
+  // queue, or the server in blocking mode. Moving on is safe only when they are the same attempt —
+  // an earlier verdict being stored says nothing about a later one still waiting for the queue.
+  const [issuedSeq, setIssuedSeq] = useState(0);
+  const [storedSeq, setStoredSeq] = useState(0);
   // The server said this load does not count (the puzzle was not due as its first attempt was recorded).
   const [notCounted, setNotCounted] = useState(false);
   const [serverDowngraded, setServerDowngraded] = useState(false);
@@ -200,6 +205,8 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
   // A new play-through: clear the previous verdict and start a new session.
   const reset = useCallback(() => {
     setLastResult(null);
+    setIssuedSeq(0);
+    setStoredSeq(0);
     setNotCounted(false);
     setServerDowngraded(false);
     setAttemptStatus(null);
@@ -208,6 +215,11 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
     outstandingRef.current = null;
     sessionIdRef.current = crypto.randomUUID();
     seqRef.current = 0;
+  }, []);
+
+  // A store counts for the play-through it was made in, never for one started since.
+  const markStored = useCallback((sessionId: string, seq: number) => {
+    if (sessionIdRef.current === sessionId) setStoredSeq((s) => Math.max(s, seq));
   }, []);
 
   // The attempt names its puzzle, its session and the segment it was made on: a retry, or a
@@ -234,6 +246,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
         const response = await post(attemptPuzzleId, sessionId, attemptId, solved, movesPlayed, shownPly, seq);
         releaseUnsavedAttempt(attemptId);
         outstandingRef.current = null;
+        markStored(sessionId, seq);
         if (activePuzzleIdRef.current === attemptPuzzleId) {
           setLastResult(response.solved ? "solved" : "wrong");
           if (solved && !response.solved) setServerDowngraded(true);
@@ -255,7 +268,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
         inFlightRef.current.delete(attemptId);
       }
     },
-    [post, onRecorded, mode],
+    [post, onRecorded, mode, markStored],
   );
 
   const handleComplete = useCallback(
@@ -271,6 +284,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
       const sessionId = sessionIdRef.current;
       const shownPly = presentationPlyRef.current;
       const seq = ++seqRef.current;
+      setIssuedSeq(seq);
       onVerdictRef.current?.(seq, solved);
 
       if (!isQueueModeAvailable()) {
@@ -286,18 +300,23 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
         return;
       }
 
-      // Committed to storage: the UI may move on now.
-      setLastResult(solved ? "solved" : "wrong");
-      setServerDowngraded(false);
-      setAttemptStatus("in_flight");
-      // Listen for the queue's save from now: a background drain can land this attempt before the
-      // foreground request answers, and its receipt is the only one if that request then fails.
-      pendingRetryUuidRef.current = attemptId;
+      // Committed to storage: the UI may move on now. A play-through left meanwhile shows none of
+      // what follows; the queue and the request below still carry the attempt to the server.
+      markStored(sessionId, seq);
+      const shown = () => sessionIdRef.current === sessionId && activePuzzleIdRef.current === attemptPuzzleId;
+      if (shown()) {
+        setLastResult(solved ? "solved" : "wrong");
+        setServerDowngraded(false);
+        setAttemptStatus("in_flight");
+        // Listen for the queue's save from now: a background drain can land this attempt before the
+        // foreground request answers, and its receipt is the only one if that request then fails.
+        pendingRetryUuidRef.current = attemptId;
+      }
       try {
         const response = await post(attemptPuzzleId, sessionId, attemptId, solved, movesPlayed, shownPly, seq);
         if (pendingRetryUuidRef.current === attemptId) pendingRetryUuidRef.current = null;
         await markAttemptCompleted(attemptId);
-        if (activePuzzleIdRef.current === attemptPuzzleId) {
+        if (shown()) {
           setAttemptStatus(null);
           if (response.counted === false) setNotCounted(true);
           if (response.solved !== solved) {
@@ -308,7 +327,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
         onRecorded();
       } catch (err) {
         console.error("Foreground recordAttempt failed; queued for retry:", errorLabel(err));
-        if (activePuzzleIdRef.current === attemptPuzzleId) {
+        if (shown()) {
           // A background tick may already have won the race; only flag a still-queued attempt.
           if (hasPendingAttempt(attemptId)) {
             setAttemptStatus("pending_retry");
@@ -321,7 +340,7 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
         inFlightRef.current.delete(attemptId);
       }
     },
-    [puzzleId, post, runBlockingMode, onRecorded, mode],
+    [puzzleId, post, runBlockingMode, onRecorded, mode, markStored],
   );
 
   const retry = useCallback(() => {
@@ -331,7 +350,9 @@ function useAttemptSubmit(puzzleId: number, onRecorded: () => void, presentation
     void runBlockingMode(attemptId, solved, movesPlayed, attemptPuzzleId, sessionId, shownPly, seq);
   }, [blockingError, runBlockingMode]);
 
-  return { lastResult, serverDowngraded, notCounted, attemptStatus, submitting, blockingError, handleComplete, retry, reset, navigationBlocked: submitting || blockingError !== null };
+  // The play-through's newest verdict is stored (and so a way past the solver may be offered).
+  const latestStored = issuedSeq > 0 && storedSeq >= issuedSeq;
+  return { lastResult, latestStored, serverDowngraded, notCounted, attemptStatus, submitting, blockingError, handleComplete, retry, reset, navigationBlocked: submitting || blockingError !== null };
 }
 
 /** Retry for an attempt held across a page change; the same attempt id, so a save that
@@ -407,6 +428,21 @@ function RetryLoad({ onRetry }: { onRetry: () => void }) {
  * yet): attempts are sent as extra practice, a skip only moves on (a page is proof of service,
  * not a batch to defer in), and the end of the pages offers the way back to the queue.
  */
+/**
+ * What the solver under `key` last reported about leaving it (`PuzzleEngine` `onNavState`):
+ * `fresh` for a solver that has reported nothing, so a new puzzle, cursor, round or remount
+ * starts there without a reset. The report is synchronous with the verdict, so the controls it
+ * decides never wait on the attempt's storage to disappear.
+ */
+function useSolverNav(key: string): [NavState, (state: NavState) => void] {
+  const [nav, setNav] = useState<{ key: string; state: NavState } | null>(null);
+  // A report belongs to one mount: dropped when the key moves on, so returning to a key (Previous,
+  // then Skip back) is a new mount and starts fresh, not with the old one's report.
+  if (nav !== null && nav.key !== key) setNav(null);
+  const report = useCallback((state: NavState) => setNav({ key, state }), [key]);
+  return [nav?.key === key ? nav.state : "fresh", report];
+}
+
 function PlayMode({
   batch,
   batchId,
@@ -491,7 +527,12 @@ function PlayMode({
   }, [onAttemptRecorded, onNeedRefetch]);
   const attempt = useAttemptSubmit(puzzle?.id ?? -1, recorded, puzzle?.presentation_ply ?? null, undefined, extra ? "extra" : "practice");
   const beingRemoved = puzzle !== undefined && unplayable.has(puzzle.id);
-  const showNext = attempt.lastResult !== null;
+  const solverKey = `${puzzle?.id ?? "none"}|${cursor}`;
+  const [navState, onNavState] = useSolverNav(solverKey);
+  // Skip only before any verdict; Next once the newest verdict is stored and nothing is owed (a
+  // pass's misses still to review); nothing in between, not even a disabled button.
+  const showNext = navState === "free" && attempt.latestStored;
+  const nextHidden = navState !== "fresh" && !showNext;
   // The showing entry was retired (from a deep link over it, or another copy): step off it to
   // the next live entry, or to the end of the queue and ask for more. Nothing can be owed on
   // it — a removal is refused while any attempt on the puzzle is unsaved — so the hook resets.
@@ -603,7 +644,7 @@ function PlayMode({
     <div className="mx-auto max-w-xl">
       <PuzzleHeader puzzle={puzzle} note={puzzle.attempt_summary.solved > 0 ? "previously solved" : null} noteHidden={attempt.lastResult !== null} />
       <PuzzleEngine
-        key={`${puzzle.id}|${cursor}`}
+        key={solverKey}
         fen={puzzle.fen}
         solutionLine={puzzle.solution_line}
         color={puzzle.color}
@@ -611,10 +652,12 @@ function PlayMode({
         presentationPly={puzzle.presentation_ply}
         acceptanceMap={puzzle.acceptance_map}
         onPrev={handlePrev}
-        onNext={exhausted ? null : showNext ? advance : () => void handleSkip()}
+        onNext={exhausted || nextHidden ? null : showNext ? advance : () => void handleSkip()}
+        nextHidden={nextHidden}
+        onNavState={onNavState}
         prevDisabled={prevLive(cursor - 1) < 0 || attempt.navigationBlocked}
         nextDisabled={exhausted || attempt.navigationBlocked || skipping || beingRemoved}
-        nextLabel={showNext ? "Next Puzzle →" : skipping ? "Skipping…" : "Skip →"}
+        nextLabel={navState !== "fresh" ? "Next Puzzle →" : skipping ? "Skipping…" : "Skip →"}
         nextHighlighted={attempt.lastResult === "solved"}
         showNextButton={showNext && !exhausted}
         isRepertoire={puzzle.is_repertoire}
@@ -739,6 +782,8 @@ function DrillMode({ lineIds, back, onAttemptRecorded, onNavigationLock }: { lin
     [cursor],
   );
   const attempt = useAttemptSubmit(puzzle?.id ?? -1, onAttemptRecorded, puzzle?.presentation_ply ?? null, onVerdict, "drill");
+  const solverKey = `drill|${data?.batch_id ?? "none"}|${round}|${cursor}`;
+  const [navState, onNavState] = useSolverNav(solverKey);
   const navigationBlocked = attempt.navigationBlocked;
   useEffect(() => {
     onNavigationLock(navigationBlocked);
@@ -813,13 +858,14 @@ function DrillMode({ lineIds, back, onAttemptRecorded, onNavigationLock }: { lin
     );
   }
 
-  const showNext = attempt.lastResult !== null;
+  // Next line / Finish (and so Done) only once the newest verdict is stored and the pass owes no review.
+  const showNext = navState === "free" && attempt.latestStored;
   return (
     <div className="mx-auto max-w-xl">
       {header}
       <PuzzleHeader puzzle={puzzle} note={puzzle.attempt_summary.solved > 0 ? "previously solved" : null} noteHidden={attempt.lastResult !== null} />
       <PuzzleEngine
-        key={`drill|${data.batch_id}|${round}|${cursor}`}
+        key={solverKey}
         fen={puzzle.fen}
         solutionLine={puzzle.solution_line}
         color={puzzle.color}
@@ -827,6 +873,7 @@ function DrillMode({ lineIds, back, onAttemptRecorded, onNavigationLock }: { lin
         presentationPly={puzzle.presentation_ply}
         acceptanceMap={puzzle.acceptance_map}
         onNext={showNext ? advance : null}
+        onNavState={onNavState}
         prevDisabled
         reserveNavRow
         nextDisabled={navigationBlocked}

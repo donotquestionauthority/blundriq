@@ -7,6 +7,17 @@
  * accepted at each node (not just the stored line) and the opponent replies with the map's
  * canonical defence. Solve = mate delivered.
  *
+ * Review: a pass (from the start, or from Replay) that reaches its last ply with boards whose
+ * first move in the pass was wrong goes back to those boards, in line order and cycling, until
+ * each has been answered right `REVIEW_STREAK` times in a row; a wrong answer resets that board
+ * alone. The completing `onComplete` has already fired by then, so the review sends nothing and
+ * leaving mid-review loses nothing the server was owed. Play On is never reviewed, nor a segment
+ * with fewer than two player moves.
+ *
+ * Navigation: `onNavState` reports, synchronously from the handler that changes it, whether the
+ * host may offer a way past this puzzle — `fresh` before any verdict, `owed` from a pass's first
+ * miss until its review ends, `free` once a verdict is in and nothing is owed.
+ *
  * Promotion: a pawn move to the last rank is not played on the drop. The board snaps it back,
  * the squares are held, and the chooser under the board applies the chosen piece as the real
  * move; from/to squares cannot tell a queen from a knight, and the line is graded on the piece.
@@ -27,7 +38,26 @@ import { errorLabel } from "../utils/errorLabel";
 import { branchCompareTarget, legalMove, mapKey, moveUci, parsesAsFen, sanResolvesToMove, similarTarget, uciToMove } from "../utils/chess";
 import type { AcceptanceMap } from "../practice";
 
-type PuzzleState = "playing" | "wrong" | "solved";
+type PuzzleState = "playing" | "wrong" | "solved" | "reviewing";
+
+/** Consecutive right answers a missed board needs in review. Fixed, not a setting. */
+export const REVIEW_STREAK = 3;
+
+export type NavState = "fresh" | "owed" | "free";
+
+/** A board whose first move in the pass was wrong: where it sits in the line and how it was reached. */
+interface MissedBoard {
+  fen: string;
+  index: number;
+  lastMove: [Square, Square] | null;
+}
+
+interface Review {
+  boards: MissedBoard[];
+  streaks: number[];
+  at: number;
+  verdict: "right" | "wrong" | null;
+}
 
 export interface PuzzleEngineProps {
   fen: string;
@@ -60,6 +90,11 @@ export interface PuzzleEngineProps {
   /** Keep the navigation row's space while neither handler is set (invisible), so the board
    *  does not move when one arrives. */
   reserveNavRow?: boolean;
+  /** Render the right-hand navigation button invisible and out of the accessibility tree,
+   *  keeping its space. */
+  nextHidden?: boolean;
+  /** Whether the host may offer a way past this puzzle; called synchronously on every change. */
+  onNavState?: (state: NavState) => void;
 }
 
 const btn = "rounded border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900 disabled:opacity-40 disabled:pointer-events-none";
@@ -88,6 +123,8 @@ export function PuzzleEngine({
   submissionLocked = false,
   repertoireLineId = null,
   reserveNavRow = false,
+  nextHidden = false,
+  onNavState,
 }: PuzzleEngineProps) {
   const solutionLine = useMemo(
     () => (presentationPly != null && presentationPly > 0 ? solutionLineProp.slice(0, presentationPly + 1) : solutionLineProp),
@@ -154,12 +191,32 @@ export function PuzzleEngine({
   const checkpointFen = useRef(fen);
   const checkpointMoveIndex = useRef(0);
   const checkpointLastMove = useRef<[Square, Square] | null>(null);
+  // The current pass: boards missed (by board key, first visit only) and boards answered right.
+  const passMissed = useRef<Map<string, MissedBoard>>(new Map());
+  const passAnswered = useRef<Set<string>>(new Set());
+  const [review, setReview] = useState<Review | null>(null);
+  // The pass's end as it was shown — board, place in the line, last move, message — shown again
+  // when its review finishes.
+  const completedBoard = useRef<{ fen: string; index: number; lastMove: [Square, Square] | null; message: string }>({ fen, index: 0, lastMove: null, message: "" });
+  const navState = useRef<NavState>("fresh");
+  const onNavStateRef = useRef(onNavState);
+  useEffect(() => {
+    onNavStateRef.current = onNavState;
+  }, [onNavState]);
+  const reportNav = useCallback((state: NavState) => {
+    if (navState.current === state) return;
+    navState.current = state;
+    onNavStateRef.current?.(state);
+  }, []);
 
   const boardOrientation = color === "w" ? "white" : "black";
   const activeFen = finishLineMode ? finishLineFen : fen;
   const fenActiveColor = activeFen.split(" ")[1] as "w" | "b";
   const userMovesFirst = fenActiveColor === color;
   const isUserTurn = userMovesFirst ? moveIndex % 2 === 0 : moveIndex % 2 === 1;
+  const totalUserMoves = userMovesFirst ? Math.ceil(activeSolutionLine.length / 2) : Math.floor(activeSolutionLine.length / 2);
+  // Whether a move may be entered on the board: the pass's turn, or a review board awaiting its answer.
+  const acceptingMoves = (puzzleState === "playing" || (puzzleState === "reviewing" && review?.verdict === null)) && isUserTurn && !submissionLocked;
 
   // Final-ply alternate mate: when the stored line ends in checkmate, any move that itself mates
   // on the last player ply is accepted (the server agrees). Earlier plies are not relaxed.
@@ -191,6 +248,9 @@ export function PuzzleEngine({
     setPromotionPending(null);
     setStatusMessage("Your turn — find the best move");
     setSolutionShown(false);
+    setReview(null);
+    passMissed.current = new Map();
+    passAnswered.current = new Set();
     completeCalled.current = false;
     checkpointFen.current = startFen;
     checkpointMoveIndex.current = startIndex;
@@ -206,11 +266,87 @@ export function PuzzleEngine({
     const puzzle = `${fen}\n${solutionLine.join(",")}\n${color}`;
     if (appliedPuzzle.current === puzzle) return;
     appliedPuzzle.current = puzzle;
+    navState.current = "fresh";
     setFinishLineMode(false);
     setFinishLineFen(fen);
     setFinishLineRemainingMoves([]);
     resetToFen(fen, 0);
   }, [fen, solutionLine, color, resetToFen]);
+
+  const showReviewBoard = useCallback((board: MissedBoard) => {
+    setGame(new Chess(board.fen));
+    setMoveIndex(board.index);
+    setLastMove(board.lastMove);
+    setWrongSquares({});
+    setRightSquares({});
+    setSelectedSquare(null);
+    setPromotionPending(null);
+    setSolutionShown(false);
+    setStatusMessage("Find the move");
+  }, []);
+
+  // The end of a pass. The completing attempt is sent first, as it always was; then the pass's
+  // misses, if any are reviewable, become the review, and otherwise the puzzle is solved.
+  const completePass = useCallback(
+    (final: Chess, finalMove: [Square, Square], message: string, moves: string[]) => {
+      setRightSquares({ [finalMove[1]]: { backgroundColor: HIGHLIGHT.correct } });
+      if (!completeCalled.current && !finishLineMode) {
+        completeCalled.current = true;
+        onComplete?.(true, moves);
+      }
+      const boards = [...passMissed.current.values()].sort((a, b) => a.index - b.index);
+      if (!finishLineMode && boards.length > 0 && totalUserMoves >= 2) {
+        completedBoard.current = { fen: final.fen(), index: activeSolutionLine.length, lastMove: finalMove, message };
+        setReview({ boards, streaks: boards.map(() => 0), at: 0, verdict: null });
+        setPuzzleState("reviewing");
+        showReviewBoard(boards[0]);
+        return;
+      }
+      setPuzzleState("solved");
+      setStatusMessage(message);
+      if (!finishLineMode) reportNav("free");
+    },
+    [finishLineMode, onComplete, totalUserMoves, activeSolutionLine.length, showReviewBoard, reportNav],
+  );
+
+  // The next review board after the one on show: line order, wrapping, among those still short of
+  // the streak; when none is, the review is over and the pass's last board comes back.
+  const advanceReview = useCallback(() => {
+    if (!review) return;
+    const n = review.boards.length;
+    let next = -1;
+    for (let step = 1; step <= n; step++) {
+      const i = (review.at + step) % n;
+      if (review.streaks[i] < REVIEW_STREAK) {
+        next = i;
+        break;
+      }
+    }
+    if (next < 0) {
+      const end = completedBoard.current;
+      setReview(null);
+      setGame(new Chess(end.fen));
+      setMoveIndex(end.index);
+      setLastMove(end.lastMove);
+      setWrongSquares({});
+      setRightSquares(end.lastMove ? { [end.lastMove[1]]: { backgroundColor: HIGHLIGHT.correct } } : {});
+      setSelectedSquare(null);
+      setSolutionShown(false);
+      setPuzzleState("solved");
+      setStatusMessage(end.message);
+      reportNav("free");
+      return;
+    }
+    setReview({ ...review, at: next, verdict: null });
+    showReviewBoard(review.boards[next]);
+  }, [review, showReviewBoard, reportNav]);
+
+  // A right review answer stays on the board briefly, then the next board comes up.
+  useEffect(() => {
+    if (review?.verdict !== "right") return;
+    const timer = setTimeout(advanceReview, 600);
+    return () => clearTimeout(timer);
+  }, [review, advanceReview]);
 
   // Auto-play the opponent's reply.
   useEffect(() => {
@@ -241,13 +377,7 @@ export function PuzzleEngine({
           setMoveIndex((prev) => prev + 1);
           setStatusMessage("Your turn");
           if (moveIndex + 1 >= activeSolutionLine.length) {
-            setPuzzleState("solved");
-            setStatusMessage(finishLineMode ? "Line complete!" : "Puzzle complete!");
-            setRightSquares({ [result.to]: { backgroundColor: HIGHLIGHT.correct } });
-            if (!completeCalled.current && !finishLineMode) {
-              completeCalled.current = true;
-              onComplete?.(true, movesPlayed);
-            }
+            completePass(g, [result.from as Square, result.to as Square], finishLineMode ? "Line complete!" : "Puzzle complete!", movesPlayed);
           }
         }
       } catch {
@@ -256,14 +386,13 @@ export function PuzzleEngine({
     }, 400);
 
     return () => clearTimeout(timer);
-  }, [moveIndex, puzzleState, isUserTurn, game, activeSolutionLine, movesPlayed, onComplete, finishLineMode, mapMode, acceptanceMap]);
+  }, [moveIndex, puzzleState, isUserTurn, game, activeSolutionLine, movesPlayed, finishLineMode, mapMode, acceptanceMap, completePass]);
 
   // The one path every player move takes, whichever way it was entered: play it on a copy of
   // the board, then grade it. Returns whether the board should show the move.
   const playMove = useCallback(
     (sourceSquare: Square, targetSquare: Square, promotion: PromotionPiece): boolean => {
-      if (puzzleState !== "playing" || submissionLocked) return false;
-      if (!isUserTurn) return false;
+      if (!acceptingMoves) return false;
       if (moveIndex >= activeSolutionLine.length) return false;
 
       const expectedMove = activeSolutionLine[moveIndex];
@@ -277,8 +406,32 @@ export function PuzzleEngine({
       if (!result) return false;
       // A move that was actually made supersedes a held promotion; a miss (an illegal drop) does not.
       setPromotionPending(null);
+      const boardKey = mapKey(game);
+
+      // A review board: graded as the pass grades this ply, and nothing is sent.
+      if (puzzleState === "reviewing" && review) {
+        const right = mapMode
+          ? (acceptanceMap!.p[boardKey] ?? []).includes(moveUci(result))
+          : sanResolvesToMove(game.fen(), expectedMove, result) || (mateInfo.isMate && moveIndex === mateInfo.lastPlayerIdx && tempGame.isCheckmate());
+        setSelectedSquare(null);
+        if (right) {
+          const streak = review.streaks[review.at] + 1;
+          setGame(tempGame);
+          setLastMove([sourceSquare, targetSquare]);
+          setWrongSquares({});
+          setRightSquares({ [targetSquare]: { backgroundColor: HIGHLIGHT.correct } });
+          setStatusMessage(`Right — ${streak} in a row`);
+          setReview({ ...review, streaks: review.streaks.map((v, i) => (i === review.at ? streak : v)), verdict: "right" });
+          return true;
+        }
+        setWrongSquares({ [targetSquare]: { backgroundColor: HIGHLIGHT.wrong } });
+        setStatusMessage("Not quite — this board starts again");
+        setReview({ ...review, streaks: review.streaks.map((v, i) => (i === review.at ? 0 : v)), verdict: "wrong" });
+        return false;
+      }
 
       const acceptCorrect = (finalMessage: string | null) => {
+        if (!finishLineMode && !passMissed.current.has(boardKey)) passAnswered.current.add(boardKey);
         setGame(tempGame);
         setLastMove([sourceSquare, targetSquare]);
         setMovesPlayed((prev) => [...prev, result.san]);
@@ -287,17 +440,18 @@ export function PuzzleEngine({
         setSelectedSquare(null);
         setRightSquares({ [targetSquare]: { backgroundColor: HIGHLIGHT.correct } });
         if (finalMessage !== null) {
-          setPuzzleState("solved");
-          setStatusMessage(finalMessage);
-          if (!completeCalled.current && !finishLineMode) {
-            completeCalled.current = true;
-            onComplete?.(true, [...movesPlayed, result.san]);
-          }
+          completePass(tempGame, [sourceSquare, targetSquare], finalMessage, [...movesPlayed, result.san]);
         } else {
           setStatusMessage("Correct!");
         }
       };
       const rejectWrong = (message: string) => {
+        if (!finishLineMode) {
+          if (!passMissed.current.has(boardKey) && !passAnswered.current.has(boardKey)) {
+            passMissed.current.set(boardKey, { fen: game.fen(), index: moveIndex, lastMove });
+          }
+          reportNav("owed");
+        }
         checkpointFen.current = game.fen();
         checkpointMoveIndex.current = moveIndex;
         checkpointLastMove.current = lastMove;
@@ -336,14 +490,14 @@ export function PuzzleEngine({
       rejectWrong("Not quite — that's not the best move");
       return false;
     },
-    [game, moveIndex, activeSolutionLine, puzzleState, isUserTurn, movesPlayed, onComplete, finishLineMode, lastMove, mateInfo, mapMode, acceptanceMap, submissionLocked],
+    [game, moveIndex, activeSolutionLine, puzzleState, movesPlayed, onComplete, finishLineMode, lastMove, mateInfo, mapMode, acceptanceMap, acceptingMoves, review, completePass, reportNav],
   );
 
   // A drop (or a click pair). A pawn reaching the last rank is held for the chooser instead of
   // being played: the board snaps it back and nothing is graded until a piece is chosen.
   const handleDrop = useCallback(
     (sourceSquare: Square, targetSquare: Square): boolean => {
-      if (puzzleState !== "playing" || submissionLocked || !isUserTurn) return false;
+      if (!acceptingMoves) return false;
       const promotes = game.moves({ square: sourceSquare, verbose: true }).some((m) => m.to === targetSquare && m.promotion);
       if (promotes) {
         setPromotionPending({ from: sourceSquare, to: targetSquare });
@@ -352,7 +506,7 @@ export function PuzzleEngine({
       }
       return playMove(sourceSquare, targetSquare, "q");
     },
-    [game, puzzleState, isUserTurn, submissionLocked, playMove],
+    [game, acceptingMoves, playMove],
   );
 
   const choosePromotion = useCallback(
@@ -366,12 +520,12 @@ export function PuzzleEngine({
   );
   // The chooser is only meaningful on the board it was opened on, with the move still the
   // player's to make; it is dropped with the reset that changes either.
-  const promotionOpen = promotionPending !== null && puzzleState === "playing" && isUserTurn && !submissionLocked;
+  const promotionOpen = promotionPending !== null && acceptingMoves;
 
   // Click-to-move: first click selects, second attempts the move with the same validation as a drop.
   const handleSquareClick = useCallback(
     (square: Square) => {
-      if (puzzleState !== "playing" || !isUserTurn || submissionLocked) return;
+      if (!acceptingMoves) return;
       const piece = game.get(square);
       const own = piece && piece.color === color;
       if (selectedSquare) {
@@ -380,7 +534,7 @@ export function PuzzleEngine({
         setSelectedSquare(square);
       }
     },
-    [selectedSquare, puzzleState, isUserTurn, game, color, handleDrop, submissionLocked],
+    [selectedSquare, acceptingMoves, game, color, handleDrop],
   );
 
   // Wrong-state retry only: restore the checkpoint and slice the wrong move off movesPlayed (it
@@ -411,7 +565,8 @@ export function PuzzleEngine({
   // Show me: animate the next correct move after a wrong attempt. A peek only: moveIndex and
   // puzzleState are untouched and the attempt stays recorded as wrong.
   const handleShowMe = useCallback(() => {
-    if (puzzleState !== "wrong" || solutionShown) return;
+    const reviewWrong = puzzleState === "reviewing" && review?.verdict === "wrong";
+    if ((puzzleState !== "wrong" && !reviewWrong) || solutionShown) return;
     if (!mapMode && moveIndex >= activeSolutionLine.length) return;
     try {
       const g = new Chess(game.fen());
@@ -434,7 +589,7 @@ export function PuzzleEngine({
     } catch {
       console.error("Invalid solution move in handleShowMe");
     }
-  }, [puzzleState, solutionShown, game, moveIndex, activeSolutionLine, mapMode, acceptanceMap]);
+  }, [puzzleState, review, solutionShown, game, moveIndex, activeSolutionLine, mapMode, acceptanceMap]);
 
   const handleFinishLine = useCallback(() => {
     try {
@@ -451,7 +606,7 @@ export function PuzzleEngine({
   }, [fen, solutionLine, solutionLineProp, resetToFen]);
 
   const squareStyles: Record<string, React.CSSProperties> = { ...wrongSquares, ...rightSquares };
-  if (selectedSquare && puzzleState === "playing") {
+  if (selectedSquare && acceptingMoves) {
     squareStyles[selectedSquare] = { ...squareStyles[selectedSquare], backgroundColor: HIGHLIGHT.selected };
     for (const m of game.moves({ square: selectedSquare, verbose: true })) {
       squareStyles[m.to] = { ...squareStyles[m.to], background: game.get(m.to as Square) ? HIGHLIGHT.legalRing : HIGHLIGHT.legalDot };
@@ -462,13 +617,13 @@ export function PuzzleEngine({
     squareStyles[lastMove[1]] = { ...squareStyles[lastMove[1]], backgroundColor: HIGHLIGHT.lastMove };
   }
 
-  const totalUserMoves = userMovesFirst ? Math.ceil(activeSolutionLine.length / 2) : Math.floor(activeSolutionLine.length / 2);
   const completedUserMoves = Math.min(userMovesFirst ? Math.ceil(moveIndex / 2) : Math.floor(moveIndex / 2), totalUserMoves);
 
   const navReserved = reserveNavRow && onPrev == null && onNext == null;
   const isPendingRetry = attemptStatus === "pending_retry" && puzzleState !== "playing";
-  const isDowngradedSolve = puzzleState === "solved" && serverDowngraded;
-  const tone: PuzzleState = isPendingRetry || isDowngradedSolve ? "wrong" : puzzleState;
+  const isDowngradedSolve = (puzzleState === "solved" || puzzleState === "reviewing") && serverDowngraded;
+  const tone: "playing" | "wrong" | "solved" =
+    isPendingRetry || isDowngradedSolve ? "wrong" : puzzleState === "reviewing" ? (review?.verdict === "right" ? "solved" : review?.verdict === "wrong" ? "wrong" : "playing") : puzzleState;
   const message = isPendingRetry ? "Save failed — will retry automatically" : isDowngradedSolve ? "Server recorded this as a wrong attempt" : statusMessage;
   const toneClass =
     tone === "solved"
@@ -491,15 +646,30 @@ export function PuzzleEngine({
           <button
             type="button"
             onClick={onNext ?? undefined}
-            disabled={nextDisabled || onNext == null}
-            className={showNextButton && nextHighlighted ? btnAccent : btn}
+            disabled={nextDisabled || onNext == null || nextHidden}
+            aria-hidden={nextHidden || undefined}
+            className={`${showNextButton && nextHighlighted ? btnAccent : btn}${nextHidden ? " invisible" : ""}`}
           >
             {nextLabel}
           </button>
         </div>
       )}
 
-      <div className="flex items-center gap-1.5" aria-label={`${completedUserMoves} of ${totalUserMoves} moves`}>
+      {/* One row for the move dots or the review's progress, at the dots' height whatever it holds (the
+          text overflows into the gaps around it), so the board never moves between them. */}
+      {review ? (
+        <div className="flex h-2 items-center gap-1.5 text-xs leading-none text-zinc-600 dark:text-zinc-400" data-testid="review-progress">
+          <span>
+            Review: {review.streaks.filter((v) => v >= REVIEW_STREAK).length} of {review.boards.length} {review.boards.length === 1 ? "board" : "boards"} fixed
+          </span>
+          <span className="ml-1 flex items-center gap-1" aria-label={`${review.streaks[review.at]} of ${REVIEW_STREAK} in a row`}>
+            {Array.from({ length: REVIEW_STREAK }).map((_, i) => (
+              <span key={i} className={`h-2 w-2 rounded-full ${i < review.streaks[review.at] ? "bg-emerald-500" : "bg-zinc-300 dark:bg-zinc-700"}`} />
+            ))}
+          </span>
+        </div>
+      ) : (
+      <div className="flex h-2 items-center gap-1.5 leading-none" aria-label={`${completedUserMoves} of ${totalUserMoves} moves`}>
         {Array.from({ length: totalUserMoves }).map((_, i) => (
           <span
             key={i}
@@ -510,6 +680,7 @@ export function PuzzleEngine({
         ))}
         {finishLineMode && <span className="ml-1 text-xs text-sky-600 dark:text-sky-400">· finish line</span>}
       </div>
+      )}
 
       <div className="w-full max-w-[560px]">
         <Chessboard
@@ -523,7 +694,7 @@ export function PuzzleEngine({
             boardStyle: { borderRadius: "4px" },
             ...SQUARES,
             animationDurationInMs: 200,
-            allowDragging: puzzleState === "playing" && isUserTurn && !submissionLocked,
+            allowDragging: acceptingMoves,
           }}
         />
       </div>
@@ -535,6 +706,16 @@ export function PuzzleEngine({
           <>
             <button type="button" onClick={handleRetry} disabled={submissionLocked} className={btnAccent}>
               Try Again
+            </button>
+            <button type="button" onClick={handleShowMe} disabled={solutionShown} className="text-xs text-zinc-500 hover:text-zinc-800 disabled:opacity-40 dark:hover:text-zinc-200">
+              {solutionShown ? "✓ Shown" : "Show me"}
+            </button>
+          </>
+        )}
+        {puzzleState === "reviewing" && review?.verdict === "wrong" && (
+          <>
+            <button type="button" onClick={advanceReview} className={btnAccent}>
+              Continue
             </button>
             <button type="button" onClick={handleShowMe} disabled={solutionShown} className="text-xs text-zinc-500 hover:text-zinc-800 disabled:opacity-40 dark:hover:text-zinc-200">
               {solutionShown ? "✓ Shown" : "Show me"}
