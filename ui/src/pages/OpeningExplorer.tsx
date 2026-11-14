@@ -334,7 +334,10 @@ function ExplorerBody(p: { depth: number; url: ExplorerUrl; requestKey: string; 
     squareStyles[last[0]] = { backgroundColor: HIGHLIGHT.lastMove };
     squareStyles[last[1]] = { backgroundColor: HIGHLIGHT.lastMove };
   }
-  if (selected) squareStyles[selected] = { backgroundColor: HIGHLIGHT.selected };
+  if (selected) {
+    squareStyles[selected] = { backgroundColor: HIGHLIGHT.selected };
+    for (const m of new Chess(position).moves({ square: selected, verbose: true })) squareStyles[m.to] = { ...squareStyles[m.to], background: m.captured ? HIGHLIGHT.legalRing : HIGHLIGHT.legalDot };
+  }
 
   const snapshot = ev ? engineSnapshot(ev) : null;
   const request = (): ExploreAskRequest | null => (snapshot ? { seed_fen: position, orientation: colour, moves: [], engine: snapshot, game: null } : null);

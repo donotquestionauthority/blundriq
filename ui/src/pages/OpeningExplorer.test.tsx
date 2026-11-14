@@ -8,12 +8,12 @@ import { Overlay } from "../components/PositionCard/Overlay";
 import type { PositionCardData } from "../components/PositionCard/types";
 import type { EngineEval } from "../engine/useStockfish";
 import type { ExplorerPosition, RepertoireMove } from "../explorer";
-import { ARROWS } from "../utils/board";
+import { ARROWS, HIGHLIGHT } from "../utils/board";
 import OpeningExplorer from "./OpeningExplorer";
 
 // The board: its options are kept so a test can drop a piece the way react-chessboard does.
 type DropArgs = { piece: unknown; sourceSquare: string; targetSquare: string | null };
-let board: { position?: string; arrows?: unknown[]; onPieceDrop?: (a: DropArgs) => boolean; boardOrientation?: string } = {};
+let board: { position?: string; arrows?: unknown[]; onPieceDrop?: (a: DropArgs) => boolean; onSquareClick?: (a: { square: string }) => void; squareStyles?: Record<string, { background?: string; backgroundColor?: string }>; boardOrientation?: string } = {};
 vi.mock("react-chessboard", () => ({
   Chessboard: ({ options }: { options: typeof board }) => {
     board = options;
@@ -327,6 +327,69 @@ describe("Opening Explorer: stepping", () => {
     fireEvent.click(forwardBtn());
     await settle();
     expect(positionRequests()).toEqual(["", "e4"]);
+  });
+});
+
+describe("Opening Explorer: moving by clicks", () => {
+  const click = async (square: string) => {
+    act(() => board.onSquareClick!({ square }));
+    await settle();
+  };
+  const dots = () =>
+    Object.entries(board.squareStyles ?? {})
+      .filter(([, st]) => st.background === HIGHLIGHT.legalDot || st.background === HIGHLIGHT.legalRing)
+      .map(([sq, st]) => `${sq}:${st.background === HIGHLIGHT.legalRing ? "ring" : "dot"}`)
+      .sort();
+
+  it("a clicked piece shows a dot on every square it can reach, and a ring on a capture", async () => {
+    await open("?colour=white&moves=e4,d5&time_class=focus");
+    await click("e4");
+    expect(board.squareStyles?.e4?.backgroundColor).toBe(HIGHLIGHT.selected);
+    expect(dots()).toEqual(["d5:ring", "e5:dot"]);
+    await click("g1");
+    expect(dots()).toEqual(["e2:dot", "f3:dot", "h3:dot"]);
+    await click("f3");
+    expect(movesInUrl()).toBe("e4,d5,Nf3");
+    expect(dots()).toEqual([]);
+  });
+
+  it("an en passant capture is a ring, though its square is empty", async () => {
+    await open("?colour=white&moves=e4,a6,e5,d5&time_class=focus");
+    await click("e5");
+    expect(dots()).toEqual(["d6:ring", "e6:dot"]);
+  });
+
+  it("the marks go with a step back and a colour change", async () => {
+    await open("?colour=white&moves=e4,e5&time_class=focus");
+    await click("g1");
+    expect(dots()).not.toEqual([]);
+    fireEvent.click(backBtn());
+    await settle();
+    expect(dots()).toEqual([]);
+    await click("e7"); // after 1.e4, Black to move
+    expect(dots()).not.toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: "Black" }));
+    await settle();
+    expect(dots()).toEqual([]);
+  });
+
+  it("no marks where no move is taken: a finished board and the 60-ply stop", async () => {
+    await open("?colour=black&moves=e4,e5,Qh5,Nc6,Bc4,Nf6,Qxf7%23&time_class=focus");
+    await click("e8");
+    expect(dots()).toEqual([]);
+    cleanup();
+    const shuffle = ["Nf3", "Nf6", "Ng1", "Ng8"];
+    await open(`?colour=white&moves=${Array.from({ length: 15 }, () => shuffle).flat().join(",")}&time_class=focus`);
+    await click("g1");
+    expect(dots()).toEqual([]);
+  });
+
+  it("an empty square or the opponent's piece shows nothing", async () => {
+    await open("?colour=white&time_class=focus");
+    await click("e5");
+    expect(dots()).toEqual([]);
+    await click("e7");
+    expect(dots()).toEqual([]);
   });
 });
 
