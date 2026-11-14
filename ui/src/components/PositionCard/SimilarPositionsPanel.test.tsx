@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PrepGroup, SimilarNeighbour, SimilarPositionsResponse } from "../../repertoire";
 import { ARROWS } from "../../utils/board";
@@ -226,7 +227,7 @@ async function openCompare() {
   const calls = stubFetch(() => ({ status: 200, body: response([neighbour({ fen: OTHER, distance: 4 })]) }));
   const onClose = vi.fn();
   const onIndexChange = vi.fn();
-  render(<Overlay items={[card(FEN), card(OTHER)]} initialIndex={0} onClose={onClose} onIndexChange={onIndexChange} />);
+  render(<Overlay items={[card(FEN), card(OTHER)]} initialIndex={0} onClose={onClose} onIndexChange={onIndexChange} />, { wrapper: MemoryRouter });
   fireEvent.click(header());
   await screen.findByText("Compare side by side");
   fireEvent.click(screen.getByText("Compare side by side"));
@@ -270,7 +271,7 @@ describe("SimilarCompareView in the Overlay", () => {
   it("a swipe that started before the view opened cannot page the list when it ends after (the state gate, not consumption)", async () => {
     const calls = stubFetch(() => ({ status: 200, body: response([neighbour({ fen: OTHER, distance: 4 })]) }));
     const onIndexChange = vi.fn();
-    render(<Overlay items={[card(FEN), card(OTHER)]} initialIndex={0} onClose={() => {}} onIndexChange={onIndexChange} />);
+    render(<Overlay items={[card(FEN), card(OTHER)]} initialIndex={0} onClose={() => {}} onIndexChange={onIndexChange} />, { wrapper: MemoryRouter });
     fireEvent.click(header());
     await screen.findByText("Compare side by side");
     fireEvent.touchStart(window, { touches: [{ clientX: 300 }] });
@@ -313,7 +314,7 @@ describe("the two layers, each on its own", () => {
 
   it("the Overlay registers no listeners of its own while the view is open (the gate, apart from consumption)", async () => {
     stubFetch(() => ({ status: 200, body: response([neighbour({ fen: OTHER, distance: 4 })]) }));
-    render(<Overlay items={[card(FEN), card(OTHER)]} initialIndex={0} onClose={() => {}} />);
+    render(<Overlay items={[card(FEN), card(OTHER)]} initialIndex={0} onClose={() => {}} />, { wrapper: MemoryRouter });
     fireEvent.click(header());
     await screen.findByText("Compare side by side");
     const spy = vi.spyOn(window, "addEventListener");
@@ -347,7 +348,7 @@ describe("panel identity and cache", () => {
 
   it("the list shrinking under an open view closes it (no step happens; the panel's identity change does)", async () => {
     stubFetch(() => ({ status: 200, body: response([neighbour({ fen: OTHER, distance: 4 })]) }));
-    const { rerender } = render(<Overlay items={[card(FEN), card(OTHER)]} initialIndex={1} onClose={() => {}} />);
+    const { rerender } = render(<Overlay items={[card(FEN), card(OTHER)]} initialIndex={1} onClose={() => {}} />, { wrapper: MemoryRouter });
     fireEvent.click(header());
     await screen.findByText("Compare side by side");
     fireEvent.click(screen.getByText("Compare side by side"));
@@ -358,7 +359,7 @@ describe("panel identity and cache", () => {
 
   it("a deviation card asks about its most common played move", async () => {
     const calls = stubFetch(() => ({ status: 200, body: response([]) }));
-    render(<Overlay items={[card(FEN, { movePlayed: null, mostCommonPlayed: "d3" })]} initialIndex={0} onClose={() => {}} />);
+    render(<Overlay items={[card(FEN, { movePlayed: null, mostCommonPlayed: "d3" })]} initialIndex={0} onClose={() => {}} />, { wrapper: MemoryRouter });
     fireEvent.click(header());
     await waitFor(() => expect(calls).toHaveLength(1));
     expect(calls[0].query.get("move")).toBe("d3");

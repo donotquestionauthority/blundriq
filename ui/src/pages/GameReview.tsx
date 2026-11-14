@@ -30,6 +30,7 @@ import { AskOpusPanel } from "../components/AskOpusPanel";
 import { EvalBar } from "../components/EvalBar";
 import { ExploreLayer } from "../components/ExploreLayer";
 import { AiExplanationPanel } from "../components/PositionCard/AiExplanationPanel";
+import { ExplorerEntry } from "../components/ExplorerEntry";
 import { PromotionChooser } from "../components/PromotionChooser";
 import { ArrowLegend, RepertoirePanel, ReviewLineReader } from "../components/ReviewBits";
 import { getGameReview, getReviewPrefs, markGameReviewed, setReviewPref } from "../games";
@@ -653,6 +654,11 @@ function ReviewBody(p: {
             </button>
           )}
         </div>
+        {!leakBlocked && (
+          <div className="mt-2 flex justify-center">
+            <ExplorerEntry moves={moves} ply={curPly} fen={position} colour={orientation} className={btn} />
+          </div>
+        )}
         {analysisDepth != null && <p className="mt-2 text-center text-xs text-zinc-500">Analysed at depth {analysisDepth}</p>}
       </div>
 

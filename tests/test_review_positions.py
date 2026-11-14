@@ -247,6 +247,21 @@ def test_the_history_starts_whole_calendar_months_before_the_newest_game(
     assert positions.history_start(conn, months) == start
 
 
+def test_the_newest_game_is_the_player_s_newest_analysable_dated_one(clean: psycopg.Connection[DictRow]) -> None:
+    """A game with no date, or another player's, never becomes the anchor."""
+    from tests.review.position_helpers import Games
+
+    g = Games(clean)
+    newest = datetime(2026, 7, 1, 12, tzinfo=UTC)
+    g.add(["e4"], at=newest)
+    undated = g.add(["d4"], at=newest + timedelta(days=3))
+    clean.execute("UPDATE chess_games SET played_at = NULL WHERE id = %s", (undated,))
+    theirs = g.add(["c4"], at=newest + timedelta(days=5))
+    clean.execute("INSERT INTO players (id, chesscom_username) VALUES (2, 'someone_else')")
+    clean.execute("UPDATE player_games SET player_id = 2 WHERE chess_game_id = %s", (theirs,))
+    assert positions.history_start(clean, 1) == datetime(2026, 6, 1, 12, tzinfo=UTC)
+
+
 def _cc_game(gid: str, end: datetime, moves: str, **over: Any) -> dict[str, Any]:
     g: dict[str, Any] = {
         "url": f"https://www.chess.com/game/live/{gid}",

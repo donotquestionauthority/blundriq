@@ -257,3 +257,14 @@ REPERTOIRE_PUZZLE_MIN_EVENTS = 3
 # visible (the drill's exposure row is the proof it was served; a drill is not the queue).
 DRILL_MAX_LINES = 50
 DRILL_PROOF_DAYS = 7
+
+# The Opening Explorer (core/explorer.py): a path from the start is at most EXPLORER_MAX_PLIES
+# SAN tokens (ui/src/explorer.ts holds the same number), each at most EXPLORER_SAN_MAX_CHARS,
+# comma-separated in a query value of at most EXPLORER_QUERY_MAX_CHARS. Its game statistics end
+# where the stored opening prefix does (OPENING_PREFIX_PLIES). The lines through a board are
+# listed EXPLORER_LINES_PAGE at a time, from an offset of at most EXPLORER_LINES_MAX_OFFSET.
+EXPLORER_MAX_PLIES = 60
+EXPLORER_SAN_MAX_CHARS = 10
+EXPLORER_QUERY_MAX_CHARS = 700
+EXPLORER_LINES_PAGE = 50
+EXPLORER_LINES_MAX_OFFSET = 100_000

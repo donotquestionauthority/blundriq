@@ -4,6 +4,7 @@ import { daysAgo } from "../../blunders";
 import { SQUARES } from "../../utils/board";
 import { buildArrows, buildPgn, decisionNodeArrows, parsesAsFen, sanToSquares } from "../../utils/chess";
 import { ExploreLayer } from "../ExploreLayer";
+import { ExplorerEntry } from "../ExplorerEntry";
 import { AiExplanationPanel } from "./AiExplanationPanel";
 import { ClassBadge, RepliesLine } from "./CardInner";
 import { GamesTable } from "./GamesTable";
@@ -247,6 +248,7 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
         <button type="button" data-testid="explore-launch" onClick={() => canExplore && setExploreSeed({ fen: d.fen, orientation: d.color })} disabled={!canExplore} title={canExplore ? undefined : "This position cannot be explored"} className="w-full rounded border border-sky-300 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-800 disabled:opacity-40 dark:border-sky-800 dark:bg-sky-900/30 dark:text-sky-300">
           Explore from here
         </button>
+        <ExplorerEntry moves={d.moves} ply={d.ply} fen={d.fen} colour={d.color} className="block w-full rounded border border-violet-300 bg-violet-50 px-3 py-2 text-center text-xs font-medium text-violet-800 disabled:opacity-40 dark:border-violet-800 dark:bg-violet-900/30 dark:text-violet-300" />
 
         {d.record && (
           <p className="text-sm text-zinc-500">

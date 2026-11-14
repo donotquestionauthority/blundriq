@@ -14,6 +14,7 @@ import GameReview from "./GameReview";
 import { ApiError } from "../api";
 import type { GameReviewResponse, PlyAnalysisEntry, RepertoireEntry } from "../games";
 import { ARROWS } from "../utils/board";
+import OpeningExplorer from "./OpeningExplorer";
 
 // The review board's options, and separately the walk-through's board (its id starts with "lw"):
 // two boards can be on the page, and an assertion about arrows is about the review's.
@@ -75,6 +76,11 @@ vi.mock("../components/AskOpusPanel", () => ({
     return <div data-testid="ask-panel" data-fen={props.fen} data-best={props.bestMoveSan ?? ""} data-reason={props.disabledReason ?? ""} />;
   },
 }));
+// The Opening Explorer's engine, for the entry tests' landing: never ready.
+vi.mock("../engine/useStockfish", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../engine/useStockfish")>();
+  return { ...actual, useStockfish: () => ({ ready: false, evalState: null, analyze: vi.fn(), stop: vi.fn(), reset: vi.fn() }) };
+});
 const askReview = vi.fn();
 const askReviewDryRun = vi.fn();
 // The history under the walk-through's box (the real `AskHistory`, inside the real `LineAskPanel`).
@@ -1269,5 +1275,71 @@ describe("stepping, Explore and the exits", () => {
     await renderReview(2);
     fireEvent.click(screen.getByLabelText("Close review"));
     expect(screen.getByTestId("probe").textContent).toBe("/review|null");
+  });
+});
+
+describe("Open in Opening Explorer", () => {
+  const shuffle = ["Nf3", "Nf6", "Ng1", "Ng8"];
+  const long = buildSpine([...Array.from({ length: 15 }, () => shuffle).flat(), "Nf3", "Nf6"]);
+  const longPayload = (): GameReviewResponse => {
+    const p = reviewPayload();
+    return {
+      ...p,
+      game: { ...p.game, moves: long.moves, fen_sequence: long.fen_sequence, ply_analysis: long.fen_sequence.map((_, i): PlyAnalysisEntry => ({ ply: i, eval: 10, best_move: "d4", best_line: "d4" })) },
+      blunders: [],
+      repertoire: null,
+    };
+  };
+  // The landing is the Opening Explorer itself; what it asks the API for is the board it opened.
+  const asked: string[] = [];
+  beforeEach(() => {
+    asked.length = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        const path = url.replace(/^.*\/api/, "");
+        asked.push(path);
+        return { ok: false, status: 404, statusText: "Not Found", json: async () => ({}) };
+      }),
+    );
+  });
+  afterEach(() => vi.unstubAllGlobals());
+  async function renderAt(ply: number) {
+    getReviewPrefs.mockResolvedValue({ review_default_mode: "review", review_show_timer: true });
+    getGameReview.mockResolvedValue(longPayload());
+    render(
+      <MemoryRouter initialEntries={[{ pathname: "/review/1", search: `?ply=${ply}` }]}>
+        <Routes>
+          <Route path="/review/:gameId" element={<GameReview />} />
+          <Route path="/explorer" element={<OpeningExplorer />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+  const positionReads = () => asked.filter((p) => p.startsWith("/explorer/position")).map((p) => new URL(p, "http://x").searchParams);
+
+  it("at ply 60 opens exactly the board on show", async () => {
+    await renderAt(60);
+    fireEvent.click(screen.getByRole("link", { name: "Open in Opening Explorer" }));
+    for (let i = 0; i < 4; i++) await act(async () => {});
+    const reads = positionReads();
+    expect(reads.map((q) => [q.get("colour"), q.get("moves"), q.get("time_class")])).toEqual([["white", long.moves.slice(0, 60).join(","), "focus"]]);
+    expect(boardOptions.position).toBe(long.fen_sequence[60]);
+  });
+
+  it("at ply 61 is disabled with its reason and does not navigate", async () => {
+    await renderAt(61);
+    const entry = screen.getByTestId("explorer-entry");
+    expect(entry).toBeDisabled();
+    expect(screen.getByText("The Opening Explorer covers the first 30 moves.")).toBeInTheDocument();
+    fireEvent.click(entry);
+    for (let i = 0; i < 4; i++) await act(async () => {});
+    expect(screen.queryByTestId("opening-explorer")).toBeNull();
+    expect(positionReads()).toEqual([]);
   });
 });

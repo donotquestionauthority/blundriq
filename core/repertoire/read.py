@@ -387,6 +387,211 @@ def coverage(conn: Connection[Any], fen: str, move: str | None = None) -> Row:
     }
 
 
+# --- one board, for the Opening Explorer --------------------------------------------
+#
+# `rep_lines` returns every occurrence with its line's whole move list, which at the start
+# board is every line of the colour. The explorer asks about the boards it visits most, so its
+# readers reduce the occurrences in SQL and return only what a reduction needs. The probe is
+# `_LINES_SQL`'s (its fence comment applies), with the colour given rather than asserted: at
+# the opponent's turn a book's occurrences are the replies it prepares.
+
+_BOARD_OCC = """
+qk AS MATERIALIZED (
+    SELECT %(fen)s::text AS fen, bq_position_key(%(fen)s) AS key, bq_canonical_fen(%(fen)s) AS canon
+),
+occ AS MATERIALIZED (
+    SELECT rl.id AS line_id, rl.line_name, ch.title AS chapter_title, bk.title AS book_title,
+           (k.ord - 1)::int AS line_ply, rl.moves->>((k.ord - 1)::int) AS expected_move,
+           rl.fen_sequence->>((k.ord - 1)::int) = qk.fen AS exact
+    FROM qk
+    CROSS JOIN LATERAL (
+        SELECT rl_i.id, rl_i.line_name, rl_i.chapter_id, rl_i.moves, rl_i.fen_sequence, rl_i.position_keys
+        FROM repertoire_lines rl_i
+        WHERE rl_i.position_keys @> ARRAY[qk.key] AND rl_i.active
+        OFFSET 0
+    ) rl
+    JOIN chapters ch ON ch.id = rl.chapter_id
+    JOIN books bk ON bk.id = ch.book_id,
+    LATERAL unnest(rl.position_keys) WITH ORDINALITY AS k(key, ord)
+    WHERE k.key = qk.key
+      AND bq_canonical_fen(rl.fen_sequence->>((k.ord - 1)::int)) = qk.canon
+      AND bk.player_id = %(pid)s AND ch.active AND bk.active AND bk.color = %(colour)s
+)"""
+
+# The tie-break's order (`tie_break`) in SQL: NULL text as '', byte order.
+_TIE_ORDER = (
+    "coalesce(book_title, '') COLLATE \"C\", coalesce(chapter_title, '') COLLATE \"C\","
+    " coalesce(line_name, '') COLLATE \"C\", line_id, line_ply"
+)
+
+# One row per (stored move, exact): its distinct lines, their smallest and largest id (two
+# groups name different lines unless both are the same single line), and the group's
+# tie-break-minimal occurrence; every row also carries the board's distinct-line count.
+_BOARD_GROUPS_SQL = f"""
+WITH {_BOARD_OCC},
+grouped AS (
+    SELECT expected_move, exact, count(DISTINCT line_id) AS lines, min(line_id) AS min_line,
+           max(line_id) AS max_line
+    FROM occ GROUP BY expected_move, exact
+),
+rep AS (
+    SELECT DISTINCT ON (expected_move, exact) expected_move, exact, book_title, chapter_title, line_name,
+           line_id, line_ply
+    FROM occ ORDER BY expected_move, exact, {_TIE_ORDER}
+)
+SELECT g.expected_move, g.exact, g.lines, g.min_line, g.max_line, r.book_title, r.chapter_title,
+       r.line_name, r.line_id, r.line_ply, (SELECT count(DISTINCT line_id) FROM occ) AS lines_through
+FROM grouped g JOIN rep r ON r.expected_move IS NOT DISTINCT FROM g.expected_move AND r.exact = g.exact
+"""
+
+# The distinct lines behind several stored spellings of one move.
+_BOARD_RECOUNT_SQL = f"""
+WITH {_BOARD_OCC}
+SELECT count(DISTINCT line_id) AS lines FROM occ
+WHERE expected_move = ANY(%(spellings)s::text[]) AND exact = ANY(%(exact)s::bool[])
+"""
+
+# One row per line holding the board, at its earliest occurrence (the one the tie-break prefers
+# within a line), in tie-break order, one page; the count is of distinct lines. Always one row:
+# a page past the end is that row with no line.
+_BOARD_LINES_SQL = f"""
+WITH {_BOARD_OCC},
+per_line AS (
+    SELECT DISTINCT ON (line_id) line_id, line_name, chapter_title, book_title, line_ply
+    FROM occ ORDER BY line_id, line_ply
+)
+SELECT (SELECT count(*) FROM per_line) AS total, p.*
+FROM (SELECT 1) one
+LEFT JOIN LATERAL (
+    SELECT * FROM per_line ORDER BY {_TIE_ORDER} LIMIT %(limit)s OFFSET %(offset)s
+) p ON TRUE
+"""
+
+STATUS_REPLIES = "replies"
+_occurrence_keys = ("book", "chapter", "line_name", "line_id", "line_ply")
+
+
+def _occurrence(r: Row) -> Row:
+    return {
+        "book": r["book_title"],
+        "chapter": r["chapter_title"],
+        "line_name": r["line_name"],
+        "line_id": r["line_id"],
+        "line_ply": r["line_ply"],
+    }
+
+
+def _board_params(fen: str, colour: str) -> dict[str, Any]:
+    if colour not in ("white", "black"):
+        raise ValueError(f"colour must be white or black, not {colour!r}")
+    return {"pid": PLAYER_ID, "fen": fen, "colour": colour}
+
+
+def board_moves(conn: Connection[Any], fen: str, colour: str) -> Row:
+    """What the `colour` repertoire says at `fen` (raw, counters included), from one grouped probe.
+
+    At the player's turn this is `project_ply` over `rep_lines`: the same status (`match`,
+    `agree`, `end_of_line`, `conflict`, `unreadable`, `none`), by the same precedence, with the
+    prescribed `moves` (one for match and agree, one per group for conflict), each with its
+    representative occurrence (the tie-break minimum of the move's occurrences) and its count
+    of distinct `lines`. At the opponent's turn the status is `replies` and `moves` are every
+    move the book prepares an answer to (`none` when no line holds the board). `representative`
+    is the selected occurrence for match, agree and end of line. `lines_through` counts the
+    distinct lines holding the board."""
+    params = _board_params(fen, colour)
+    with conn.cursor() as cur:
+        cur.execute(_BOARD_GROUPS_SQL, params)
+        rows = [dict(r) for r in cur.fetchall()]
+    lines_through = int(rows[0]["lines_through"]) if rows else 0
+    mine = side_to_move(fen) == colour[0]
+    out = _reduce_board(conn, fen, params, rows, mine)
+    return {**out, "lines_through": lines_through}
+
+
+def _board(status: str, moves: list[Row] | None = None, representative: Row | None = None) -> Row:
+    return {"status": status, "moves": moves or [], "representative": representative}
+
+
+def _moves_of(conn: Connection[Any], fen: str, params: dict[str, Any], rows: list[Row]) -> list[Row] | None:
+    """The rows' distinct moves, canonical, each with its representative and line count, in
+    the tie-break order of the representatives; None when a stored move is not legal here."""
+    try:
+        parsed = canonicalise(fen, [r for r in rows if r["expected_move"] is not None])
+    except ValueError:
+        return None
+    by_move: dict[str, list[Row]] = {}
+    for r in parsed:
+        by_move.setdefault(str(r["canonical_move"]), []).append(r)
+    out: list[Row] = []
+    for move, members in by_move.items():
+        rep = min((_occurrence(m) for m in members), key=tie_break)
+        if len(members) == 1:
+            lines = int(members[0]["lines"])
+        else:  # one move stored under several spellings: count its lines once
+            recount = {
+                **params,
+                "spellings": [str(m["expected_move"]) for m in members],
+                "exact": sorted({bool(m["exact"]) for m in members}),
+            }
+            row = conn.execute(_BOARD_RECOUNT_SQL, recount).fetchone()
+            lines = int(row["lines"]) if row else 0
+        out.append(
+            {
+                "san": move,
+                **rep,
+                "lines": lines,
+                "min_line": min(int(m["min_line"]) for m in members),
+                "max_line": max(int(m["max_line"]) for m in members),
+            }
+        )
+    out.sort(key=tie_break)
+    return out
+
+
+def _single_line(moves: list[Row]) -> bool:
+    """Whether every move's occurrences are one and the same line: then the moves never
+    diverge across lines."""
+    ids = {(m["min_line"], m["max_line"]) for m in moves}
+    return len(ids) == 1 and next(iter(ids))[0] == next(iter(ids))[1]
+
+
+def _public(moves: list[Row]) -> list[Row]:
+    return [{k: v for k, v in m.items() if k not in ("min_line", "max_line")} for m in moves]
+
+
+def _reduce_board(conn: Connection[Any], fen: str, params: dict[str, Any], rows: list[Row], mine: bool) -> Row:
+    if not rows:
+        return _board(STATUS_NONE)
+    if not mine:
+        replies = _moves_of(conn, fen, params, rows)
+        return _board(STATUS_UNREADABLE) if replies is None else _board(STATUS_REPLIES, _public(replies))
+    exact = [r for r in rows if r["exact"]]
+    pool_rows = exact or rows
+    continuing = [r for r in pool_rows if r["expected_move"] is not None]
+    if not continuing:
+        return _board(STATUS_END_OF_LINE, representative=min((_occurrence(r) for r in pool_rows), key=tie_break))
+    moves = _moves_of(conn, fen, params, continuing)
+    if moves is None:
+        return _board(STATUS_UNREADABLE)
+    if len(moves) == 1 or (exact and _single_line(moves)):
+        selected = min(moves, key=tie_break)
+        status = STATUS_MATCH if exact else STATUS_AGREE
+        return _board(status, _public([selected]), {k: selected[k] for k in _occurrence_keys})
+    return _board(STATUS_CONFLICT, _public(moves))
+
+
+def board_lines(conn: Connection[Any], fen: str, colour: str, *, offset: int, limit: int) -> Row:
+    """The lines of the `colour` repertoire holding `fen`'s board, one row per line at its
+    earliest occurrence, in tie-break order: `limit` of them from `offset`, and `total`, the
+    count of distinct lines."""
+    params = {**_board_params(fen, colour), "offset": offset, "limit": limit}
+    with conn.cursor() as cur:
+        cur.execute(_BOARD_LINES_SQL, params)
+        rows = [dict(r) for r in cur.fetchall()]
+    total = int(rows[0]["total"]) if rows else 0
+    return {"total": total, "rows": [_occurrence(r) for r in rows if r["line_id"] is not None]}
+
+
 # --- a whole game ----------------------------------------------------------------
 
 

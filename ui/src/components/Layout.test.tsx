@@ -24,7 +24,7 @@ afterEach(() => _resetUnsavedAttemptForTests());
 describe("Layout navigation", () => {
   it("shows the primary links inline and the rest only once More is opened", () => {
     renderAt("/");
-    for (const label of ["Home", "Practice", "Blunders", "Deviations"]) expect(screen.getByRole("link", { name: label })).toBeInTheDocument();
+    for (const label of ["Home", "Practice", "Blunders", "Deviations", "Opening Explorer"]) expect(screen.getByRole("link", { name: label })).toBeInTheDocument();
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Repertoire" })).not.toBeInTheDocument();
     const more = screen.getByRole("button", { name: "More ▾" });
@@ -64,14 +64,14 @@ describe("Layout navigation", () => {
     expect(items[5]).toHaveFocus(); // wraps to the last item
   });
 
-  it("the hamburger panel lists all ten pages and Log out, and closes on a link", () => {
+  it("the hamburger panel lists all eleven pages and Log out, and closes on a link", () => {
     renderAt("/");
     const burger = screen.getByRole("button", { name: "Menu" });
     expect(burger).toHaveAttribute("aria-expanded", "false");
     expect(document.getElementById("nav-panel")).toBeNull();
     fireEvent.click(burger);
     const panel = document.getElementById("nav-panel")!;
-    expect(within(panel).getAllByRole("link").map((el) => el.textContent)).toEqual(["Home", "Practice", "Blunders", "Deviations", "Scout", "Repertoire", "Report", "Review", "Games", "Preferences"]);
+    expect(within(panel).getAllByRole("link").map((el) => el.textContent)).toEqual(["Home", "Practice", "Blunders", "Deviations", "Opening Explorer", "Scout", "Repertoire", "Report", "Review", "Games", "Preferences"]);
     expect(within(panel).getByRole("button", { name: "Log out" })).toBeInTheDocument();
     fireEvent.click(within(panel).getByRole("link", { name: "Practice" }));
     expect(screen.getByText("practice page")).toBeInTheDocument();

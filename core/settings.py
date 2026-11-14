@@ -20,12 +20,13 @@ argued for, which were labelled provisional, and which were never explained.
 from __future__ import annotations
 
 import json
-from typing import Any, Literal
+from functools import cache
+from typing import Annotated, Any, Literal, cast
 
 from jinja2 import TemplateSyntaxError
 from psycopg import Connection
 from psycopg.rows import tuple_row
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, TypeAdapter, field_validator
 
 from core.constants import AI_THINKING_ALWAYS_ON_MODELS
 from core.prompts import ASK_PROMPT, DEFAULT_PROMPTS, LINE_PROMPT, compile_template
@@ -374,6 +375,13 @@ class Settings(BaseModel):
     review_history_months: int = Field(
         default=12, ge=1, le=36, description="Months of games counted toward a position's numbers."
     )
+    # The Opening Explorer counts the player's games over this many months back from the newest
+    # game (the same anchor as review_history_months, a separate value). It reads only the stored
+    # opening prefix: a game older than the opening backfill's reach carries none and counts for
+    # nothing, however far back this reaches.
+    explorer_history_months: int = Field(
+        default=12, ge=1, le=36, description="Months of games the Opening Explorer counts."
+    )
     review_position_min_games: int = Field(
         default=5, ge=3, le=100, description="Games in which you moved from a position before it can be ranked."
     )
@@ -470,6 +478,50 @@ def load(conn: Connection[Any]) -> Settings:
         return Settings()
     data = row[0]
     return Settings.model_validate(data if isinstance(data, dict) else json.loads(data))
+
+
+def load_fields(conn: Connection[Any], *names: str) -> dict[str, Any]:
+    """The named settings, each as `load` would give it for that key, reading only those keys of
+    the row and validating each against its own field, without building the model (whose default
+    prompts are validated whenever one is built). A stored key not asked for is not read, so a bad
+    value there does not refuse these, as it refuses `load`."""
+    unknown = [n for n in names if n not in Settings.model_fields]
+    if unknown:
+        raise ValueError(f"unknown settings: {unknown}")
+    with conn.cursor(row_factory=tuple_row) as cur:
+        cur.execute(
+            "SELECT (SELECT jsonb_object_agg(k, data -> k) FROM unnest(%s::text[]) AS k WHERE data ? k)"
+            " FROM settings WHERE id = 1",
+            (list(names),),
+        )
+        row = cur.fetchone()
+    raw: Any = row[0] if row is not None and row[0] is not None else {}
+    data = cast(dict[str, Any], raw if isinstance(raw, dict) else json.loads(raw))
+    return {n: _field_adapter(n).validate_python(data[n]) if n in data else _field_default(n) for n in names}
+
+
+@cache
+def _field_adapter(name: str) -> TypeAdapter[Any]:
+    """A validator for one field alone: its type with its constraints (bounds, literals). Refused
+    while the model validates anything beyond its fields (a validator of its own, a configuration,
+    a post-init): the adapter would not run it."""
+    decorators = Settings.__pydantic_decorators__
+    model_level = (
+        any(name in d.info.fields or "*" in d.info.fields for d in decorators.field_validators.values())
+        or decorators.model_validators
+        or decorators.root_validators
+        or Settings.model_config != BaseModel.model_config
+        or Settings.model_post_init is not BaseModel.model_post_init
+    )
+    if model_level:
+        raise ValueError(f"{name} is validated by the model, not by its field alone")
+    field = Settings.model_fields[name]
+    # The FieldInfo as metadata carries the field's constraints.
+    return TypeAdapter(cast(Any, Annotated)[field.annotation, field])
+
+
+def _field_default(name: str) -> Any:
+    return Settings.model_fields[name].get_default(call_default_factory=True, validated_data={})
 
 
 def save(conn: Connection[Any], values: Settings) -> None:

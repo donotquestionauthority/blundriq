@@ -5,6 +5,7 @@ import { useApi } from "../hooks/useApi";
 import { daysAgo } from "../blunders";
 import { OPENING_ALL, belowExpectation, getPositionMoveGames, getPositionPage, givenAway, isStaleOpeningError, lineText, moveLabel, pct, positionPath, positionSearch, readMovesView, readPositionPage, readReviewSettings, reviewSettingsSearch, whyThisGame } from "../review";
 import type { MistakeDetail, MoveGame, MovesView, PositionGame, ReviewTimeClass } from "../review";
+import { ExplorerEntry } from "../components/ExplorerEntry";
 import { MistakeChip, PositionBoard, StatusChip, TrendBars, VisitStrip } from "../components/ReviewBits";
 import { returnTarget } from "../utils/returnTo";
 import type { From } from "../utils/returnTo";
@@ -261,6 +262,7 @@ export default function ReviewPosition() {
                     <span className="mr-2 font-sans text-sm font-normal text-zinc-500">{head.colour === "white" ? "White" : "Black"}</span>
                     {head.line_san.length ? lineText(head.line_san) : "Starting position"}
                   </h1>
+                  {head.fen && (head.colour === "white" || head.colour === "black") && <ExplorerEntry moves={head.line_san} ply={head.line_san.length} fen={head.fen} colour={head.colour} className="inline-block rounded border border-zinc-300 bg-white px-3 py-1.5 text-sm disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-900" />}
                 </div>
               </div>
             );

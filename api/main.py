@@ -23,6 +23,7 @@ from api.routes import auth as auth_routes
 from api.routes import blunders as blunders_routes
 from api.routes import deviations as deviations_routes
 from api.routes import explore as explore_routes
+from api.routes import explorer as explorer_routes
 from api.routes import games as games_routes
 from api.routes import home as home_routes
 from api.routes import latest as latest_routes
@@ -139,6 +140,7 @@ def create_app() -> FastAPI:
     app.include_router(review_routes.router)
     app.include_router(latest_routes.router)
     app.include_router(explore_routes.router)
+    app.include_router(explorer_routes.router)
     app.include_router(ai_routes.router)
     return app
 

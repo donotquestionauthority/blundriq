@@ -54,6 +54,7 @@ function groupOf(key: string): string {
     srs: "Spaced repetition",
     review: "Review",
     explore: "Explore & AI",
+    explorer: "Opening Explorer",
     ai: "Explore & AI",
   };
   return named[head] ?? "Other";
