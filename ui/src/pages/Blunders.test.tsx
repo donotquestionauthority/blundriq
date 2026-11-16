@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EngineEval } from "../engine/useStockfish";
 import type { GapCardResponse } from "../repertoire";
@@ -9,6 +9,7 @@ import { buildQuery, defaultFilters, formatDryRun, toCard, topClass } from "../b
 import type { BlunderPosition, BlundersResponse } from "../blunders";
 import { buildArrows, buildPgn, lichessAnalyzeUrl, numberedLine } from "../utils/chess";
 import { ARROWS } from "../utils/board";
+import { leaveReview } from "../utils/returnTo";
 
 // The board is not under test. The mock shows its arrows, and a button that plays a move on it.
 let nextDrop = { from: "f3", to: "e5" };
@@ -71,7 +72,7 @@ const position = (over: Partial<BlunderPosition> = {}): BlunderPosition => ({
   ply: 6,
   chess_game_id: 77,
   moves: MOVES,
-  games: [{ chess_game_id: 77, game_url: "https://example.test/77", played_at: new Date().toISOString(), result: "loss", classification: "blunder", cp_loss: 250, move_played: "d3", best_move: "Nxe5", in_repertoire: false, deviated_by_me: false }],
+  games: [{ chess_game_id: 77, ply: 6, game_url: "https://example.test/77", played_at: new Date().toISOString(), result: "loss", classification: "blunder", cp_loss: 250, move_played: "d3", best_move: "Nxe5", in_repertoire: false, deviated_by_me: false }],
   ...over,
 });
 
@@ -832,5 +833,188 @@ describe("Blunders page", () => {
     await vi.waitFor(() => expect(calls.filter((c) => c.path === "/blunders")).toHaveLength(listsBefore + 1));
     expect(lastList(calls)?.query.get("stay")).toBe(STAY);
     await vi.waitFor(() => expect(calls.filter((c) => c.path === "/repertoire/coverage").length).toBeGreaterThan(coverageBefore));
+  });
+});
+
+// ─── Coming back from a game's review ────────────────────────────────────────────────────────
+
+/** The review route as far as the list cares: where it is, its own Close (the same `leaveReview`
+ *  GameReview exits through), the browser's Back, and the nav link that starts a fresh visit. */
+function ReviewStub() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  return (
+    <div>
+      <p data-testid="review-at">{`${location.pathname}${location.search}`}</p>
+      <button type="button" onClick={() => leaveReview(location.state, navigate)}>
+        Close review
+      </button>
+      <button type="button" onClick={() => navigate(-1)}>
+        Browser back
+      </button>
+      <Link to="/blunders">Blunders nav</Link>
+    </div>
+  );
+}
+
+/** What the current history entry carries, as a reload would find it. */
+function StateProbe() {
+  const location = useLocation();
+  return <p data-testid="entry-state">{JSON.stringify(location.state)}</p>;
+}
+
+const renderRoutes = (entry: string | { pathname: string; state: unknown } = "/blunders") =>
+  render(
+    <MemoryRouter initialEntries={[entry]}>
+      <StateProbe />
+      <Routes>
+        <Route path="/blunders" element={<Blunders />} />
+        <Route path="/review/:gameId" element={<ReviewStub />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+describe("Blunders: a game's review and back", () => {
+  const THIRD = "rnbqkbnr/pppp1ppp/8/4p3/2B1P3/8/PPPP1PPP/RNBQK1NR b KQkq - 1 2";
+  const game78 = { chess_game_id: 78, ply: 8, game_url: "https://lichess.org/AbCdEfGh", played_at: new Date().toISOString(), result: "win" as const, classification: "blunder" as const, cp_loss: 300, move_played: "a6", best_move: "Nf6", in_repertoire: false, deviated_by_me: false };
+  const second = (isNew: boolean) => position({ fen: THIRD, count: 2, chess_game_id: 78, ply: 8, is_new: isNew, games: [game78] });
+
+  /** Page 1 of the list holds the card under test as its second card; page 0 holds another. */
+  function stubList(state: { secondOnPage1: boolean; page0Empty?: boolean }) {
+    // NEW as the server decides it: within the visit that first showed the board (its marker sent
+    // back), and on the first look; a later visit has acknowledged it.
+    let looks = 0;
+    const isNew = (q: URLSearchParams) => q.get("stay") === STAY || looks++ === 0;
+    return stubFetch({
+      "/settings": () => ({ status: 200, body: SETTINGS }),
+      "/blunders/prompts": () => ({ status: 200, body: PROMPTS }),
+      "/blunders": (_m, _b, q) => ({
+        status: 200,
+        body: q.get("page") === "1" ? page(state.secondOnPage1 ? [position(), second(isNew(q))] : [position()], { page: 1, total_pages: 2 }) : page(state.page0Empty ? [] : [position({ fen: OTHER })], { total_pages: 2 }),
+      }),
+    });
+  }
+
+  /** Window "last 200 games", page 2, the second card showing in the overlay. */
+  async function openSecondCardOnPage2(calls: ReturnType<typeof stubFetch>) {
+    await screen.findAllByTestId("position-card");
+    fireEvent.change(screen.getByLabelText("Window"), { target: { value: "n200" } });
+    await vi.waitFor(() => expect(lastList(calls)?.query.get("last_n_games")).toBe("200"));
+    fireEvent.click(await screen.findByText("Next →"));
+    await vi.waitFor(() => expect(screen.getAllByTestId("position-card")).toHaveLength(2));
+    fireEvent.click(screen.getAllByTestId("position-card")[0]);
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    return screen.findByRole("dialog", { name: "Position" });
+  }
+
+  const listsAfter = (calls: ReturnType<typeof stubFetch>, n: number) => calls.slice(n).filter((c) => c.path === "/blunders");
+
+  it("Close and browser Back each come back to the same list, page and visit, with the card open", async () => {
+    const calls = stubList({ secondOnPage1: true });
+    renderRoutes();
+    let dialog = await openSecondCardOnPage2(calls);
+    expect(within(dialog).getByText("2 / 2")).toBeInTheDocument();
+
+    for (const way of ["Close review", "Browser back"]) {
+      fireEvent.click(within(dialog).getByRole("link", { name: /ago|today|yesterday/ }));
+      expect(await screen.findByTestId("review-at")).toHaveTextContent("/review/78?ply=8");
+      const n = calls.length;
+      fireEvent.click(screen.getByRole("button", { name: way }));
+      dialog = await screen.findByRole("dialog", { name: "Position" });
+      expect(within(dialog).getByText("2 / 2")).toBeInTheDocument();
+      expect(screen.getAllByTestId("position-card")[1]).toHaveTextContent("NEW");
+      // The landing asks for the list as it was left: the same filters and page, under the same visit.
+      const [landing] = listsAfter(calls, n);
+      expect(landing.query.get("page")).toBe("1");
+      expect(landing.query.get("last_n_games")).toBe("200");
+      expect(landing.query.get("stay")).toBe(STAY);
+      expect(calls.slice(n).some((c) => c.path === "/settings")).toBe(false);
+      expect(screen.getByRole("button", { name: "← Prev" })).toBeEnabled(); // the list itself is on page 2
+    }
+  });
+
+  it("Back after the list moved on reopens the card the review was opened from", async () => {
+    const calls = stubList({ secondOnPage1: true });
+    renderRoutes();
+    let dialog = await openSecondCardOnPage2(calls);
+    fireEvent.click(within(dialog).getByRole("link", { name: /ago|today|yesterday/ }));
+    await screen.findByTestId("review-at");
+    fireEvent.click(screen.getByRole("button", { name: "Browser back" }));
+    dialog = await screen.findByRole("dialog", { name: "Position" });
+    // Step to the first card and open its game instead.
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    expect(within(dialog).getByText("1 / 2")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("link", { name: /ago|today|yesterday/ }));
+    expect(await screen.findByTestId("review-at")).toHaveTextContent("/review/77?ply=6");
+    fireEvent.click(screen.getByRole("button", { name: "Browser back" }));
+    dialog = await screen.findByRole("dialog", { name: "Position" });
+    expect(within(dialog).getByText("1 / 2")).toBeInTheDocument();
+  });
+
+  it.each(["Close review", "Browser back"])("a return is spent (%s): no entry carries it, so a reload starts a fresh visit", async (way) => {
+    const calls = stubList({ secondOnPage1: true });
+    const { unmount } = renderRoutes();
+    const dialog = await openSecondCardOnPage2(calls);
+    fireEvent.click(within(dialog).getByRole("link", { name: /ago|today|yesterday/ }));
+    await screen.findByTestId("review-at");
+    fireEvent.click(screen.getByRole("button", { name: way }));
+    await screen.findByRole("dialog", { name: "Position" });
+    await vi.waitFor(() => expect(screen.getByTestId("entry-state").textContent).toBe("null"));
+    const kept = JSON.parse(screen.getByTestId("entry-state").textContent ?? "null") as unknown;
+
+    // The same entry, reloaded: the settings' defaults, page 0, no marker, no card.
+    unmount();
+    const n = calls.length;
+    renderRoutes({ pathname: "/blunders", state: kept });
+    await screen.findAllByTestId("position-card");
+    expect(calls.slice(n).some((c) => c.path === "/settings")).toBe(true);
+    expect(listsAfter(calls, n)[0].query.toString()).toBe(buildQuery(defaultFilters(SETTINGS), 0));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("the card reopens on the return's first answer only, never when the list later comes back to that page", async () => {
+    const state = { secondOnPage1: true, page0Empty: false };
+    const calls = stubList(state);
+    renderRoutes();
+    const dialog = await openSecondCardOnPage2(calls);
+    fireEvent.click(within(dialog).getByRole("link", { name: /ago|today|yesterday/ }));
+    await screen.findByTestId("review-at");
+    fireEvent.click(screen.getByRole("button", { name: "Close review" }));
+    await screen.findByRole("dialog", { name: "Position" });
+    fireEvent.keyDown(window, { key: "Escape" });
+    // An empty page between them unmounts the cards; coming back to page 2 mounts them again.
+    state.page0Empty = true;
+    fireEvent.click(screen.getByRole("button", { name: "← Prev" }));
+    expect(await screen.findByText("No recurring positions for these filters.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Next →" }));
+    await vi.waitFor(() => expect(screen.getAllByTestId("position-card")).toHaveLength(2));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("a card that is gone on return leaves the list with none open; a nav visit starts fresh", async () => {
+    const state = { secondOnPage1: true };
+    const calls = stubList(state);
+    renderRoutes();
+    const dialog = await openSecondCardOnPage2(calls);
+    fireEvent.click(within(dialog).getByRole("link", { name: /ago|today|yesterday/ }));
+    await screen.findByTestId("review-at");
+    state.secondOnPage1 = false;
+    fireEvent.click(screen.getByRole("button", { name: "Close review" }));
+    await vi.waitFor(() => expect(screen.getAllByTestId("position-card")).toHaveLength(1));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(lastList(calls)?.query.get("page")).toBe("1");
+
+    // A fresh visit through the nav: the settings' defaults, page 0, no marker, no card.
+    fireEvent.click(screen.getAllByTestId("position-card")[0]);
+    const again = await screen.findByRole("dialog", { name: "Position" });
+    fireEvent.click(within(again).getByRole("link", { name: /ago|today|yesterday/ }));
+    await screen.findByTestId("review-at");
+    const n = calls.length;
+    fireEvent.click(screen.getByRole("link", { name: "Blunders nav" }));
+    await screen.findAllByTestId("position-card");
+    expect(calls.slice(n).some((c) => c.path === "/settings")).toBe(true);
+    const [fresh] = listsAfter(calls, n);
+    expect(fresh.query.toString()).toBe(buildQuery(defaultFilters(SETTINGS), 0));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });

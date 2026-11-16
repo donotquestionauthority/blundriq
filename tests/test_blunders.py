@@ -102,6 +102,7 @@ def test_a_board_is_counted_in_distinct_games_and_scored_by_each_games_worst_ins
     assert card["fen"] == A_LATER and card["move_played"] == "h3" and card["ply"] == 16 and card["cp_loss"] == 500
     assert card["chess_game_id"] == 1 and card["moves"] == ["e4", "e5"]
     assert [g["chess_game_id"] for g in card["games"]] == [0, 1, 2]  # newest first, one row per game
+    assert [g["ply"] for g in card["games"]] == [4, 16, 4]  # each row's own occurrence: where Review opens
     assert [g["classification"] for g in card["games"]] == ["mistake", "miss", "blunder"] and card["games"][1][
         "result"
     ] == "loss"

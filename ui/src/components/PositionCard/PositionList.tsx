@@ -3,6 +3,7 @@ import { CardInner } from "./CardInner";
 import { Overlay } from "./Overlay";
 import type { AddToRepertoire } from "./RepertoireBadge";
 import type { BoardSize, PositionCardData } from "./types";
+import { cardIdentity } from "../../utils/cardReturn";
 
 const SIZES: BoardSize[] = ["S", "M", "L"];
 
@@ -14,10 +15,15 @@ const SIZES: BoardSize[] = ["S", "M", "L"];
  * `onShowingChange` tells the page which card the overlay shows — on opening, stepping, a list
  * that shrank under it (the overlay slides to the previous board) — and null once it closes;
  * `onLayerOpen` that something now covers the card (the overlay's own layers, or the page's dialog).
+ * `returnState` is the page's snapshot for a game's review link on the showing card; `restoreKey`
+ * opens the card of that identity when the list mounts with it, after a return.
  */
-export function PositionList({ items, accent, headerRight, overlayActions, overlaySuspended, addToRepertoire, repertoireRevision, onShowingChange, onLayerOpen }: { items: PositionCardData[]; accent?: (item: PositionCardData) => string; headerRight?: (item: PositionCardData) => React.ReactNode; overlayActions?: (item: PositionCardData) => React.ReactNode; overlaySuspended?: boolean; addToRepertoire?: (item: PositionCardData) => AddToRepertoire | undefined; repertoireRevision?: number; onShowingChange?: (item: PositionCardData | null) => void; onLayerOpen?: () => void }) {
-  const [open, setOpen] = useState<number | null>(null);
-  const [showing, setShowing] = useState(0);
+export function PositionList({ items, accent, headerRight, overlayActions, overlaySuspended, addToRepertoire, repertoireRevision, onShowingChange, onLayerOpen, returnState, restoreKey }: { items: PositionCardData[]; accent?: (item: PositionCardData) => string; headerRight?: (item: PositionCardData) => React.ReactNode; overlayActions?: (item: PositionCardData) => React.ReactNode; overlaySuspended?: boolean; addToRepertoire?: (item: PositionCardData) => AddToRepertoire | undefined; repertoireRevision?: number; onShowingChange?: (item: PositionCardData | null) => void; onLayerOpen?: () => void; returnState?: (item: PositionCardData) => unknown; restoreKey?: string | null }) {
+  const [open, setOpen] = useState<number | null>(() => {
+    const i = restoreKey == null ? -1 : items.findIndex((item) => cardIdentity(item) === restoreKey);
+    return i >= 0 ? i : null;
+  });
+  const [showing, setShowing] = useState(open ?? 0);
   const [boardSize, setBoardSize] = useState<BoardSize>("M");
   const close = useCallback(() => setOpen(null), []);
   const openAt = (i: number) => {
@@ -48,12 +54,12 @@ export function PositionList({ items, accent, headerRight, overlayActions, overl
       </div>
       <div className="space-y-2">
         {items.map((item, i) => (
-          <div key={item.key ?? item.fen} data-testid="position-card" className={`cursor-pointer overflow-hidden rounded-lg border border-l-4 border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 ${accent?.(item) ?? ""}`} onClick={() => openAt(i)}>
+          <div key={cardIdentity(item)} data-testid="position-card" className={`cursor-pointer overflow-hidden rounded-lg border border-l-4 border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 ${accent?.(item) ?? ""}`} onClick={() => openAt(i)}>
             <CardInner d={item} headerRight={headerRight?.(item)} boardSize={boardSize} onBoardClick={() => openAt(i)} />
           </div>
         ))}
       </div>
-      {open !== null && current && <Overlay items={items} initialIndex={open} onClose={close} onIndexChange={setShowing} actions={overlayActions?.(current)} suspended={overlaySuspended} addToRepertoire={addToRepertoire} repertoireRevision={repertoireRevision} onLayerOpen={onLayerOpen} />}
+      {open !== null && current && <Overlay items={items} initialIndex={open} onClose={close} onIndexChange={setShowing} actions={overlayActions?.(current)} suspended={overlaySuspended} addToRepertoire={addToRepertoire} repertoireRevision={repertoireRevision} onLayerOpen={onLayerOpen} returnState={returnState} />}
     </>
   );
 }

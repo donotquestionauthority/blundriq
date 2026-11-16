@@ -5,6 +5,9 @@ import type { RepLine } from "../../repertoire";
 
 export interface PositionCardGame {
   game_url: string | null;
+  /** The player's own analysable game: Review opens it at `ply` (moves played before the card's
+   *  board). Absent on an opponent's game, which only links out. */
+  review?: { gameId: number; ply: number } | null;
   played_at: string | null;
   result?: string | null;
   classification?: BlunderClass;

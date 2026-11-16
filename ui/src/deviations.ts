@@ -115,7 +115,7 @@ export function toCard(p: DeviationPattern): PositionCardData {
     lastSeen: p.last_seen,
     isNew: p.is_new,
     record: { wins: p.wins, losses: p.losses, draws: p.draws, win_pct: p.win_pct },
-    games: p.games.map((g) => ({ game_url: g.game_url, played_at: g.played_at, result: g.result, move_played: g.played_move, best_move: g.expected_move })),
+    games: p.games.map((g) => ({ game_url: g.game_url, played_at: g.played_at, result: g.result, move_played: g.played_move, best_move: g.expected_move, review: { gameId: g.chess_game_id, ply: g.ply } })),
   };
 }
 

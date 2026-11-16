@@ -21,6 +21,7 @@ export const MIN_OCCURRENCE_OPTIONS = [1, 2, 3, 4, 5];
 
 export interface BlunderGame {
   chess_game_id: number;
+  ply: number;
   game_url: string | null;
   played_at: string | null;
   result: "win" | "loss" | "draw" | null;
@@ -139,7 +140,7 @@ export function toCard(p: BlunderPosition): PositionCardData {
     lastSeen: p.last_seen,
     dismissed: p.dismissed,
     isNew: p.is_new,
-    games: p.games,
+    games: p.games.map((g) => ({ ...g, review: { gameId: g.chess_game_id, ply: g.ply } })),
   };
 }
 

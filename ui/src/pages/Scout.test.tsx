@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Scout from "./Scout";
 import { recommended } from "../components/PositionCard/types";
@@ -7,6 +7,7 @@ import { decisionNodeToCard, scoutToCard } from "../scout";
 import type { OpponentProfile, ScoutDecisionNode, ScoutPosition, ScoutPositionsResponse, ScoutReport } from "../scout";
 import { ARROWS } from "../utils/board";
 import { buildArrows, decisionNodeArrows } from "../utils/chess";
+import { leaveReview } from "../utils/returnTo";
 
 vi.mock("react-chessboard", () => ({
   Chessboard: ({ options }: { options: { id?: string; arrows?: unknown[]; onSquareClick?: (a: { square: string }) => void } }) => <div data-testid={`board-${options.id}`} data-arrows={JSON.stringify(options.arrows ?? [])} onClick={() => options.onSquareClick?.({ square: "e4" })} />,
@@ -40,7 +41,7 @@ const position = (over: Partial<ScoutPosition> = {}): ScoutPosition => ({
   moves: ITALIAN,
   starting_fen: null,
   ply: 6,
-  my_games: [{ date: "2026-09-12", opponent: "x", color: "white", class: "", url: "https://example.test/1" }],
+  my_games: [{ date: "2026-09-12", opponent: "x", color: "white", class: "", url: "https://example.test/1", chess_game_id: 1, ply: 6 }],
   opp_games: [{ date: "2026-09-10", opening: "Italian Game", as: "black", url: "https://www.chess.com/game/live/9" }],
   rep_lines: [],
   rep_expected_move: null,
@@ -145,8 +146,9 @@ describe("Scout card mapping", () => {
   it("maps the frequencies, the games and the repertoire lines", () => {
     const c = scoutToCard(position());
     expect(c).toMatchObject({ times: 7, context: "Me 3× · Them 7×", color: "white", ply: 6 });
-    expect(c.games).toEqual([{ game_url: "https://example.test/1", played_at: "2026-09-12", classification: undefined }]);
+    expect(c.games).toEqual([{ game_url: "https://example.test/1", played_at: "2026-09-12", classification: undefined, review: { gameId: 1, ply: 6 } }]);
     expect(c.oppGames).toEqual([{ game_url: "https://www.chess.com/game/live/9", played_at: "2026-09-10", opening: "Italian Game", as: "black" }]);
+    expect(c.oppGames?.[0]).not.toHaveProperty("review"); // an opponent's game only links out
     expect(c.repLines).toBeNull();
   });
   it("a decision node draws one arrow per reply under the lead-in and no best arrow", () => {
@@ -287,5 +289,143 @@ describe("Scout page", () => {
     renderPage();
     expect(await screen.findByText("No opponents yet — add one to scout.")).toBeInTheDocument();
     expect(screen.getByRole("form", { name: "Add opponent" })).toBeInTheDocument();
+  });
+});
+
+// ─── Coming back from a game's review ────────────────────────────────────────────────────────
+
+/** The review route as far as the page cares: where it is, its own Close (the same `leaveReview`
+ *  GameReview exits through) and the browser's Back. */
+function ReviewStub() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  return (
+    <div>
+      <p data-testid="review-at">{`${location.pathname}${location.search}`}</p>
+      <button type="button" onClick={() => leaveReview(location.state, navigate)}>
+        Close review
+      </button>
+      <button type="button" onClick={() => navigate(-1)}>
+        Browser back
+      </button>
+    </div>
+  );
+}
+
+describe("Scout: a game's review and back", () => {
+  const second = () => position({ fen: P8, ply: 8, my_games: [{ date: "2026-09-14", opponent: "y", color: "white", class: "", url: "https://lichess.org/AbCdEfGh", chess_game_id: 55, ply: 8 }] });
+
+  function stub(state: { profiles: OpponentProfile[]; secondOnPage1: boolean }) {
+    const pageOf = (q: URLSearchParams) =>
+      q.get("page") === "1"
+        ? { positions: state.secondOnPage1 ? [position(), second()] : [position()], total: 3, page: 1, page_size: 2, total_pages: 2, tier_counts: { "3": 3 } }
+        : { positions: [position({ fen: NODE_PRE })], total: 3, page: 0, page_size: 2, total_pages: 2, tier_counts: { "3": 3 } };
+    return stubFetch({
+      "/settings": () => ({ status: 200, body: SETTINGS }),
+      "/scout/profiles": () => ({ status: 200, body: { profiles: state.profiles } }),
+      "/scout/report/1": () => ({ status: 200, body: report }),
+      "/scout/report/2": () => ({ status: 200, body: report }),
+      "/scout/decision-nodes/1": () => ({ status: 200, body: { nodes: [], total: 0 } }),
+      "/scout/decision-nodes/2": () => ({ status: 200, body: { nodes: [], total: 0 } }),
+      "/scout/positions/1": (c) => ({ status: 200, body: pageOf(c.query) }),
+      "/scout/positions/2": (c) => ({ status: 200, body: pageOf(c.query) }),
+      "/scout/dismissed": () => ({ status: 200, body: { boards: [] } }),
+    });
+  }
+
+  const renderRoutes = () =>
+    render(
+      <MemoryRouter initialEntries={["/scout"]}>
+        <Routes>
+          <Route path="/scout" element={<Scout />} />
+          <Route path="/review/:gameId" element={<ReviewStub />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+  const positionsCalls = (calls: Call[], n = 0) => calls.slice(n).filter((c) => c.path.startsWith("/scout/positions/"));
+
+  /** The second opponent, "As White", page 2 of the positions, its second card open. */
+  async function openSecondCard(calls: Call[]) {
+    fireEvent.change(await screen.findByLabelText("Opponent"), { target: { value: "2" } });
+    await vi.waitFor(() => expect(positionsCalls(calls).at(-1)?.path).toBe("/scout/positions/2"));
+    fireEvent.change(await screen.findByLabelText("Color"), { target: { value: "white" } });
+    await vi.waitFor(() => expect(positionsCalls(calls).at(-1)?.query.get("color")).toBe("white"));
+    fireEvent.click(await screen.findByText("Next →"));
+    await vi.waitFor(() => expect(positionsCalls(calls).at(-1)?.query.get("page")).toBe("1"));
+    const section = await screen.findByText(/3 positions ·/);
+    await vi.waitFor(() => expect(within(section.closest("section") as HTMLElement).getAllByTestId("position-card")).toHaveLength(2));
+    fireEvent.click(within(section.closest("section") as HTMLElement).getAllByTestId("position-card")[1]);
+    return screen.findByRole("dialog", { name: "Position" });
+  }
+
+  it("Close and browser Back each come back to the same opponent, filters and page, with the card open", async () => {
+    const calls = stub({ profiles: [profile(), profile({ id: 2, name: "Naka" })], secondOnPage1: true });
+    renderRoutes();
+    let dialog = await openSecondCard(calls);
+    expect(within(dialog).getByText("2 / 2")).toBeInTheDocument();
+    expect(within(dialog).getAllByTestId("game-review-link")).toHaveLength(1); // their game only links out
+    const theirs = within(dialog).getAllByRole("link").filter((a) => a.getAttribute("href") === "https://www.chess.com/game/live/9");
+    expect(theirs).toHaveLength(1);
+    expect(theirs[0]).toHaveAttribute("target", "_blank");
+    for (const way of ["Close review", "Browser back"]) {
+      fireEvent.click(within(dialog).getByTestId("game-review-link"));
+      expect(await screen.findByTestId("review-at")).toHaveTextContent("/review/55?ply=8");
+      const n = calls.length;
+      fireEvent.click(screen.getByRole("button", { name: way }));
+      dialog = await screen.findByRole("dialog", { name: "Position" });
+      expect(within(dialog).getByText("2 / 2")).toBeInTheDocument();
+      expect(screen.getByLabelText("Opponent")).toHaveValue("2");
+      const [landing] = positionsCalls(calls, n);
+      expect(landing.path).toBe("/scout/positions/2");
+      expect(landing.query.get("color")).toBe("white");
+      expect(landing.query.get("page")).toBe("1");
+      expect(calls.slice(n).some((c) => c.path === "/settings")).toBe(false);
+    }
+  });
+
+  it("an opponent deleted meanwhile falls back to the first, with the filters kept and no page or card", async () => {
+    const state = { profiles: [profile(), profile({ id: 2, name: "Naka" })], secondOnPage1: true };
+    const calls = stub(state);
+    renderRoutes();
+    const dialog = await openSecondCard(calls);
+    fireEvent.click(within(dialog).getByTestId("game-review-link"));
+    await screen.findByTestId("review-at");
+    state.profiles = [profile()];
+    const n = calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Close review" }));
+    await vi.waitFor(() => expect(positionsCalls(calls, n)).toHaveLength(1));
+    const [first] = positionsCalls(calls, n);
+    expect(first.path).toBe("/scout/positions/1");
+    expect(first.query.get("color")).toBe("white");
+    expect(first.query.get("page")).toBe("0");
+    await screen.findAllByTestId("position-card");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+  });
+
+  it("a card gone from the restored page opens nothing; choosing another opponent and back starts fresh", async () => {
+    const state = { profiles: [profile(), profile({ id: 2, name: "Naka" })], secondOnPage1: true };
+    const calls = stub(state);
+    renderRoutes();
+    const dialog = await openSecondCard(calls);
+    fireEvent.click(within(dialog).getByTestId("game-review-link"));
+    await screen.findByTestId("review-at");
+    state.secondOnPage1 = false;
+    fireEvent.click(screen.getByRole("button", { name: "Close review" }));
+    await vi.waitFor(() => expect(positionsCalls(calls).at(-1)?.query.get("page")).toBe("1"));
+    await screen.findByText(/3 positions ·/);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Opponent")).toHaveValue("2");
+
+    // Away to the first opponent and back: a fresh opponent page, from page 1, nothing open.
+    fireEvent.change(screen.getByLabelText("Opponent"), { target: { value: "1" } });
+    await vi.waitFor(() => expect(positionsCalls(calls).at(-1)?.path).toBe("/scout/positions/1"));
+    state.secondOnPage1 = true;
+    const n = calls.length;
+    fireEvent.change(screen.getByLabelText("Opponent"), { target: { value: "2" } });
+    await vi.waitFor(() => expect(positionsCalls(calls, n).at(-1)?.path).toBe("/scout/positions/2"));
+    expect(positionsCalls(calls, n).at(-1)?.query.get("page")).toBe("0");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });

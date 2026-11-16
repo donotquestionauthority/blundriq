@@ -335,6 +335,7 @@ def _card(row: dict[str, Any], group: list[dict[str, Any]]) -> dict[str, Any]:
         "games": [
             {
                 "chess_game_id": d["chess_game_id"],
+                "ply": d["ply"],
                 "game_url": d["game_url"],
                 "played_at": iso(d["played_at"]),
                 "result": d["result"],
