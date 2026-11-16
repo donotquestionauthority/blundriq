@@ -255,7 +255,7 @@ def test_details_games_and_repertoire_move(scout: psycopg.Connection[DictRow]) -
     assert [g["class"] for g in d[P6]["my_games"]] == ["blunder"]
     assert len(d[P8_D3]["my_games"]) == 1 and d[P8_D3]["my_games"][0]["class"] == ""
     assert [g["as"] for g in d[P6]["opp_games"]] == ["black", "black"]
-    assert d[P6]["opp_games"][0]["url"].startswith("https://www.chess.com/game/live/")
+    assert {g["url"] for g in d[P6]["opp_games"]} == {"https://example.test/o101", "https://example.test/o102"}
     assert d[P6]["rep_expected_move"] == "c3" and d[P6]["rep_lines"][0]["line_name"] == "Giuoco"
     assert d[P8_D3]["rep_expected_move"] is None
     full = positions.page(conn, flt(), 0)
@@ -264,6 +264,40 @@ def test_details_games_and_repertoire_move(scout: psycopg.Connection[DictRow]) -
     assert (
         first["fen"] == P6 and first["tier"] == 1 and first["best_move"] == "d3" and first["rep_expected_move"] == "c3"
     )
+
+
+def test_my_games_carry_the_game_and_the_ply_review_opens_at(scout: psycopg.Connection[DictRow]) -> None:
+    conn = scout
+    blunder(conn, 1, 6, P6, "a3", "d3")
+    blunder(conn, 2, 6, P6, "h3", "d3")
+    h.game(conn, 3, ITALIAN_D3, variant="chess960")
+    blunder(conn, 3, 6, P6, "a4", "d3")
+    d = positions.details(conn, 1, [P6, P8_D3])
+    assert sorted((g["chess_game_id"], g["ply"]) for g in d[P6]["my_games"]) == [(1, 6), (2, 6)]
+    # No blunder at the board: the recent games that reach it, at the first ply they reach it.
+    assert [(g["chess_game_id"], g["ply"]) for g in d[P8_D3]["my_games"]] == [(2, 8)]
+    assert all("chess_game_id" not in g and "ply" not in g for g in d[P6]["opp_games"])
+
+
+def test_a_recent_game_opens_at_the_first_time_it_reaches_the_board(clean: psycopg.Connection[DictRow]) -> None:
+    conn = clean
+    h.player(conn)
+    opp_profile(conn)
+    shuffle = ["Nf3", "Nf6", "Ng1", "Ng8", "Nf3", "Nf6", "Ng1", "Ng8", "e4"]
+    h.game(conn, 1, shuffle)
+    board = fens(shuffle)[0]
+    again = fens(shuffle)[4]
+    assert board.split(" ")[:4] == again.split(" ")[:4]
+    d = positions.details(conn, 1, [again])
+    assert [(g["chess_game_id"], g["ply"]) for g in d[again]["my_games"]] == [(1, 0)]
+
+
+def test_an_opponent_daily_game_keeps_its_stored_url(scout: psycopg.Connection[DictRow]) -> None:
+    conn = scout
+    conn.execute("UPDATE chess_games SET url = 'https://www.chess.com/game/daily/987654321' WHERE id = 101")
+    conn.execute("UPDATE chess_games SET url = NULL WHERE id = 102")
+    urls = {g["url"] for g in positions.details(conn, 1, [P6])[P6]["opp_games"]}
+    assert urls == {"https://www.chess.com/game/daily/987654321", "https://www.chess.com/game/live/o102"}
 
 
 # --- decision nodes ----------------------------------------------------------------------------

@@ -43,7 +43,7 @@ import { LEARN_COMMIT_PROMPT, LEARN_COPY, formatElapsed, learnPromptPlies, learn
 import type { LearnRep } from "./learnMode";
 import { walkSurvives } from "./reviewWalk";
 import type { ReviewWalk } from "./reviewWalk";
-import { returnTarget } from "../utils/returnTo";
+import { leaveReview } from "../utils/returnTo";
 
 const CLASS_LABEL: Record<string, string> = { miss: "Miss", blunder: "Blunder", mistake: "Mistake", inaccuracy: "Inaccuracy" };
 /** Tailwind's `lg`, in pixels: the page's layout uses the `lg:` class and the prompt-surface rule
@@ -331,8 +331,7 @@ export default function GameReview() {
   }, [curPly, fenSeq, searchParams, setSearchParams, location.state]);
 
   const exit = useCallback(() => {
-    const back = returnTarget(location.state);
-    navigate(back.to, back.state != null ? { state: back.state } : undefined);
+    leaveReview(location.state, navigate);
   }, [location.state, navigate]);
 
   // Explore is open for the ply it was opened at: a ply change closes it, since the layer was

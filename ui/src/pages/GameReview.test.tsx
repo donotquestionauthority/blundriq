@@ -179,13 +179,15 @@ function Probe() {
   return <pre data-testid="probe">{`${location.pathname}${location.search}|${JSON.stringify(location.state)}`}</pre>;
 }
 
-async function renderReview(ply = 2, state?: unknown) {
+async function renderReview(ply = 2, state?: unknown, opener?: { pathname: string; state: unknown }) {
+  const review = { pathname: "/review/1", search: `?ply=${ply}`, state };
   render(
-    <MemoryRouter initialEntries={[{ pathname: "/review/1", search: `?ply=${ply}`, state }]}>
+    <MemoryRouter initialEntries={opener ? [opener, review] : [review]} initialIndex={opener ? 1 : 0}>
       <Routes>
         <Route path="/review/:gameId" element={<GameReview />} />
         <Route path="/review" element={<Probe />} />
         <Route path="/games" element={<Probe />} />
+        <Route path="/blunders" element={<Probe />} />
       </Routes>
       {/* Another game under the same route, as the browser's history or a typed URL would reach it. */}
       <Link to="/review/2?ply=0">other game</Link>
@@ -1270,6 +1272,13 @@ describe("stepping, Explore and the exits", () => {
     await renderReview(2, { from: { pathname: "/review", search: "?tc=all&scope=all", open } });
     fireEvent.click(screen.getByLabelText("Close review"));
     expect(screen.getByTestId("probe").textContent).toBe(`/review?tc=all&scope=all|${JSON.stringify({ from: { pathname: "/review", search: "?tc=all&scope=all", open }, open })}`);
+  });
+  it.each(["Close", "Escape"])("%s from a position card's game goes back to the card's own entry, which keeps what it wrote", async (way) => {
+    // The opener's entry, as the card left it; a push would carry the review's state instead.
+    await renderReview(2, { from: { pathname: "/blunders", search: "", back: true } }, { pathname: "/blunders", state: { card: { kind: "blunders.v1" } } });
+    if (way === "Close") fireEvent.click(screen.getByLabelText("Close review"));
+    else await act(async () => fireEvent.keyDown(window, { key: "Escape" }));
+    expect(screen.getByTestId("probe").textContent).toBe('/blunders|{"card":{"kind":"blunders.v1"}}');
   });
   it("Close with no origin returns to the worklist", async () => {
     await renderReview(2);

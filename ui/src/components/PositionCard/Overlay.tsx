@@ -61,7 +61,7 @@ function CopyBlock({ label, text }: { label: string; text: string }) {
  * both — the badge starts with no answer rather than an actionable stale one, and Similar positions
  * drops its per-mount cache.
  */
-export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, suspended = false, addToRepertoire, repertoireRevision = 0, onLayerOpen }: { items: PositionCardData[]; initialIndex: number; onClose: () => void; onIndexChange?: (i: number) => void; actions?: React.ReactNode; suspended?: boolean; addToRepertoire?: (item: PositionCardData) => AddToRepertoire | undefined; repertoireRevision?: number; onLayerOpen?: () => void }) {
+export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, suspended = false, addToRepertoire, repertoireRevision = 0, onLayerOpen, returnState }: { items: PositionCardData[]; initialIndex: number; onClose: () => void; onIndexChange?: (i: number) => void; actions?: React.ReactNode; suspended?: boolean; addToRepertoire?: (item: PositionCardData) => AddToRepertoire | undefined; repertoireRevision?: number; onLayerOpen?: () => void; returnState?: (item: PositionCardData) => unknown }) {
   const [index, setIndex] = useState(initialIndex);
   const [compareOpen, setCompareOpen] = useState(false);
   const [exploreSeed, setExploreSeed] = useState<{ fen: string; orientation: "white" | "black" } | null>(null);
@@ -269,7 +269,7 @@ export function Overlay({ items, initialIndex, onClose, onIndexChange, actions, 
 
         {d.repLines?.length ? <RepLinesPanel key={d.key ?? d.fen} lines={d.repLines} /> : null}
 
-        {d.games.length > 0 ? <GamesTable games={d.games} bestLabel={best.label} title={d.oppGames ? "My games" : "Games"} /> : !node && <p className="py-2 text-center text-xs text-zinc-500">No game history for this position.</p>}
+        {d.games.length > 0 ? <GamesTable games={d.games} bestLabel={best.label} title={d.oppGames ? "My games" : "Games"} returnState={returnState && (() => returnState(d))} /> : !node && <p className="py-2 text-center text-xs text-zinc-500">No game history for this position.</p>}
         {d.oppGames && (d.oppGames.length > 0 ? <GamesTable games={d.oppGames} bestLabel={best.label} title="Their games" /> : <p className="py-2 text-center text-xs text-zinc-500">None of their games reach this position.</p>)}
 
         <p className="pb-4 text-center text-xs text-zinc-500">Swipe or use ‹ › to move through the list</p>

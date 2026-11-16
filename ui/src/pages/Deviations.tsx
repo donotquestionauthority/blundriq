@@ -5,10 +5,13 @@ import type { TimeClass } from "../blunders";
 import { CreatePuzzleModal } from "../components/CreatePuzzleModal";
 import type { CreatePuzzleSource } from "../components/CreatePuzzleModal";
 import { PositionList } from "../components/PositionCard/PositionList";
+import type { PositionCardData } from "../components/PositionCard/types";
 import { defaultFilters, getDeviations, markSeen, toCard } from "../deviations";
 import type { DeviationFilters } from "../deviations";
 import { useApi } from "../hooks/useApi";
 import { lichessAnalyzeUrl } from "../utils/chess";
+import { cardIdentity, useCardReturn } from "../utils/cardReturn";
+import type { CardReturn } from "../utils/cardReturn";
 import { errorLabel } from "../utils/errorLabel";
 
 /**
@@ -22,15 +25,21 @@ import { errorLabel } from "../utils/errorLabel";
 const select = "rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900";
 const action = "rounded border border-zinc-300 px-3 py-1.5 text-sm hover:border-zinc-500 disabled:opacity-50 dark:border-zinc-700";
 
-function List({ filters, setFilters }: { filters: DeviationFilters; setFilters: (f: DeviationFilters) => void }) {
-  const [page, setPage] = useState(0);
+/** What a game's review link leaves behind: the list as shown, the visit's marker with it, so a
+ *  return continues the visit (the same order, the same NEW chips) with the card open again. */
+type Return = CardReturn<"deviations.v1", DeviationFilters> & { stay: string | null };
+
+function List({ filters, setFilters, restore }: { filters: DeviationFilters; setFilters: (f: DeviationFilters) => void; restore: Return | null }) {
+  const [page, setPage] = useState(restore?.page ?? 0);
+  // The response a return's card reopens on: the first one accepted, and only that one.
+  const [restoreFor, setRestoreFor] = useState<object | null>(null);
   const [creating, setCreating] = useState<CreatePuzzleSource | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const key = JSON.stringify(filters);
   // The visit's order marker: taken from the first accepted response and sent on every later
   // request while this list is mounted, so acknowledging a page never reorders the next one. A
   // ref, not state: learning it must not itself trigger a refetch.
-  const stay = useRef<string | null>(null);
+  const stay = useRef<string | null>(restore?.stay ?? null);
   const { data, isLoading, error, isStale } = useApi(async () => {
     const r = await getDeviations(filters, page, stay.current);
     if (page > 0 && page > r.total_pages - 1) setPage(r.total_pages - 1);
@@ -56,7 +65,11 @@ function List({ filters, setFilters }: { filters: DeviationFilters; setFilters: 
     setFilters({ ...filters, ...patch });
   };
 
+  if (restore && data && !isStale && restoreFor === null) setRestoreFor(data);
+  const restoreKey = restore && data === restoreFor ? restore.openKey : null;
   const cards = (data?.positions ?? []).map(toCard);
+  // Read when a game's date is clicked, never during render (the marker is a ref).
+  const returnState = (item: PositionCardData): Return => ({ kind: "deviations.v1", filters, page, stay: stay.current, openKey: cardIdentity(item) });
   const window_ = filters.last_n_games > 0 ? `n${filters.last_n_games}` : filters.since_days ? `d${filters.since_days}` : "all";
 
   return (
@@ -150,6 +163,8 @@ function List({ filters, setFilters }: { filters: DeviationFilters; setFilters: 
             ) : (
               <PositionList
                 items={cards}
+                returnState={returnState}
+                restoreKey={restoreKey}
                 overlaySuspended={creating !== null}
                 accent={() => "border-l-amber-500"}
                 overlayActions={(item) => (
@@ -179,15 +194,18 @@ function List({ filters, setFilters }: { filters: DeviationFilters; setFilters: 
 }
 
 export default function Deviations() {
-  const [filters, setFilters] = useState<DeviationFilters | null>(null);
+  // A return from a game's review brings the list back as it was left; read once, at mount.
+  const restore = useCardReturn<Return>("deviations.v1");
+  const [filters, setFilters] = useState<DeviationFilters | null>(restore?.filters ?? null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (restore) return;
     api
       .get<Record<string, unknown>>("/settings")
       .then((s) => setFilters(defaultFilters(s)))
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
-  }, []);
+  }, [restore]);
 
   return (
     <div>
@@ -198,7 +216,7 @@ export default function Deviations() {
           {error}
         </p>
       )}
-      {filters && <List filters={filters} setFilters={setFilters} />}
+      {filters && <List filters={filters} setFilters={setFilters} restore={restore} />}
     </div>
   );
 }

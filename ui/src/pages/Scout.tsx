@@ -4,10 +4,13 @@ import { LAST_N_OPTIONS, MIN_OCCURRENCE_OPTIONS } from "../blunders";
 import { CreatePuzzleModal } from "../components/CreatePuzzleModal";
 import type { CreatePuzzleSource } from "../components/CreatePuzzleModal";
 import { PositionList } from "../components/PositionCard/PositionList";
+import type { PositionCardData } from "../components/PositionCard/types";
 import { ArrowBoard } from "../components/RepertoireBits";
 import { useApi } from "../hooks/useApi";
 import { COLOR_LABELS, TIER_ACCENT, createProfile, decisionNodeToCard, defaultFilters, deleteProfile, dismissBoard, fenActiveColor, getDecisionNodes, getDismissed, getLineGames, getPositions, getProfiles, getReport, restoreBoard, scoutToCard } from "../scout";
 import type { FamilyRow, LineRow, OpponentProfile, ScoutColor, ScoutFilters, ScoutReport } from "../scout";
+import { cardIdentity, useCardReturn } from "../utils/cardReturn";
+import type { CardReturn } from "../utils/cardReturn";
 import { lichessAnalyzeUrl } from "../utils/chess";
 
 /**
@@ -315,10 +318,16 @@ function DismissedPanel({ version, onRestored }: { version: number; onRestored: 
   );
 }
 
+/** What a game's review link leaves behind: the opponent, the filters, the overlapping-positions
+ *  page and the card showing there. Scout has no visit marker and no NEW chips to keep. */
+type Return = CardReturn<"scout.v1", ScoutFilters> & { profileId: number };
+
 /** The page for one opponent. `version` is the page-wide dismissal counter: a dismissal here or
  *  a restore from the Dismissed panel bumps it and every list refetches. */
-function ScoutBody({ profile, filters, setFilters, version, bump }: { profile: OpponentProfile; filters: ScoutFilters; setFilters: (f: ScoutFilters) => void; version: number; bump: () => void }) {
-  const [page, setPage] = useState(0);
+function ScoutBody({ profile, filters, setFilters, version, bump, restore }: { profile: OpponentProfile; filters: ScoutFilters; setFilters: (f: ScoutFilters) => void; version: number; bump: () => void; restore: Return | null }) {
+  const [page, setPage] = useState(restore?.page ?? 0);
+  // The positions response a return's card reopens on: the first one accepted, and only that one.
+  const [restoreFor, setRestoreFor] = useState<object | null>(null);
   const [sel, setSel] = useState<LineSel | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
@@ -378,6 +387,9 @@ function ScoutBody({ profile, filters, setFilters, version, bump }: { profile: O
   const pos = positions.data;
   const tc = pos?.tier_counts ?? {};
   const cards = (pos?.positions ?? []).map(scoutToCard);
+  if (restore && pos && !positions.isStale && restoreFor === null) setRestoreFor(pos);
+  const restoreKey = restore && pos === restoreFor ? restore.openKey : null;
+  const returnState = (item: PositionCardData): Return => ({ kind: "scout.v1", profileId: profile.id, filters, page, openKey: cardIdentity(item) });
   const nodeCards = (nodes.data?.nodes ?? []).map(decisionNodeToCard);
 
   return (
@@ -500,6 +512,8 @@ function ScoutBody({ profile, filters, setFilters, version, bump }: { profile: O
             ) : (
               <PositionList
                 items={cards}
+                returnState={returnState}
+                restoreKey={restoreKey}
                 overlaySuspended={creating !== null}
                 accent={(item) => TIER_ACCENT[pos.positions.find((p) => p.fen === item.fen)?.tier ?? 3]}
                 headerRight={(item) => dismissButton(item.fen)}
@@ -533,8 +547,12 @@ function ScoutBody({ profile, filters, setFilters, version, bump }: { profile: O
 }
 
 export default function Scout() {
-  const [filters, setFilters] = useState<ScoutFilters | null>(null);
-  const [selected, setSelected] = useState<number | null>(null);
+  // A return from a game's review brings the page back as it was left; read once, at mount. It is
+  // dropped the moment another opponent is chosen, so switching back starts that page fresh.
+  const restore = useCardReturn<Return>("scout.v1");
+  const [pendingRestore, setPendingRestore] = useState(restore);
+  const [filters, setFilters] = useState<ScoutFilters | null>(restore?.filters ?? null);
+  const [selected, setSelected] = useState<number | null>(restore?.profileId ?? null);
   const [manage, setManage] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Dismissals are shared with Blunders and outlive every opponent, so the panel that restores
@@ -544,14 +562,18 @@ export default function Scout() {
   const profiles = useApi(async () => (await getProfiles()).profiles);
 
   useEffect(() => {
+    if (restore) return;
     api
       .get<Record<string, unknown>>("/settings")
       .then((s) => setFilters(defaultFilters(s)))
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
-  }, []);
+  }, [restore]);
 
   const list = profiles.data ?? [];
   const current = list.find((p) => p.id === selected) ?? list[0] ?? null;
+  // The restored page and card belong to the restored opponent: one that is gone falls back to
+  // the first, with the filters kept and nothing else.
+  const bodyRestore = pendingRestore && current && current.id === pendingRestore.profileId ? pendingRestore : null;
 
   return (
     <div>
@@ -559,7 +581,11 @@ export default function Scout() {
         <h1 className="text-xl font-semibold tracking-tight">Scout</h1>
         <div className="flex items-center gap-2">
           {list.length > 1 && (
-            <select aria-label="Opponent" className={select} value={current?.id ?? ""} onChange={(e) => setSelected(Number(e.target.value))}>
+            <select aria-label="Opponent" className={select} value={current?.id ?? ""} onChange={(e) => {
+                setPendingRestore(null);
+                setSelected(Number(e.target.value));
+              }}
+            >
               {list.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
@@ -584,13 +610,16 @@ export default function Scout() {
           <Manage
             profiles={list}
             onChanged={(id) => {
-              if (id !== undefined) setSelected(id);
+              if (id !== undefined) {
+                setPendingRestore(null);
+                setSelected(id);
+              }
               profiles.refetch();
             }}
           />
         </div>
       )}
-      {filters && current && <ScoutBody key={current.id} profile={current} filters={filters} setFilters={setFilters} version={version} bump={bump} />}
+      {filters && current && <ScoutBody key={current.id} profile={current} filters={filters} setFilters={setFilters} version={version} bump={bump} restore={bodyRestore} />}
       {profiles.data && (
         <div className="mt-4">
           <DismissedPanel version={version} onRestored={bump} />

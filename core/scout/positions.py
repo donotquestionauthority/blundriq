@@ -309,16 +309,18 @@ ORDER  BY elem.fen, (cg.ply_analysis IS NOT NULL) DESC, cg.played_at DESC NULLS 
 """
 
 _MY_BLUNDER_GAMES_SQL = """
-SELECT DISTINCT b.fen, cg.url, cg.played_at, pg.opponent_username, pg.player_color, b.classification
+SELECT DISTINCT b.fen, cg.id AS chess_game_id, b.ply, cg.url, cg.played_at, pg.opponent_username, pg.player_color,
+       b.classification
 FROM   blunders b
 JOIN   chess_games cg ON cg.id = b.chess_game_id
 JOIN   player_games pg ON pg.chess_game_id = b.chess_game_id AND pg.player_id = b.player_id
 WHERE  b.player_id = %(pid)s AND {analysable} AND b.fen = ANY(%(fens)s)
-ORDER  BY b.fen, cg.played_at DESC NULLS LAST
+ORDER  BY b.fen, cg.played_at DESC NULLS LAST, cg.id DESC, b.ply
 """
 
 _MY_RECENT_GAMES_SQL = """
-SELECT cg.url, cg.played_at, pg.opponent_username, pg.player_color
+SELECT cg.id AS chess_game_id, array_position(cg.position_keys, bq_position_key(%(fen)s::text)) - 1 AS ply,
+       cg.url, cg.played_at, pg.opponent_username, pg.player_color
 FROM   player_games pg
 JOIN   chess_games cg ON cg.id = pg.chess_game_id
 WHERE  pg.player_id = %(pid)s AND {analysable} AND cg.position_keys @> ARRAY[bq_position_key(%(fen)s::text)]
@@ -327,7 +329,7 @@ ORDER  BY cg.played_at DESC NULLS LAST LIMIT 5
 
 _OPP_GAMES_SQL = """
 SELECT DISTINCT ON (target.fen, cg.id)
-       target.fen, cg.played_at, cg.opening_name, ov.source_type, cg.platform_game_id, ov.played_as
+       target.fen, cg.played_at, cg.opening_name, cg.url, ov.source_type, cg.platform_game_id, ov.played_as
 FROM   opponent_views ov
 JOIN   chess_games cg ON cg.id = ov.chess_game_id,
        unnest(%(fens)s::text[]) AS target(fen)
@@ -392,6 +394,8 @@ def details(conn: Connection[Any], profile_id: int, fens: list[str]) -> dict[str
                     "color": r["player_color"] or "",
                     "class": r["classification"] or "",
                     "url": r["url"] or "",
+                    "chess_game_id": int(r["chess_game_id"]),
+                    "ply": int(r["ply"]),
                 }
             )
         for fen in fens:
@@ -409,6 +413,8 @@ def details(conn: Connection[Any], profile_id: int, fens: list[str]) -> dict[str
                         "color": r["player_color"] or "",
                         "class": "",
                         "url": r["url"] or "",
+                        "chess_game_id": int(r["chess_game_id"]),
+                        "ply": int(r["ply"]),
                     }
                 )
         cur.execute(cast(LiteralString, _OPP_GAMES_SQL.format(analysable=analysable_sql("cg"))), params)
@@ -418,7 +424,7 @@ def details(conn: Connection[Any], profile_id: int, fens: list[str]) -> dict[str
                     "date": _date(r["played_at"]),
                     "opening": r["opening_name"] or "",
                     "as": r["played_as"] or "",
-                    "url": game_url(r["source_type"], r["platform_game_id"]),
+                    "url": r["url"] or game_url(r["source_type"], r["platform_game_id"]),
                 }
             )
     lines = read.rep_lines(conn, list(out), book_color="by_turn")

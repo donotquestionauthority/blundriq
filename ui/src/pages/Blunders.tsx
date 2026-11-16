@@ -12,6 +12,8 @@ import { useApi } from "../hooks/useApi";
 import { getGapCard } from "../repertoire";
 import type { GapCardResponse, LineAdded } from "../repertoire";
 import { lichessAnalyzeUrl } from "../utils/chess";
+import { cardIdentity, useCardReturn } from "../utils/cardReturn";
+import type { CardReturn } from "../utils/cardReturn";
 import { errorLabel } from "../utils/errorLabel";
 
 /**
@@ -39,6 +41,10 @@ const select = "rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:b
 const chip = (on: boolean) => `rounded border px-2.5 py-1 text-xs font-medium ${on ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900" : "border-zinc-300 text-zinc-500 dark:border-zinc-700"}`;
 const action = "rounded border border-zinc-300 px-3 py-1.5 text-sm hover:border-zinc-500 disabled:opacity-50 dark:border-zinc-700";
 
+/** What a game's review link leaves behind: the list as shown, the visit's marker with it, so a
+ *  return continues the visit (the same order, the same NEW chips) with the card open again. */
+type Return = CardReturn<"blunders.v1", BlunderFilters> & { stay: string | null };
+
 /** The identity of a card's read: its game at its board, on the board it shows. */
 const cardKey = (item: Pick<PositionCardData, "fen" | "chessGameId" | "ply">) => `${item.chessGameId}:${item.ply}:${item.fen}`;
 
@@ -50,8 +56,10 @@ function addedText(added: LineAdded, read: GapCardResponse): string {
   return added.kind === "saved" ? `Added to ${where} · ${added.rematched} games re-matched` : `Added to ${where}`;
 }
 
-function List({ filters, setFilters }: { filters: BlunderFilters; setFilters: (f: BlunderFilters) => void }) {
-  const [page, setPage] = useState(0);
+function List({ filters, setFilters, restore }: { filters: BlunderFilters; setFilters: (f: BlunderFilters) => void; restore: Return | null }) {
+  const [page, setPage] = useState(restore?.page ?? 0);
+  // The response a return's card reopens on: the first one accepted, and only that one.
+  const [restoreFor, setRestoreFor] = useState<object | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [creating, setCreating] = useState<CreatePuzzleSource | null>(null);
@@ -64,7 +72,7 @@ function List({ filters, setFilters }: { filters: BlunderFilters; setFilters: (f
   // The visit's order marker: taken from the first accepted response and sent on every later
   // request while this list is mounted, so acknowledging a page never reorders the next one. A
   // ref, not state: learning it must not itself trigger a refetch.
-  const stay = useRef<string | null>(null);
+  const stay = useRef<string | null>(restore?.stay ?? null);
   const { data, isLoading, error, refetch, isStale } = useApi(async () => {
     const r = await getBlunders(filters, page, stay.current);
     // A dismissal can empty the last page: step back onto the new last page.
@@ -166,7 +174,11 @@ function List({ filters, setFilters }: { filters: BlunderFilters; setFilters: (f
     }
   }
 
+  if (restore && data && !isStale && restoreFor === null) setRestoreFor(data);
+  const restoreKey = restore && data === restoreFor ? restore.openKey : null;
   const cards = (data?.positions ?? []).map(toCard);
+  // Read when a game's date is clicked, never during render (the marker is a ref).
+  const returnState = (item: PositionCardData): Return => ({ kind: "blunders.v1", filters, page, stay: stay.current, openKey: cardIdentity(item) });
   const window_ = filters.last_n_games > 0 ? `n${filters.last_n_games}` : filters.since_days ? `d${filters.since_days}` : "all";
 
   return (
@@ -269,6 +281,8 @@ function List({ filters, setFilters }: { filters: BlunderFilters; setFilters: (f
             ) : (
               <PositionList
                 items={cards}
+                returnState={returnState}
+                restoreKey={restoreKey}
                 overlaySuspended={creating !== null || adding !== null}
                 repertoireRevision={repertoireRevision}
                 onShowingChange={onShowingChange}
@@ -321,15 +335,18 @@ function List({ filters, setFilters }: { filters: BlunderFilters; setFilters: (f
 }
 
 export default function Blunders() {
-  const [filters, setFilters] = useState<BlunderFilters | null>(null);
+  // A return from a game's review brings the list back as it was left; read once, at mount.
+  const restore = useCardReturn<Return>("blunders.v1");
+  const [filters, setFilters] = useState<BlunderFilters | null>(restore?.filters ?? null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (restore) return;
     api
       .get<Record<string, unknown>>("/settings")
       .then((s) => setFilters(defaultFilters(s)))
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
-  }, []);
+  }, [restore]);
 
   return (
     <div>
@@ -340,7 +357,7 @@ export default function Blunders() {
           {error}
         </p>
       )}
-      {filters && <List filters={filters} setFilters={setFilters} />}
+      {filters && <List filters={filters} setFilters={setFilters} restore={restore} />}
     </div>
   );
 }

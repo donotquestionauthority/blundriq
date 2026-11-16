@@ -1,11 +1,12 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Deviations from "./Deviations";
 import { buildQuery, defaultFilters, toCard } from "../deviations";
 import type { DeviationPattern, DeviationsResponse } from "../deviations";
 import { recommended } from "../components/PositionCard/types";
 import { ARROWS } from "../utils/board";
+import { leaveReview } from "../utils/returnTo";
 
 vi.mock("react-chessboard", () => ({
   Chessboard: ({ options }: { options: { id?: string; arrows?: unknown[]; onSquareClick?: (a: { square: string }) => void } }) => <div data-testid={`board-${options.id}`} data-arrows={JSON.stringify(options.arrows ?? [])} onClick={() => options.onSquareClick?.({ square: "e4" })} />,
@@ -312,5 +313,113 @@ describe("Deviations page", () => {
     resolvers[0]({ status: 200, body: page([pattern({ is_new: true })]) });
     await new Promise((r) => setTimeout(r, 20));
     expect(acks(calls)).toHaveLength(0);
+  });
+});
+
+// ─── Coming back from a game's review ────────────────────────────────────────────────────────
+
+/** The review route as far as the list cares: where it is, its own Close (the same `leaveReview`
+ *  GameReview exits through), the browser's Back, and the nav link that starts a fresh visit. */
+function ReviewStub() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  return (
+    <div>
+      <p data-testid="review-at">{`${location.pathname}${location.search}`}</p>
+      <button type="button" onClick={() => leaveReview(location.state, navigate)}>
+        Close review
+      </button>
+      <button type="button" onClick={() => navigate(-1)}>
+        Browser back
+      </button>
+      <Link to="/deviations">Deviations nav</Link>
+    </div>
+  );
+}
+
+describe("Deviations: a game's review and back", () => {
+  const second = () => pattern({ ply: 6, expected_move: "Bb5", is_new: true, games: [{ chess_game_id: 31, game_url: "https://www.chess.com/game/live/31", played_at: new Date().toISOString(), result: "win", played_move: "Bc4", expected_move: "Bb5", ply: 6 }] });
+
+  function stubList(state: { secondOnPage1: boolean }) {
+    return stubFetch({
+      "/settings": () => ({ status: 200, body: SETTINGS }),
+      "/deviations": (_m, _b, q) => ({
+        status: 200,
+        body: q.get("page") === "1" ? page(state.secondOnPage1 ? [pattern(), second()] : [pattern()], { page: 1, total_pages: 2 }) : page([pattern({ ply: 2, expected_move: "Nf3" })], { total_pages: 2 }),
+      }),
+    });
+  }
+
+  function StateProbe() {
+    const location = useLocation();
+    return <p data-testid="entry-state">{JSON.stringify(location.state)}</p>;
+  }
+
+  const renderRoutes = () =>
+    render(
+      <MemoryRouter initialEntries={["/deviations"]}>
+        <StateProbe />
+        <Routes>
+          <Route path="/deviations" element={<Deviations />} />
+          <Route path="/review/:gameId" element={<ReviewStub />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+  /** Colour black, page 2, the second pattern showing in the overlay. */
+  async function openSecondOnPage2(calls: ReturnType<typeof stubFetch>) {
+    await screen.findAllByTestId("position-card");
+    fireEvent.change(screen.getByLabelText("Color"), { target: { value: "black" } });
+    await vi.waitFor(() => expect(lastList(calls)?.query.get("color")).toBe("black"));
+    fireEvent.click(await screen.findByText("Next →"));
+    await vi.waitFor(() => expect(screen.getAllByTestId("position-card")).toHaveLength(2));
+    fireEvent.click(screen.getAllByTestId("position-card")[1]);
+    return screen.findByRole("dialog", { name: "Position" });
+  }
+
+  it("Close and browser Back each come back to the same list, page and visit, with the pattern open", async () => {
+    const calls = stubList({ secondOnPage1: true });
+    renderRoutes();
+    let dialog = await openSecondOnPage2(calls);
+    expect(within(dialog).getByText("2 / 2")).toBeInTheDocument();
+    for (const way of ["Close review", "Browser back"]) {
+      fireEvent.click(within(dialog).getByRole("link", { name: /ago|today|yesterday/ }));
+      expect(await screen.findByTestId("review-at")).toHaveTextContent("/review/31?ply=6");
+      const n = calls.length;
+      fireEvent.click(screen.getByRole("button", { name: way }));
+      dialog = await screen.findByRole("dialog", { name: "Position" });
+      expect(within(dialog).getByText("2 / 2")).toBeInTheDocument();
+      expect(screen.getAllByTestId("position-card")[1]).toHaveTextContent("NEW");
+      const landing = calls.slice(n).filter((c) => c.path === "/deviations")[0];
+      expect(landing.query.get("page")).toBe("1");
+      expect(landing.query.get("color")).toBe("black");
+      expect(landing.query.get("stay")).toBe(STAY);
+      expect(calls.slice(n).some((c) => c.path === "/settings")).toBe(false);
+      await vi.waitFor(() => expect(screen.getByTestId("entry-state").textContent).toBe("null")); // spent
+    }
+  });
+
+  it("a pattern that is gone on return leaves the list with none open; a nav visit starts fresh", async () => {
+    const state = { secondOnPage1: true };
+    const calls = stubList(state);
+    renderRoutes();
+    const dialog = await openSecondOnPage2(calls);
+    fireEvent.click(within(dialog).getByRole("link", { name: /ago|today|yesterday/ }));
+    await screen.findByTestId("review-at");
+    state.secondOnPage1 = false;
+    fireEvent.click(screen.getByRole("button", { name: "Close review" }));
+    await vi.waitFor(() => expect(screen.getAllByTestId("position-card")).toHaveLength(1));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByTestId("position-card")[0]);
+    const again = await screen.findByRole("dialog", { name: "Position" });
+    fireEvent.click(within(again).getByRole("link", { name: /ago|today|yesterday/ }));
+    await screen.findByTestId("review-at");
+    const n = calls.length;
+    fireEvent.click(screen.getByRole("link", { name: "Deviations nav" }));
+    await screen.findAllByTestId("position-card");
+    expect(calls.slice(n).some((c) => c.path === "/settings")).toBe(true);
+    expect(calls.slice(n).filter((c) => c.path === "/deviations")[0].query.toString()).toBe(buildQuery(defaultFilters(SETTINGS), 0));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });

@@ -68,6 +68,8 @@ export interface ScoutMyGame {
   color: string;
   class: string;
   url: string;
+  chess_game_id: number;
+  ply: number;
 }
 
 export interface ScoutOppGame {
@@ -190,7 +192,7 @@ export function scoutToCard(p: ScoutPosition): PositionCardData {
     repLines: p.rep_lines.length ? p.rep_lines : null,
     moves: p.moves,
     ply: p.ply,
-    games: p.my_games.map((g) => ({ game_url: g.url || null, played_at: g.date || null, classification: (g.class || undefined) as BlunderClass | undefined })),
+    games: p.my_games.map((g) => ({ game_url: g.url || null, played_at: g.date || null, classification: (g.class || undefined) as BlunderClass | undefined, review: { gameId: g.chess_game_id, ply: g.ply } })),
     oppGames: p.opp_games.map((g) => ({ game_url: g.url || null, played_at: g.date || null, opening: g.opening, as: g.as })),
   };
 }
