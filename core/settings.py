@@ -28,8 +28,8 @@ from psycopg import Connection
 from psycopg.rows import tuple_row
 from pydantic import BaseModel, Field, TypeAdapter, field_validator
 
-from core.constants import AI_THINKING_ALWAYS_ON_MODELS
-from core.prompts import ASK_PROMPT, DEFAULT_PROMPTS, LINE_PROMPT, compile_template
+from core.constants import AI_CONTEXT_WINDOW_TOKENS, AI_THINKING_ALWAYS_ON_MODELS, CHAPTER_IDEA_MAX_INPUT_TOKENS
+from core.prompts import ASK_PROMPT, CHAPTER_PROMPT, DEFAULT_PROMPTS, LINE_PROMPT, compile_template
 
 TimeClass = Literal["bullet", "blitz", "rapid", "classical"]
 DifficultyTier = Literal["easier", "normal", "hard", "very_hard"]
@@ -431,6 +431,10 @@ class Settings(BaseModel):
         default_factory=lambda: AiPrompt.model_validate(ASK_PROMPT),
         description="Ask Opus about the position on show (Review and Explore); edit as JSON.",
     )
+    ai_chapter_prompt: AiPrompt = Field(
+        default_factory=lambda: AiPrompt.model_validate(CHAPTER_PROMPT),
+        description="Ask about a repertoire chapter, with follow-ups (Anthropic only, no prefill); edit as JSON.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -449,11 +453,33 @@ def save_errors(values: Settings) -> list[str]:
     prompts = [(f"ai_prompts.{key}", p) for key, p in sorted(values.ai_prompts.items())]
     prompts.append(("ai_line_prompt", values.ai_line_prompt))
     prompts.append(("ai_ask_prompt", values.ai_ask_prompt))
-    return [
+    prompts.append(("ai_chapter_prompt", values.ai_chapter_prompt))
+    out = [
         f"{field}: {thinking_off_refusal(p.model)}"
         for field, p in prompts
         if p.model in AI_THINKING_ALWAYS_ON_MODELS and not p.thinking_enabled
     ]
+    return out + chapter_prompt_errors(values.ai_chapter_prompt)
+
+
+def chapter_prompt_errors(prompt: AiPrompt) -> list[str]:
+    """Why the chapter prompt cannot start a conversation, or nothing. A conversation is several
+    turns with the chapter in the provider's prompt cache, so only an Anthropic model whose
+    context window is known will do, with room in it for the largest input the server sends plus
+    the longest reply; a prefill has no place in a conversation's later turns."""
+    field = "ai_chapter_prompt"
+    if not prompt.model:
+        return []
+    window = AI_CONTEXT_WINDOW_TOKENS.get(prompt.model)
+    if window is None:
+        known = ", ".join(sorted(AI_CONTEXT_WINDOW_TOKENS))
+        return [f"{field}: the chapter prompt needs one of these Anthropic models: {known}"]
+    out: list[str] = []
+    if prompt.prefill.strip():
+        out.append(f"{field}: the chapter prompt cannot use a prefill")
+    if CHAPTER_IDEA_MAX_INPUT_TOKENS + prompt.max_tokens > window:
+        out.append(f"{field}: {prompt.model}'s context window cannot hold the largest request and this max tokens")
+    return out
 
 
 def schema() -> dict[str, Any]:

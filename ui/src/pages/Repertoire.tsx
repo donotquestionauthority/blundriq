@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { ApiError } from "../api";
+import { ChapterIdeaDialog } from "../components/ChapterIdea";
 import { LineWalkthrough } from "../components/PositionCard/LineReaderPanel";
 import { RefusalDialog, Toggle } from "../components/RepertoireBits";
 import { useApi } from "../hooks/useApi";
@@ -23,11 +24,17 @@ import { numbered } from "../utils/chess";
  * applies them when they land), and a sections response that was in flight when the toggle
  * answered is dropped and fetched again, so it cannot restore the old flags. The contested
  * count under the title is fetched again after every successful toggle.
+ *
+ * Each chapter row opens the chapter's idea (`ChapterIdeaDialog`): "Ask about this chapter", or
+ * "Chapter idea (N)" once N conversations are stored; only a chapter with neither active lines nor
+ * a conversation has nothing to open.
  */
 
 type Opened = { refusal: Refusal; orientation: "white" | "black"; from: HTMLButtonElement };
+/** The chapter whose idea dialog is open, and how to tell its row the conversation count changed. */
+type OpenChapter = { chapterId: number; title: string; onCount: (n: number) => void };
 
-function Book({ book, onError, onOpenLine, onRefusal, onToggled }: { book: RepertoireBook; onError: (e: string | null) => void; onOpenLine: (line: RepertoireLine) => void; onRefusal: (o: Opened) => void; onToggled: () => void }) {
+function Book({ book, onError, onOpenLine, onOpenChapter, onRefusal, onToggled }: { book: RepertoireBook; onError: (e: string | null) => void; onOpenLine: (line: RepertoireLine) => void; onOpenChapter: (c: OpenChapter) => void; onRefusal: (o: Opened) => void; onToggled: () => void }) {
   const [open, setOpen] = useState(false);
   const [active, setActiveState] = useState(book.active);
   const [sections, setSections] = useState<RepertoireSection[] | null>(null);
@@ -164,6 +171,19 @@ function Book({ book, onError, onOpenLine, onRefusal, onToggled }: { book: Reper
                   <p className="text-xs text-zinc-500">
                     {c.lines.filter((l) => l.active).length} / {c.lines.length} on{c.root_fen ? " · from a set position" : ""}
                   </p>
+                  {/* A chapter with no active lines still opens the conversations it has. */}
+                  {(() => {
+                    const n = c.idea_conversations;
+                    const none = n === 0 && !c.lines.some((l) => l.active);
+                    return (
+                      <p className="mt-0.5 text-xs">
+                        <button type="button" disabled={none} onClick={() => onOpenChapter({ chapterId: c.chapter_id, title: c.title, onCount: (k) => patchChapter(c.chapter_id, (x) => ({ ...x, idea_conversations: k })) })} className="text-sky-700 hover:underline disabled:text-zinc-400 disabled:no-underline dark:text-sky-400">
+                          {n > 0 ? `Chapter idea (${n})` : "Ask about this chapter"}
+                        </button>
+                        {none && <span className="ml-2 text-zinc-400">No active lines</span>}
+                      </p>
+                    );
+                  })()}
                 </div>
                 <Toggle on={c.active} label={`${c.title} active`} busy={busy.has(`chapters:${c.chapter_id}`)} onChange={(on, el) => void flip("chapters", c.chapter_id, on, (v) => patchChapter(c.chapter_id, (x) => ({ ...x, active: v })), el)} />
               </div>
@@ -241,6 +261,8 @@ export default function Repertoire() {
   const { data, error, isLoading } = useApi(getBooks);
   const [actionError, setActionError] = useState<string | null>(null);
   const [openLine, setOpenLine] = useState<RepertoireLine | null>(null);
+  const [openChapter, setOpenChapter] = useState<OpenChapter | null>(null);
+  const closeChapter = useCallback(() => setOpenChapter(null), []);
   const [refusal, setRefusal] = useState<Opened | null>(null);
   const [contested, setContested] = useState<number | null>(null);
   const countReq = useRef(0);
@@ -286,8 +308,9 @@ export default function Repertoire() {
       )}
       {isLoading && !data && <p className="text-sm text-zinc-500">Loading…</p>}
       {data && data.books.length === 0 && <p className="py-8 text-center text-sm text-zinc-500">No repertoire yet. Load one with `pipeline import-repertoire`.</p>}
-      <div className="space-y-2">{data?.books.map((b) => <Book key={b.book_id} book={b} onError={setActionError} onOpenLine={setOpenLine} onRefusal={setRefusal} onToggled={refetchCount} />)}</div>
+      <div className="space-y-2">{data?.books.map((b) => <Book key={b.book_id} book={b} onError={setActionError} onOpenLine={setOpenLine} onOpenChapter={setOpenChapter} onRefusal={setRefusal} onToggled={refetchCount} />)}</div>
       {openLine && <LineDialog line={openLine} onClose={() => setOpenLine(null)} />}
+      {openChapter && <ChapterIdeaDialog chapterId={openChapter.chapterId} title={openChapter.title} onClose={closeChapter} onCount={openChapter.onCount} />}
       {refusal && <RefusalDialog refusal={refusal.refusal} orientation={refusal.orientation} onClose={closeRefusal} />}
     </div>
   );

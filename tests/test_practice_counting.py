@@ -484,7 +484,7 @@ def test_migration_016_keeps_every_count_where_it_was(fresh_db_url: str, tmp_pat
                 (pid, PLAYER_ID, solved, ANSWER if solved else "d4", str(uuid.uuid4())),
             )
         c.commit()
-        assert schema.upgrade(c) == [16]
+        assert schema.upgrade(c)[0] == 16
         rows = c.execute("SELECT counted, mode FROM puzzle_attempts ORDER BY id").fetchall()
         assert [(r["counted"], r["mode"]) for r in rows] == [(True, None), (True, None)]
         assert home.puzzles_today(c, _config())["solved"] == 1

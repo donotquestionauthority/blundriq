@@ -35,7 +35,17 @@ from pydantic import BaseModel, Field
 from api import auth
 from core import ai, db, settings
 from core.chess.eligibility import TIME_CLASSES
-from core.repertoire import annotations, books, branch_compare, conflicts, lines, neighbourhood, read, report
+from core.repertoire import (
+    annotations,
+    books,
+    branch_compare,
+    chapter_idea,
+    conflicts,
+    lines,
+    neighbourhood,
+    read,
+    report,
+)
 
 router = APIRouter(prefix="/repertoire", tags=["repertoire"], dependencies=[auth.Authed])
 _log = logging.getLogger(__name__)
@@ -103,6 +113,53 @@ def gap_card(game_id: int = Query(ge=1), ply: int = Query(ge=0, le=2000)) -> dic
         raise HTTPException(404, "Not found") from exc
     except report.GameCardRefused as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+class ChapterQuestion(BaseModel):
+    # Trimmed and limited to ai.QUESTION_MAX_CHARS in core; this bound only caps the body.
+    question: str = Field(default="", max_length=4 * ai.QUESTION_MAX_CHARS)
+
+
+def _idea(call: Any) -> dict[str, Any]:
+    try:
+        return call()
+    except ai.ExplainError as exc:
+        raise HTTPException(exc.status, exc.detail) from exc
+
+
+@router.get("/chapters/{chapter_id}/idea")
+def chapter_idea_read(chapter_id: int) -> dict[str, Any]:
+    """`{chapter, conversations, conversation}`: the newest conversation in full (null when there is
+    none), every one listed newest first; 404 for a chapter that is not the player's."""
+    with db.transaction() as conn:
+        out = chapter_idea.read_chapter(conn, chapter_id)
+    if out is None:
+        raise HTTPException(404, "Chapter not found")
+    return out
+
+
+@router.post("/chapters/{chapter_id}/idea")
+def chapter_idea_ask(chapter_id: int, body: ChapterQuestion) -> dict[str, Any]:
+    """A new conversation's first answer, stored: `{saved: true, chapter, conversations, conversation}`,
+    or `{saved: false, unsaved_turn}`. 422 `{code, message}` for `no_active_lines` or `chapter_too_large`,
+    429 at a cap, 503 when the size could not be counted."""
+    return _idea(lambda: chapter_idea.ask(db.transaction, chapter_id, body.question))
+
+
+@router.get("/chapter-ideas/{conversation_id}")
+def chapter_idea_conversation(conversation_id: int) -> dict[str, Any]:
+    with db.transaction() as conn:
+        out = chapter_idea.read_conversation(conn, conversation_id)
+    if out is None:
+        raise HTTPException(404, "Conversation not found")
+    return out
+
+
+@router.post("/chapter-ideas/{conversation_id}/followup")
+def chapter_idea_followup(conversation_id: int, body: ChapterQuestion) -> dict[str, Any]:
+    """The next answer, as the first question's. 422 `{code, message}` for `conversation_full`,
+    `conversation_params_invalid` or `model_retired`, before any count, claim or call."""
+    return _idea(lambda: chapter_idea.follow_up(db.transaction, conversation_id, body.question))
 
 
 @router.get("/similar")
