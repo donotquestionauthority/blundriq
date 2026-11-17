@@ -81,6 +81,11 @@
       "description": "Ask Opus about the position on show (Review and Explore); edit as JSON.",
       "type": "object"
     },
+    "ai_chapter_prompt": {
+      "$ref": "#/$defs/AiPrompt",
+      "description": "Ask about a repertoire chapter, with follow-ups (Anthropic only, no prefill); edit as JSON.",
+      "type": "object"
+    },
     "ai_default_prompt": {
       "default": "a",
       "description": "Prompt key used by the primary Explain button.",

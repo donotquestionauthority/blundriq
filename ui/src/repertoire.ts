@@ -31,6 +31,8 @@ export interface RepertoireSection {
   title: string;
   active: boolean;
   root_fen: string | null;
+  /** How many conversations about this chapter are stored (the chapter's Ask button counts them). */
+  idea_conversations: number;
   lines: RepertoireLine[];
 }
 
@@ -548,3 +550,67 @@ export const getReport = (timeClass: string, games: number | null = null) => api
 /** The report's second read, issued with the first: the decision evidence for the same scope. */
 export const getReportDecisions = (timeClass: string, games: number | null = null) => api.get<DecisionsResponse>(`/repertoire/report/decisions?${scopeQuery(timeClass, games)}`);
 export const reportPath = () => "/repertoire/report";
+
+/** A move the answer names, as the server resolved it when the answer was stored: the line (by its
+ *  label in the conversation and its id), the walk-through ply after the anchor move, the moves no
+ *  line plays after it (`branch`, empty for a move of the line itself), and the boards after the
+ *  anchor and after the last move. `label` is the move as shown. */
+export interface ChapterMoveLink {
+  label: string;
+  line: string;
+  line_id: number;
+  ply: number;
+  anchor: string;
+  anchor_fen: string;
+  branch: string[];
+  fen: string;
+}
+
+export type ChapterSegment = { text: string } | { move: ChapterMoveLink };
+
+export interface ChapterTurn {
+  seq: number;
+  question: string;
+  segments: ChapterSegment[];
+  input_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_write_tokens: number | null;
+  output_tokens: number | null;
+  created_at: string;
+}
+
+/** Why a stored conversation cannot take a follow-up whatever its size. */
+export type ChapterBlocked = "conversation_params_invalid" | "model_retired";
+
+export interface ChapterConversation {
+  id: number;
+  chapter_id: number;
+  created_at: string;
+  model: string;
+  turns: ChapterTurn[];
+  /** The lines the model was shown, by label; `exists` is false for a line deleted since. */
+  lines: Record<string, { line_id: number; name: string; exists: boolean }>;
+  stale: boolean;
+  stale_reason: "changed" | "empty" | null;
+  prompt_current: boolean;
+  full: boolean;
+  full_reason: "conversation_full" | null;
+  blocked: ChapterBlocked | null;
+}
+
+export interface ChapterIdeaRead {
+  chapter: { id: number; title: string; book_title: string; color: "white" | "black"; active_lines: number };
+  conversations: { id: number; created_at: string; turns: number }[];
+  conversation: ChapterConversation | null;
+}
+
+/** What an Ask returns: the stored conversation, or the paid answer the server could not store. */
+export type ChapterIdeaAnswer = ({ saved: true } & ChapterIdeaRead) | { saved: false; unsaved_turn: ChapterTurn; conversation_id: number | null; lines: ChapterConversation["lines"] };
+
+/** The chapter, its conversations and the newest in full: a read, no AI call. */
+export const getChapterIdea = (chapterId: number) => api.get<ChapterIdeaRead>(`/repertoire/chapters/${chapterId}/idea`);
+/** One stored conversation: a read, no AI call. */
+export const getChapterConversation = (conversationId: number) => api.get<ChapterIdeaRead>(`/repertoire/chapter-ideas/${conversationId}`);
+/** A new conversation's first question (empty asks for the chapter's general idea). */
+export const askChapter = (chapterId: number, question: string) => api.post<ChapterIdeaAnswer>(`/repertoire/chapters/${chapterId}/idea`, { question });
+export const followUpChapter = (conversationId: number, question: string) => api.post<ChapterIdeaAnswer>(`/repertoire/chapter-ideas/${conversationId}/followup`, { question });

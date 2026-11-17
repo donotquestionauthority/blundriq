@@ -327,7 +327,8 @@ def project(
 ) -> list[Row]:
     """One entry per spine position: `{ply, fen, move, annotation}`, the note being the
     winning eligible candidate or None. Candidates carry `fen_norm, text, source, author,
-    book_title, ann_line_id, ann_chapter_id, ann_chapter_title, updated_at, ann_id, moves`."""
+    book_title, ann_line_id, ann_chapter_id, ann_chapter_title, updated_at, ann_id, moves`; the
+    choice never reads `text`, `author` or the titles, which are copied into the note as they are."""
     prepared = [(c, _as_list(c.get("moves"))) for c in candidates]
 
     def precedence(c: Row) -> tuple[int, int, tuple[int, datetime | None], int]:

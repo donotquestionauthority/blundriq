@@ -236,6 +236,20 @@ AI_THINKING_MIN_BUDGET_TOKENS = 1024
 AI_THINKING_HEADROOM_TOKENS = 256
 AI_ADAPTIVE_THINKING_MODELS = frozenset({"claude-sonnet-5", "claude-opus-5-5"})
 AI_THINKING_ALWAYS_ON_MODELS = frozenset({"claude-opus-5-5"})
+# Each model's context window in tokens, as Anthropic documents it. A conversation's model must
+# be listed here: the chapter prompt cannot be saved with a model that is not, and a stored
+# conversation whose model has left the table is not continued.
+AI_CONTEXT_WINDOW_TOKENS: dict[str, int] = {"claude-opus-5-5": 1_000_000, "claude-sonnet-5": 1_000_000}
+
+# Asking about a repertoire chapter (core/repertoire/chapter_idea.py). The input bound is the
+# provider's own count of the exact request, padded for its stated imprecision (`counted * 1.02 +
+# 1000`); it is a cost cap, one follow-up costing at most about four first questions. The
+# character and turn caps are guards for the interface and the bill; neither bounds tokens.
+CHAPTER_IDEA_MAX_INPUT_TOKENS = 120_000
+CHAPTER_IDEA_COUNT_MARGIN = 1.02
+CHAPTER_IDEA_COUNT_PAD_TOKENS = 1_000
+CHAPTER_IDEA_MAX_PROMPT_CHARS = 300_000
+CHAPTER_IDEA_MAX_TURNS = 12
 
 # Spaced-repetition ladder. 'king' is mastery (core/puzzles/srs.py). Six levels because
 # there are six pieces; the intervals are settings, and their provenance is in

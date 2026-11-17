@@ -16,8 +16,8 @@ const AFTER_NF3 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 
 
 const book = (over: Partial<RepertoireBook> = {}): RepertoireBook => ({ book_id: 1, title: "Course: The Italian", color: "white", active: true, source_url: null, source_author: null, source_title: null, total_lines: 2, active_lines: 2, ...over });
 const sections = (): RepertoireSection[] => [
-  { chapter_id: 1, title: "1) Giuoco", active: true, root_fen: null, lines: [{ id: 1, name: "Main", moves: ["e4", "e5", "Nf3"], active: true, is_alternative: false, origin: "course", loads: 3 }] },
-  { chapter_id: 2, title: "2) Sidelines", active: true, root_fen: AFTER_E5, lines: [{ id: 2, name: "Alt", moves: ["Bc4"], active: false, is_alternative: true, origin: "manual", loads: 0 }] },
+  { chapter_id: 1, title: "1) Giuoco", active: true, root_fen: null, idea_conversations: 0, lines: [{ id: 1, name: "Main", moves: ["e4", "e5", "Nf3"], active: true, is_alternative: false, origin: "course", loads: 3 }] },
+  { chapter_id: 2, title: "2) Sidelines", active: true, root_fen: AFTER_E5, idea_conversations: 0, lines: [{ id: 2, name: "Alt", moves: ["Bc4"], active: false, is_alternative: true, origin: "manual", loads: 0 }] },
 ];
 const line = (): LineReaderLine => ({
   line_id: 1,
@@ -98,6 +98,37 @@ describe("Repertoire page", () => {
     fireEvent.click(screen.getByRole("switch", { name: "Course: The Italian active" }));
     await vi.waitFor(() => expect(calls.some((c) => c.path === "/repertoire/books/1")).toBe(true));
     expect(calls.filter((c) => c.path === "/repertoire/1/sections")).toHaveLength(1);
+  });
+
+  it("opens a chapter's idea from its row, counts its conversations, and refuses only a chapter with nothing to open", async () => {
+    const secs = sections();
+    secs[1].idea_conversations = 0; // no active line and no conversation: nothing to open
+    const third = { ...secs[1], chapter_id: 3, title: "3) Emptied", idea_conversations: 2 };
+    const calls = stubFetch({
+      "/repertoire": () => ({ status: 200, body: { books: [book()] } }),
+      "/repertoire/1/sections": () => ({ status: 200, body: { sections: [...secs, third] } }),
+      "/repertoire/conflicts": () => ({ status: 200, body: { positions: [], duplicates: [], contested: 0 } }),
+      "/repertoire/chapters/1/idea": (method) =>
+        method === "GET"
+          ? { status: 200, body: { chapter: { id: 1, title: "1) Giuoco", book_title: "Course: The Italian", color: "white", active_lines: 1 }, conversations: [], conversation: null } }
+          : { status: 200, body: { saved: true, chapter: { id: 1, title: "1) Giuoco", book_title: "Course: The Italian", color: "white", active_lines: 1 }, conversations: [{ id: 9, created_at: "2026-11-16T20:00:00+00:00", turns: 1 }], conversation: { id: 9, chapter_id: 1, created_at: "2026-11-16T20:00:00+00:00", model: "claude-opus-5-5", turns: [{ seq: 0, question: "q", segments: [{ text: "An answer." }], input_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0, output_tokens: 1, created_at: "2026-11-16T20:00:00+00:00" }], lines: {}, stale: false, stale_reason: null, prompt_current: true, full: false, full_reason: null, blocked: null } } },
+    });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /Course: The Italian/ }));
+    await screen.findByText("1) Giuoco");
+    const asks = screen.getAllByRole("button", { name: "Ask about this chapter" });
+    expect(asks).toHaveLength(2);
+    expect(asks[1]).toBeDisabled();
+    expect(screen.getByText("No active lines")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Chapter idea (2)" })).toBeEnabled(); // emptied, with conversations
+    fireEvent.click(asks[0]);
+    const dialog = await screen.findByRole("dialog", { name: "Chapter idea" });
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Ask" }));
+    await within(dialog).findByText("An answer.");
+    fireEvent.click(within(dialog).getByRole("button", { name: "← Back" }));
+    expect(screen.queryByRole("dialog", { name: "Chapter idea" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Chapter idea (1)" })).toBeEnabled();
+    expect(calls.filter((c) => c.method === "POST")).toHaveLength(1);
   });
 
   it("deletes a line after a confirm that states the cost, on the server's word", async () => {

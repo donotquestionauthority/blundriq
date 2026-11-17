@@ -73,16 +73,20 @@ def books(conn: Connection[Any]) -> list[Row]:
 
 def sections(conn: Connection[Any], book_id: int) -> list[Row] | None:
     """A book's chapters and their lines in the course's own order (chapters by source id,
-    lines by insertion), or None when the book is not the player's. Each line carries its
-    `origin` and how many times its puzzle was loaded (the delete confirm quotes it)."""
+    lines by insertion), or None when the book is not the player's. Each chapter carries how many
+    conversations about it are stored; each line its `origin` and how many times its puzzle was
+    loaded (the delete confirm quotes it)."""
     owned = conn.execute("SELECT 1 FROM books WHERE id = %s AND player_id = %s", (book_id, PLAYER_ID)).fetchone()
     if owned is None:
         return None
     rows = conn.execute(
         """
         SELECT ch.id AS chapter_id, ch.title, ch.active AS chapter_active, ch.root_fen,
+               COALESCE(ic.n, 0) AS idea_conversations,
                rl.id AS line_id, rl.line_name, rl.moves, rl.active AS line_active, rl.is_alternative, rl.origin
         FROM chapters ch
+        LEFT JOIN (SELECT chapter_id, count(*) AS n FROM chapter_idea_conversations GROUP BY chapter_id) ic
+               ON ic.chapter_id = ch.id
         LEFT JOIN repertoire_lines rl ON rl.chapter_id = ch.id
         WHERE ch.book_id = %s
         ORDER BY ch.source_chapter_id NULLS LAST, ch.title, ch.id, rl.id
@@ -101,6 +105,7 @@ def sections(conn: Connection[Any], book_id: int) -> list[Row] | None:
                     "title": r["title"],
                     "active": bool(r["chapter_active"]),
                     "root_fen": r["root_fen"],
+                    "idea_conversations": int(r["idea_conversations"]),
                     "lines": lines_of[cid],
                 }
             )

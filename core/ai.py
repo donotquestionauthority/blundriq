@@ -34,13 +34,14 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC
-from typing import Any, LiteralString, cast
+from typing import Any, Literal, LiteralString, cast
 
 import chess
 import httpx
 import psycopg
 from jinja2 import TemplateError
 from psycopg import Connection
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from core import games, prompts, secrets
 from core.chess import san as san_moves
@@ -62,6 +63,7 @@ from core.settings import AiPrompt, Settings, thinking_off_refusal
 from core.settings import load as load_settings
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_COUNT_URL = "https://api.anthropic.com/v1/messages/count_tokens"
 ANTHROPIC_VERSION = "2023-06-01"
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 # Long enough for a model that thinks first: its thinking shares `max_tokens` with the answer.
@@ -281,7 +283,7 @@ _SAN_STRAY_RE = re.compile(r"@@SAN(?:Start|End)@@")
 _SPACES_RE = re.compile(r"[ \t]{2,}")
 
 
-def _note_prose(text: str) -> str:
+def note_prose(text: str) -> str:
     """A note's text as the walk-through shows it: move references and brackets unwrapped."""
     out = _BRACKET_CLOSE_RE.sub(")", _BRACKET_OPEN_RE.sub("(", text))
     out = _SAN_STRAY_RE.sub("", _SAN_REF_RE.sub(r"\1", out))
@@ -298,7 +300,7 @@ def _note_text(note: dict[str, Any] | None) -> str:
         who = ", ".join(["the author", *(str(note[k]) for k in ("author", "book_title") if note.get(k))])
     if note.get("from_chapter"):
         who += f"; from the chapter {note['from_chapter']}"
-    return f'"{_note_prose(str(note["text"]))}" ({who})'
+    return f'"{note_prose(str(note["text"]))}" ({who})'
 
 
 def line_context(line: dict[str, Any], ply: int, question: str) -> dict[str, Any] | None:
@@ -825,7 +827,7 @@ def backfill_questions(conn: Connection[Any], extract: Callable[[str, str], str 
     return {"filled": len(fills), "left_null": len(rows) - len(fills)}
 
 
-def _claim(conn: Connection[Any], settings: Settings, prompt_key: str, model: str) -> int:
+def claim(conn: Connection[Any], settings: Settings, prompt_key: str, model: str) -> int:
     """Take one slot under both caps, or raise 429 naming the cap that is full. The advisory
     lock makes count-then-insert atomic across tabs; it lasts until this transaction ends."""
     with conn.cursor() as cur:
@@ -898,6 +900,11 @@ def _failure(response: httpx.Response) -> ExplainError:
     return ExplainError(502, f"AI provider refused the call (HTTP {response.status_code}{kind})")
 
 
+def _anthropic_headers() -> dict[str, str]:
+    """The headers of every Anthropic request, the Messages call and the token count alike."""
+    return {"x-api-key": secrets.anthropic().api_key, "anthropic-version": ANTHROPIC_VERSION}
+
+
 def call_provider(model: str, rendered: str, eff: dict[str, Any], client: httpx.Client) -> Reply:
     body = request_body(model, rendered, eff)
     try:
@@ -905,8 +912,7 @@ def call_provider(model: str, rendered: str, eff: dict[str, Any], client: httpx.
             headers = {"Authorization": f"Bearer {secrets.openai().api_key}"}
             response = client.post(OPENAI_URL, json=body, headers=headers)
         else:
-            headers = {"x-api-key": secrets.anthropic().api_key, "anthropic-version": ANTHROPIC_VERSION}
-            response = client.post(ANTHROPIC_URL, json=body, headers=headers)
+            response = client.post(ANTHROPIC_URL, json=body, headers=_anthropic_headers())
     except secrets.MissingSecret as exc:
         raise ExplainError(503, f"AI explanations are not configured for {eff['provider']} models") from exc
     except httpx.HTTPError as exc:
@@ -1009,7 +1015,7 @@ def _run(
         cached = _cached(conn, prep.fen, p_hash, c_hash)
         if cached is not None:
             return {"explanation": cached, "cached": True, "model": model, "prompt_label": prep.label}
-        claim_id = _claim(conn, settings, prep.calls_key, model)
+        claim_id = claim(conn, settings, prep.calls_key, model)
 
     try:
         if client is None:
@@ -1110,4 +1116,186 @@ def _record(
         " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
         " ON CONFLICT (canonical_fen, prompt_hash, context_hash) DO NOTHING",
         (fen, p_hash, c_hash, model, label, rendered, reply.text, question),
+    )
+
+
+# --- a conversation (Anthropic only) -------------------------------------------------------------
+#
+# A conversation's first user message is a long text block marked for Anthropic's prompt cache;
+# every later request sends that block unchanged, every earlier question and answer, and the new
+# question, so a follow-up within the cache's life reads the block from the cache. Its parameters
+# are frozen at the first call (`ConversationParams`) and every request is built from them, never
+# from the current settings. Before a request is sent its exact input is counted by the provider
+# (`count_body` is the counted projection of the body that is then sent unmodified).
+
+
+class _Adaptive(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    type: Literal["adaptive"]
+
+
+class _Budget(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    type: Literal["enabled"]
+    budget_tokens: int = Field(ge=AI_THINKING_MIN_BUDGET_TOKENS)
+
+
+class _Disabled(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    type: Literal["disabled"]
+
+
+class ConversationParams(BaseModel):
+    """The effective parameters of a conversation's first call (`effective_params` plus the
+    model), every key present: `thinking_mode` and `thinking` are None where `effective_params`
+    leaves them out. A stored object that does not validate continues nothing."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    model: str = Field(min_length=1)
+    provider: Literal["anthropic"]
+    system_prompt: str
+    temperature: float | None
+    thinking_enabled: bool
+    thinking_budget_tokens: int = Field(ge=0)
+    thinking_mode: Literal["adaptive"] | None
+    prefill: Literal[""]
+    max_tokens: int = Field(ge=1)
+    thinking: _Adaptive | _Budget | _Disabled | None
+
+    @classmethod
+    def of(cls, prompt: AiPrompt) -> ConversationParams:
+        """The prompt's effective parameters, or a 422 when it cannot hold a conversation."""
+        eff = effective_params(prompt)
+        if eff["provider"] != "anthropic":
+            raise ExplainError(422, "the chapter prompt needs an Anthropic model")
+        if eff.get("prefill"):
+            raise ExplainError(422, "the chapter prompt cannot use a prefill")
+        raw = {"thinking_mode": None, "thinking": None, **eff, "model": prompt.model}
+        return cls.model_validate(raw, strict=False)
+
+    @classmethod
+    def stored(cls, raw: Any) -> ConversationParams:
+        """A stored object read back, or a 422 `conversation_params_invalid`."""
+        try:
+            return cls.model_validate(raw)
+        except ValidationError:
+            raise ExplainError(422, "conversation_params_invalid") from None
+
+    def as_stored(self) -> dict[str, Any]:
+        return self.model_dump(mode="json")
+
+
+# The Token Count request's input fields this body can carry; everything else in the Messages body
+# (`max_tokens`, `temperature`) configures the output or the sampling and changes no input count.
+COUNT_INPUT_FIELDS = ("model", "system", "messages", "thinking")
+COUNT_OMITTED_FIELDS = ("max_tokens", "temperature")
+
+
+def conversation_body(
+    params: ConversationParams, cached_text: str, turns: list[dict[str, Any]], question: str | None
+) -> dict[str, Any]:
+    """The full Messages body: the cached block (whose text carries the first question), then every
+    earlier turn's question (after the first) and answer, then `question` when there is one."""
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": [{"type": "text", "text": cached_text, "cache_control": {"type": "ephemeral"}}]}
+    ]
+    for turn in turns:
+        if int(turn["seq"]) > 0:
+            messages.append({"role": "user", "content": str(turn["question"])})
+        messages.append({"role": "assistant", "content": str(turn["answer"])})
+    if question is not None:
+        messages.append({"role": "user", "content": question})
+    body: dict[str, Any] = {"model": params.model, "messages": messages, "max_tokens": params.max_tokens}
+    if params.system_prompt:
+        body["system"] = params.system_prompt
+    if params.thinking is not None:
+        body["thinking"] = params.thinking.model_dump()
+    if params.temperature is not None:
+        body["temperature"] = float(params.temperature)
+    return body
+
+
+def count_body(body: dict[str, Any]) -> dict[str, Any]:
+    """The Token Count request for `body`: its input fields copied, nothing else."""
+    return {k: body[k] for k in COUNT_INPUT_FIELDS if k in body}
+
+
+def count_tokens(body: dict[str, Any], client: httpx.Client) -> int:
+    """The provider's count of `body`'s input. Any failure is a 503: the size of a request is never
+    estimated in place of the count."""
+    try:
+        response = client.post(ANTHROPIC_COUNT_URL, json=count_body(body), headers=_anthropic_headers())
+    except secrets.MissingSecret as exc:
+        raise ExplainError(503, "AI explanations are not configured for anthropic models") from exc
+    except httpx.HTTPError as exc:
+        _log.warning("token count unreachable: %s", type(exc).__name__)
+        raise ExplainError(503, "Could not check the size of this request; try again") from None
+    if response.status_code != 200:
+        _log.warning("token count refused: %s", _failure(response).detail)
+        raise ExplainError(503, "Could not check the size of this request; try again")
+    try:
+        counted = response.json()["input_tokens"]
+    except ValueError, KeyError, TypeError:
+        counted = None
+    if not isinstance(counted, int) or isinstance(counted, bool) or counted < 0:
+        raise ExplainError(503, "Could not check the size of this request; try again")
+    return counted
+
+
+@dataclass(frozen=True)
+class ConversationReply:
+    text: str
+    input_tokens: int | None  # uncached input
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    output_tokens: int | None
+
+    @property
+    def total_input(self) -> int | None:
+        parts = (self.input_tokens, self.cache_read_tokens, self.cache_write_tokens)
+        return None if self.input_tokens is None else sum(p or 0 for p in parts)
+
+
+def call_conversation(body: dict[str, Any], client: httpx.Client) -> ConversationReply:
+    """Send `body` unmodified. The same refusals as `call_provider`: status and error type only,
+    a reply with no text or cut off at `max_tokens` is not an answer."""
+    try:
+        response = client.post(ANTHROPIC_URL, json=body, headers=_anthropic_headers())
+    except secrets.MissingSecret as exc:
+        raise ExplainError(503, "AI explanations are not configured for anthropic models") from exc
+    except httpx.HTTPError as exc:
+        raise ExplainError(502, f"AI provider could not be reached ({type(exc).__name__})") from None
+    if response.status_code != 200:
+        failure = _failure(response)
+        _log.warning("chapter idea call refused: %s", failure.detail)
+        raise failure
+    try:
+        data: dict[str, Any] = response.json()
+        text = "".join(str(b["text"]) for b in data["content"] if b.get("type") == "text").strip()
+        cut_off = data.get("stop_reason") == "max_tokens"
+        usage: dict[str, Any] = data.get("usage") or {}
+    except ValueError, KeyError, IndexError, TypeError, AttributeError:
+        raise ExplainError(502, "AI provider sent a reply that could not be read") from None
+    if not text:
+        raise ExplainError(502, "AI provider sent a reply with no text (raise max tokens?)")
+    if cut_off:
+        raise ExplainError(502, "AI provider's reply was cut off at max tokens (raise max tokens)")
+    return ConversationReply(
+        text,
+        _int(usage.get("input_tokens")),
+        _int(usage.get("cache_read_input_tokens")),
+        _int(usage.get("cache_creation_input_tokens")),
+        _int(usage.get("output_tokens")),
+    )
+
+
+def release(conn: Connection[Any], claim_id: int) -> None:
+    """Give a claimed slot back: the call it was for did not succeed."""
+    conn.execute("DELETE FROM ai_calls WHERE id = %s", (claim_id,))
+
+
+def record_tokens(conn: Connection[Any], claim_id: int, input_tokens: int | None, output_tokens: int | None) -> None:
+    conn.execute(
+        "UPDATE ai_calls SET input_tokens = %s, output_tokens = %s WHERE id = %s",
+        (input_tokens, output_tokens, claim_id),
     )
