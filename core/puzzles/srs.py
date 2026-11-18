@@ -350,6 +350,21 @@ def attempt_summaries(conn: Connection[Any], puzzle_ids: list[int]) -> dict[int,
 EMPTY_SUMMARY: dict[str, Any] = {"total": 0, "solved": 0, "last_attempt_at": None, "streak": 0}
 
 
+def last_attempted(conn: Connection[Any], puzzle_ids: list[int]) -> dict[int, datetime]:
+    """{puzzle_id: the newest `attempt_at` over every attempt row}, in UTC so the values compare
+    as instants. Every row counts: any mode, counted or not, a retry within a session included.
+    A puzzle with no dated attempt is absent."""
+    if not puzzle_ids:
+        return {}
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT puzzle_id, max(attempt_at) AS at FROM puzzle_attempts"
+            " WHERE player_id = %s AND puzzle_id = ANY(%s) GROUP BY puzzle_id",
+            (PLAYER_ID, puzzle_ids),
+        )
+        return {int(r["puzzle_id"]): r["at"].astimezone(UTC) for r in cur.fetchall() if r["at"] is not None}
+
+
 def post_attempt_state(conn: Connection[Any], puzzle_id: int, config: Settings) -> dict[str, Any]:
     """What the attempt response reports after the write: level, progress and the summary.
     Read inside the same transaction as the write it reports on."""
