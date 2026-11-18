@@ -748,6 +748,9 @@ class ExtraPage:
     run: int | None
 
 
+EXTRA_NEVER_ATTEMPTED = datetime(1970, 1, 1, tzinfo=UTC)
+
+
 def extra_candidate(row: dict[str, Any], now: datetime) -> bool:
     """A puzzle extra practice may serve: on the ladder (attempted, not mastered, not corpus)
     and not due. A pending queue item is always due, so it is never one."""
@@ -760,9 +763,18 @@ def extra_candidate(row: dict[str, Any], now: datetime) -> bool:
     )
 
 
-def _extra_order(row: dict[str, Any]) -> tuple[datetime, int, int]:
+def _extra_order(row: dict[str, Any], last: dict[int, datetime]) -> tuple[datetime, datetime, int, int]:
+    """Practised longest ago first (no dated attempt first of all), then soonest due, then lower
+    level, then id. Every time is compared in UTC: two datetimes sharing a named zone compare by
+    wall time, which a daylight-saving fall-back reverses."""
     state = row["srs"]
-    return (state["next_show_at"], srs.LEVEL_INDEX.get(state["level"], 0), int(row["id"]))
+    pid = int(row["id"])
+    return (
+        last.get(pid, EXTRA_NEVER_ATTEMPTED),
+        state["next_show_at"].astimezone(UTC),
+        srs.LEVEL_INDEX.get(state["level"], 0),
+        pid,
+    )
 
 
 def extra_page(
@@ -774,8 +786,8 @@ def extra_page(
     subtype: str | None,
     run: int | None,
 ) -> ExtraPage:
-    """The next page of extra practice for one filter: its puzzles that are not yet due, soonest
-    due first, then lower level, then id, a batch's worth at a time. Each page is written as
+    """The next page of extra practice for one filter: its puzzles that are not yet due, the one
+    practised longest ago first (`_extra_order`), a batch's worth at a time. Each page is written as
     exposure rows under `extra:<scope>` — proof that it was served (`core.puzzles.attempts`),
     never queue state — and `run`, the batch id of the run's first page, excludes every puzzle
     a page of the run has served, attempted or skipped. `run` absent, or naming no page of this
@@ -800,17 +812,16 @@ def extra_page(
             (PLAYER_ID, scope, run),
         )
         served = {int(r["puzzle_id"]) for r in cur.fetchall()}
-    candidates = sorted(
-        (
-            r
-            for r in visible
-            if matches_type(r, ptype)
-            and matches_subtype(r, ptype, subtype)
-            and int(r["id"]) not in served
-            and extra_candidate(r, now)
-        ),
-        key=_extra_order,
-    )
+    candidates = [
+        r
+        for r in visible
+        if matches_type(r, ptype)
+        and matches_subtype(r, ptype, subtype)
+        and int(r["id"]) not in served
+        and extra_candidate(r, now)
+    ]
+    last = srs.last_attempted(conn, [int(r["id"]) for r in candidates])
+    candidates.sort(key=lambda r: _extra_order(r, last))
     page = candidates[: max(1, config.puzzle_mix_batch_size)]
     if not page:
         return ExtraPage([], None, run if run < batch_id else None)

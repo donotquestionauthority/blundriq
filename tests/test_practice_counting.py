@@ -11,7 +11,8 @@ from __future__ import annotations
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from datetime import UTC
 from pathlib import Path
 from typing import Any, LiteralString
 
@@ -305,7 +306,8 @@ def test_an_idempotent_replay_answers_whether_it_counted(clean: psycopg.Connecti
 
 
 def _ladder(conn: psycopg.Connection[DictRow]) -> dict[str, int]:
-    """Standard puzzles on distinct boards with every kind of state extra practice must judge."""
+    """Standard puzzles on distinct boards with every kind of state extra practice must judge.
+    The two soonest due were practised most recently, at one instant; `later` days before."""
     from tests.test_practice import _position
 
     _player(conn)
@@ -326,26 +328,173 @@ def _ladder(conn: psycopg.Connection[DictRow]) -> dict[str, int]:
         "INSERT INTO player_puzzle_state (player_id, puzzle_id, level, next_show_at) VALUES (%s, %s, 'king', %s)",
         (PLAYER_ID, ids["king"], srs.KING_SENTINEL),
     )
+    _attempt_at(conn, ids["soon_knight"], "2026-01-10 12:00+00")
+    _attempt_at(conn, ids["soon_pawn"], "2026-01-10 12:00+00")
+    _attempt_at(conn, ids["later"], "2026-01-07 12:00+00")
     return ids
 
 
-def test_extra_practice_serves_the_not_yet_due_soonest_first_in_pages(clean: psycopg.Connection[DictRow]) -> None:
+def _attempt_at(
+    conn: psycopg.Connection[DictRow],
+    pid: int,
+    at: str | None,
+    *,
+    session: str | None = None,
+    mode: str = "practice",
+    counted: bool = True,
+) -> None:
+    """An attempt row at an explicit `attempt_at` (a literal with its offset, or NULL)."""
+    conn.execute(
+        "INSERT INTO puzzle_attempts (puzzle_id, player_id, solved, moves_played, attempt_at, session_id, mode, counted)"
+        " VALUES (%s, %s, TRUE, 'x', %s::timestamptz, %s, %s, %s)",
+        (pid, PLAYER_ID, at, session or str(uuid.uuid4()), mode, counted),
+    )
+
+
+def _not_due(conn: psycopg.Connection[DictRow], n: int, *, first: int = 0) -> list[int]:
+    """n standard puzzles on distinct boards, each on the ladder and due in five hours."""
+    from tests.test_practice import _position
+
+    pids = []
+    for i in range(first, first + n):
+        fen, line = _position(i)
+        pid = _puzzle(conn, fen, line, themes=[])
+        _schedule(conn, pid, hours=5)
+        pids.append(pid)
+    return pids
+
+
+def _run(conn: psycopg.Connection[DictRow], config: Any) -> list[int]:
+    """Every puzzle of one new extra run, page after page, in order served."""
+    served: list[int] = []
+    page = serve.extra_page(conn, config, last_n_games=0, ptype="all", subtype=None, run=None)
+    while page.rows:
+        served += _ids(page.rows)
+        page = serve.extra_page(conn, config, last_n_games=0, ptype="all", subtype=None, run=page.run)
+    return served
+
+
+@pytest.fixture()
+def new_york(clean: psycopg.Connection[DictRow]) -> Generator[psycopg.Connection[DictRow]]:
+    """`clean` in a session whose zone has a daylight-saving fall-back."""
+    clean.execute("SET TIME ZONE 'America/New_York'")
+    assert _one(clean, "SHOW timezone")["TimeZone"] == "America/New_York"
+    yield clean  # `conn` closes the connection after the test, and the zone with it
+
+
+def test_extra_practice_serves_the_practised_longest_ago_first_in_pages(clean: psycopg.Connection[DictRow]) -> None:
     ids = _ladder(clean)
     config = _config(puzzle_mix_batch_size=2)
     first = serve.extra_page(clean, config, last_n_games=0, ptype="all", subtype=None, run=None)
-    assert _ids(first.rows) == [ids["soon_pawn"], ids["soon_knight"]]
+    assert _ids(first.rows) == [ids["later"], ids["soon_pawn"]]
     assert first.run == first.batch_id and all(r["play_batch_id"] == first.batch_id for r in first.rows)
     second = serve.extra_page(clean, config, last_n_games=0, ptype="all", subtype=None, run=first.run)
-    assert _ids(second.rows) == [ids["later"]] and second.run == first.run
+    assert _ids(second.rows) == [ids["soon_knight"]] and second.run == first.run
     done = serve.extra_page(clean, config, last_n_games=0, ptype="all", subtype=None, run=first.run)
     assert done.rows == [] and done.batch_id is None and done.run == first.run
     # A new run starts from the top again.
     again = serve.extra_page(clean, config, last_n_games=0, ptype="all", subtype=None, run=None)
-    assert _ids(again.rows) == [ids["soon_pawn"], ids["soon_knight"]] and again.run != first.run
+    assert _ids(again.rows) == [ids["later"], ids["soon_pawn"]] and again.run != first.run
     # Its exposures are under the filter's own extra scope and never queue state.
     scopes = {r["scope"] for r in clean.execute("SELECT DISTINCT scope FROM player_puzzle_exposure").fetchall()}
     assert scopes == {"extra:all"}
     assert serve.pending_members(clean, "all", set(ids.values())) == []
+
+
+@pytest.mark.parametrize("retry", ["practice", "uncounted extra"])
+def test_a_retry_later_in_a_session_is_when_the_puzzle_was_last_practised(
+    clean: psycopg.Connection[DictRow], retry: str
+) -> None:
+    _player(clean)
+    a, b = _not_due(clean, 2)
+    session = str(uuid.uuid4())
+    _attempt_at(clean, a, "2026-01-09 12:00+00", session=session)
+    _attempt_at(clean, b, "2026-01-10 00:00+00")
+    if retry == "practice":
+        _attempt_at(clean, a, "2026-01-10 12:00+00", session=session)
+    else:
+        _attempt_at(clean, a, "2026-01-10 12:00+00", session=session, mode="extra", counted=False)
+    assert _run(clean, _config()) == [b, a]
+
+
+def test_the_newest_attempts_compare_as_instants_across_a_fall_back(new_york: psycopg.Connection[DictRow]) -> None:
+    _player(new_york)
+    b, a = _not_due(new_york, 2)  # b has the lower id, so only the attempt instants can put a first
+    _attempt_at(new_york, a, "2026-11-01 01:50-04")
+    _attempt_at(new_york, b, "2026-11-01 01:10-05")  # twenty minutes after a, at an earlier wall time
+    last = srs.last_attempted(new_york, [a, b])
+    assert all(at.tzinfo is UTC for at in last.values())
+    assert _run(new_york, _config()) == [a, b]
+
+
+def test_a_puzzle_with_no_dated_attempt_counts_as_practised_longest_ago(clean: psycopg.Connection[DictRow]) -> None:
+    _player(clean)
+    dated, undated = _not_due(clean, 2)
+    _attempt_at(clean, dated, "2000-01-01 00:00+00")
+    _attempt_at(clean, undated, None)
+    assert srs.last_attempted(clean, [dated, undated]).keys() == {dated}
+    assert _run(clean, _config()) == [undated, dated]
+
+
+def test_no_candidates_ask_nothing_of_the_database(fresh_db_url: str) -> None:
+    closed = psycopg.Connection[DictRow].connect(fresh_db_url, row_factory=dict_row)
+    closed.close()
+    assert srs.last_attempted(closed, []) == {}
+
+
+def test_equally_stale_puzzles_come_soonest_due_in_utc_then_lower_level_then_id(
+    new_york: psycopg.Connection[DictRow],
+) -> None:
+    _player(new_york)
+    knight_first, pawn_second, pawn_wall, knight_wall = _not_due(new_york, 4)
+    for pid in (knight_first, pawn_second, pawn_wall, knight_wall):
+        _attempt_at(new_york, pid, "2026-01-10 12:00+00")
+
+    def due(pid: int, at: str, level: str) -> None:
+        new_york.execute(
+            "UPDATE player_puzzle_state SET next_show_at = %s::timestamptz, level = %s WHERE puzzle_id = %s",
+            (at, level, pid),
+        )
+
+    # One instant for these two: the lower level first, though its id is the larger.
+    due(knight_first, "2099-01-01 00:00+00", "knight")
+    due(pawn_second, "2099-01-01 00:00+00", "pawn")
+    # Either side of a fall-back: knight_wall is due first, at the later wall time.
+    due(knight_wall, "2027-11-07 01:50-04", "knight")
+    due(pawn_wall, "2027-11-07 01:10-05", "pawn")
+    assert _run(new_york, _config()) == [knight_wall, pawn_wall, pawn_second, knight_first]
+
+
+def test_the_batch_just_cleared_comes_after_every_puzzle_practised_before_it(
+    clean: psycopg.Connection[DictRow],
+) -> None:
+    _player(clean)
+    older = _not_due(clean, 3)
+    for pid in older:
+        _attempt_at(clean, pid, "2026-01-01 12:00+00")
+    from tests.test_practice import _position
+
+    batch_ids = []
+    for i in range(3, 6):
+        fen, line = _position(i)
+        batch_ids.append(_puzzle(clean, fen, line, themes=[]))  # never attempted: due
+    config = _config(puzzle_mix_batch_size=3)
+    queue = serve.play_batch(clean, config, last_n_games=0, ptype="all", subtype=None)
+    assert sorted(_ids(queue.rows)) == sorted(batch_ids)
+    for n, row in enumerate(queue.rows):  # one miss, the rest solved
+        solved = n > 0
+        attempts.record(
+            clean,
+            int(row["id"]),
+            config,
+            claimed=solved,
+            moves_played=row["solution_line"][0] if solved else "Ka1",
+            attempt_id=str(uuid.uuid4()),
+            session_id=str(uuid.uuid4()),
+            mode="practice",
+        )
+    served = _run(clean, config)
+    assert served[:3] == older and sorted(served[3:]) == sorted(batch_ids)
 
 
 def test_a_corpus_puzzle_is_never_extra_practice() -> None:

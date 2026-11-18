@@ -178,8 +178,9 @@ export async function getPuzzles(params: { srs?: SrsFilter; ptype?: PracticeType
   return { ...data, puzzles: data.puzzles.map(withThemes) };
 }
 
-/** One page of extra practice: the filter's puzzles that are not due yet, soonest due first. A
- *  page names its `run`; asking with it gives the run's next page, never one already served. */
+/** One page of extra practice: the filter's puzzles that are not due yet, practised longest ago
+ *  first. A page names its `run`; asking with it gives the run's next page, never one already
+ *  served. */
 export async function getExtraPage(params: { ptype: PracticeType; subtype: string | null; last_n_games: number; run: number | null }): Promise<PuzzlesResponse> {
   const q = new URLSearchParams({ srs: "extra" });
   if (params.ptype !== "all") q.set("ptype", params.ptype);

@@ -697,13 +697,13 @@ function CaughtUpAction({ extra, onKeepPractising, onBackToQueue, disabled = fal
 const EXTRA_PREFETCH = 4;
 
 /**
- * Extra practice over one filter (`srs=extra`): its puzzles that are not due yet, soonest due
- * first, a page at a time. The first page starts a run; every later read names the run, so no
- * page repeats a puzzle the run has served. An empty page ends it. Played by PlayMode as the
- * queue is, with attempts sent as extra practice: they count only for a puzzle that is due as the
- * load's first attempt is recorded. A run's pages are this scope's pages from its first on, so a
- * second tab's run on the same filter, or a page whose answer was lost, takes its puzzles out of
- * this run too.
+ * Extra practice over one filter (`srs=extra`): its puzzles that are not due yet, practised
+ * longest ago first, a page at a time. The first page starts a run; every later read names the
+ * run, so no page repeats a puzzle the run has served. An empty page ends it. Played by PlayMode
+ * as the queue is, with attempts sent as extra practice: they count only for a puzzle that is due
+ * as the load's first attempt is recorded. A run's pages are this scope's pages from its first
+ * on, so a second tab's run on the same filter, or a page whose answer was lost, takes its
+ * puzzles out of this run too.
  */
 function ExtraMode({ ptype, subtype, lastNGames, onBack, onNavigationLock }: { ptype: PracticeType; subtype: string | null; lastNGames: number; onBack: () => void; onNavigationLock: (locked: boolean) => void }) {
   const runRef = useRef<number | null>(null);
