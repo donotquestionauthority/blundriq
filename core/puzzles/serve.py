@@ -163,7 +163,12 @@ def scope_of(ptype: str, subtype: str | None) -> str:
 
 
 def lookahead_plies(config: Settings) -> int:
-    return 2 * int(config.repertoire_puzzle_lookahead_moves)
+    return lookahead_plies_for(int(config.repertoire_puzzle_lookahead_moves))
+
+
+def lookahead_plies_for(moves: int) -> int:
+    """`repertoire_puzzle_lookahead_moves` in plies: both sides' moves."""
+    return 2 * moves
 
 
 def mint_ahead_threshold(config: Settings) -> int:

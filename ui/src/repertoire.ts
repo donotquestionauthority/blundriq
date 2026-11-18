@@ -244,6 +244,54 @@ export interface ToggleResponse {
   held_back: Refusal[];
 }
 
+/** One occurrence of a move pair in a line (GET /repertoire/move-pair). `ply` is move 1's 0-based
+ *  ply in the line; `fenBefore2` is the board move 2 is played from, `movesToPair` the line's moves
+ *  from `rootFen` through move 2, as the server's SAN. */
+export interface MovePairRow {
+  lineId: number;
+  book: string;
+  chapter: string;
+  line: string;
+  ply: number;
+  label: string;
+  san1: string;
+  san2: string;
+  piece2: MovePairPiece;
+  square2: string;
+  move2Uci: string;
+  fenBefore2: string;
+  fenAfter: string;
+  rootFen: string;
+  movesToPair: string[];
+  inPractice: boolean;
+}
+export interface MovePairResponse {
+  rows: MovePairRow[];
+  /** Every reply after move 1 as piece and destination (its spellings in `sans`), when move 2 was
+   *  left open; null when it was given. `count` is what searching that move 2 returns. */
+  replies: { piece: MovePairPiece; square: string; sans: string[]; count: number; inPractice: number }[] | null;
+  total: number;
+  truncated: boolean;
+}
+export type MovePairPiece = "K" | "Q" | "R" | "B" | "N" | "P";
+export interface MovePairQuery {
+  colour: "white" | "black";
+  first: "me" | "opponent";
+  p1: MovePairPiece;
+  s1: string;
+  /** Both or neither: none is any reply. */
+  move2: { piece: MovePairPiece; square: string } | null;
+}
+export function movePairQueryString(q: MovePairQuery): string {
+  const p = new URLSearchParams({ colour: q.colour, first: q.first, p1: q.p1, s1: q.s1 });
+  if (q.move2) {
+    p.set("p2", q.move2.piece);
+    p.set("s2", q.move2.square);
+  }
+  return p.toString();
+}
+export const getMovePair = (q: MovePairQuery, signal?: AbortSignal) => api.get<MovePairResponse>(`/repertoire/move-pair?${movePairQueryString(q)}`, signal);
+
 export const getBooks = () => api.get<{ books: RepertoireBook[] }>("/repertoire");
 export const getSections = (bookId: number) => api.get<{ sections: RepertoireSection[] }>(`/repertoire/${bookId}/sections`);
 export const setActive = (kind: "books" | "chapters" | "lines", id: number, active: boolean) => api.patch<ToggleResponse>(`/repertoire/${kind}/${id}`, { active });

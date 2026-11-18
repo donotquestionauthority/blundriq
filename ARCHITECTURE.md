@@ -79,7 +79,9 @@ Chess.com / Lichess APIs
            the boards of the active repertoire within a placement distance of the queried board, same material
            exactly; the solver asks about the board at its latest player decision) and Compare similar
            positions in the solver (core/repertoire/branch_compare.py: what the opponent could have played
-           one half-move back, from the repertoire and the player's own blunders).
+           one half-move back, from the repertoire and the player's own blunders). The Repertoire page's
+           Find a move pair (core/repertoire/move_pair.py) asks where a piece-to-square move and its reply
+           occur in one colour's lines, the pairs inside a served puzzle's segment first.
 
   Scout (api) reads opponent_views against the player's games, blunders and repertoire on the fly
            (core/scout/): the opponent's activity and openings, the positions where they choose, and the
@@ -143,6 +145,7 @@ Everything above the API line is the `pipeline` CLI (`pipeline/cli.py`), one sub
 | `core/repertoire/chapter_idea.py` | Asking about one chapter: its render, move tags into links, stored conversations with frozen parameters, the provider's count before each claim, staleness on every read. |
 | `core/repertoire/conflicts.py` | One signature relation (every line's move at its book side's plies, effectiveness computed): the Conflicts page's listing and duplicates, the contested count, and the gate a toggle runs (`importing.decide` over existing rows). |
 | `core/repertoire/neighbourhood.py` | Similar positions: material-hash prefilter, exact signature verify on the matched plies only, placement distance, one entry per board with all of its groups (enumerated, never reduced), the cap in boards. |
+| `core/repertoire/move_pair.py` | Find a move pair: a superset filter in SQL (the token names the square, so every spelling the importer accepts survives; the board after the move holds that kind of piece there), `parse_san` verification of piece and destination, in practice from `visibility.repertoire_rows_sql`'s segment scoped to the matched lines, the order and the cap in SQL with names for the shown rows only. |
 | `core/repertoire/branch_compare.py` | Branch compare: every opponent option at a puzzle's parent from the repertoire (leg R), the player's blunders (leg B) and scouted opponents' games (leg S, with the engine's move at the child from the player's analysed games), repertoire winning on a board, `current` always present and never capped. |
 | `core/repertoire/importing.py` | `pipeline import-repertoire`: the neutral file, identity by source ids, the cohort gate for new lines, replacement for a book the file marks complete. |
 | `core/deviations.py` | The Deviations page: patterns (book, chapter, ply, expected move) ranked by distinct games, their games, the repertoire's reading of each board, the seen set. |

@@ -83,6 +83,9 @@ REPORT_PREFILL_PLIES = 10
 # when it fits no chapter of the player's.
 REPERTOIRE_LINE_MAX_PLIES = 60
 CATCH_ALL_TITLE = "Catch-all"
+# The Repertoire page's move-pair search (core/repertoire/move_pair.py): the most rows one
+# answer carries; the total and the replies summary still count every match.
+MOVE_PAIR_MAX_ROWS = 200
 
 # Scout: a position shared with an opponent counts only from this 0-based ply on (the first
 # few moves of every game are shared with everyone).
