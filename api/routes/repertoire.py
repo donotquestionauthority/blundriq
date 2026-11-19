@@ -11,7 +11,9 @@ the Conflicts page. GET|PUT|DELETE /repertoire/annotation, GET /repertoire/lines
 editor and the line walk-through, on every card and in Practice. GET /repertoire/coverage — whether a
 card's board is in the repertoire, and the line to walk through. POST /repertoire/lines/{id}/explain —
 the walk-through's "why does this move matter" (core/ai.py `explain_line`). GET /repertoire/similar and
-GET /repertoire/branch-compare — the two compare surfaces. GET /repertoire/report — the
+GET /repertoire/branch-compare — the two compare surfaces. GET /repertoire/move-pair — where a
+piece-to-square move and the reply to it occur in one colour's active repertoire
+(core/repertoire/move_pair.py). GET /repertoire/report — the
 line report, the lines table and both colours' gaps in one read (core/repertoire/report.py). GET
 /repertoire/gap-card — one game at one board as a gap card, what a Blunders card's "Add to repertoire"
 opens with. All literal paths are registered before `/{book_id}`.
@@ -35,6 +37,7 @@ from pydantic import BaseModel, Field
 from api import auth
 from core import ai, db, settings
 from core.chess.eligibility import TIME_CLASSES
+from core.puzzles import serve
 from core.repertoire import (
     annotations,
     books,
@@ -42,6 +45,7 @@ from core.repertoire import (
     chapter_idea,
     conflicts,
     lines,
+    move_pair,
     neighbourhood,
     read,
     report,
@@ -194,6 +198,37 @@ def similar(
             )
         except neighbourhood.NoSignature as exc:
             raise HTTPException(400, "Not a position") from exc
+
+
+Piece = Literal["K", "Q", "R", "B", "N", "P"]
+_SQUARE = r"^[a-h][1-8]$"
+
+
+@router.get("/move-pair")
+def move_pair_search(
+    colour: Literal["white", "black"],
+    first: Literal["me", "opponent"],
+    p1: Piece,
+    s1: str = Query(pattern=_SQUARE),
+    p2: Piece | None = None,
+    s2: str | None = Query(None, pattern=_SQUARE),
+) -> dict[str, Any]:
+    """Every occurrence of move 1 then its reply in the colour's active lines. Move 2's piece and
+    square come together or not at all (422); none means any reply, with the replies summarised."""
+    if (p2 is None) != (s2 is None):
+        raise HTTPException(422, "move 2 needs both a piece and a square")
+    target2 = move_pair.Target(p2, s2) if p2 is not None and s2 is not None else None
+    with db.transaction() as conn:
+        key = "repertoire_puzzle_lookahead_moves"
+        lookahead = serve.lookahead_plies_for(int(settings.load_fields(conn, key)[key]))
+        return move_pair.search(
+            conn,
+            colour=colour,
+            first=first,
+            move1=move_pair.Target(p1, s1),
+            move2=target2,
+            lookahead_plies=lookahead,
+        )
 
 
 @router.get("/coverage")

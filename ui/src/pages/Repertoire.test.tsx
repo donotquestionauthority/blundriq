@@ -313,3 +313,46 @@ describe("Repertoire page: conflicts", () => {
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 });
+
+describe("Repertoire page: the move-pair search follows the page's changes", () => {
+  const pairAnswer = { status: 200, body: { rows: [], replies: [], total: 0, truncated: false } };
+  const renderAt = (entry: string) =>
+    render(
+      <MemoryRouter initialEntries={[entry]}>
+        <Repertoire />
+      </MemoryRouter>,
+    );
+  const pairCalls = (calls: Array<{ path: string }>) => calls.filter((c) => c.path === "/repertoire/move-pair").length;
+
+  it("a refused toggle leaves the search alone", async () => {
+    const calls = stubFetch({
+      "/repertoire": () => ({ status: 200, body: { books: [book()] } }),
+      "/repertoire/conflicts": () => ({ status: 200, body: { positions: [], duplicates: [], contested: 0 } }),
+      "/repertoire/1/sections": () => ({ status: 200, body: { sections: sections() } }),
+      "/repertoire/lines/2": () => ({ status: 409, body: { detail: "activation_conflict", refusal: refusal() } }),
+      "/repertoire/move-pair": () => pairAnswer,
+    });
+    renderAt("/repertoire?pair=white.me.Pe4.any");
+    await screen.findByText(/No line in your White repertoire/);
+    fireEvent.click(await screen.findByRole("button", { name: /Course: The Italian/ }));
+    fireEvent.click(await screen.findByRole("switch", { name: "Alt active" }));
+    await screen.findByRole("dialog", { name: "Can't switch Alt on" });
+    expect(pairCalls(calls)).toBe(1);
+  });
+
+  it("a deleted line asks the search again", async () => {
+    const calls = stubFetch({
+      "/repertoire": () => ({ status: 200, body: { books: [book()] } }),
+      "/repertoire/conflicts": () => ({ status: 200, body: { positions: [], duplicates: [], contested: 0 } }),
+      "/repertoire/1/sections": () => ({ status: 200, body: { sections: sections() } }),
+      "/repertoire/lines/2": () => ({ status: 200, body: { detail: "deleted", loads: 0 } }),
+      "/repertoire/move-pair": () => pairAnswer,
+    });
+    renderAt("/repertoire?pair=white.me.Pe4.any");
+    await screen.findByText(/No line in your White repertoire/);
+    fireEvent.click(await screen.findByRole("button", { name: /Course: The Italian/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete Alt" }));
+    fireEvent.click(within(screen.getByRole("group")).getByRole("button", { name: "Delete" }));
+    await vi.waitFor(() => expect(pairCalls(calls)).toBe(2));
+  });
+});

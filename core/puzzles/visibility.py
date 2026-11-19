@@ -185,18 +185,28 @@ _SCOPE_PREDICATE: dict[RepKind, LiteralString] = {
 
 
 def repertoire_rows_sql(
-    lookahead_plies: int, *, collapse: bool = True, scope: RepKind | None = None, by_id: bool = False
+    lookahead_plies: int,
+    *,
+    collapse: bool = True,
+    scope: RepKind | None = None,
+    by_id: bool = False,
+    lines: bool = False,
 ) -> LiteralString:
     """Full visible repertoire rows. One row per presented position when `collapse`.
 
     `scope` narrows the candidates to one book, chapter or line (binds %(scope_id)s) BEFORE the
     collapse, so a scope whose puzzle loses the collapse to another scope's puzzle on the same
-    board still has its own representative. `by_id` narrows to one puzzle (binds %(id)s)."""
+    board still has its own representative. `by_id` narrows to one puzzle (binds %(id)s); `lines`
+    to the puzzles of a set of lines (binds %(scope_ids)s). Narrowing never changes a row."""
     n = int(lookahead_plies)
     ply = _PRESENTATION_PLY.format(n=n)
     distinct = "DISTINCT ON (presentation_fen)" if collapse else ""
     order = "ORDER BY presentation_fen, occurrence_count DESC, id ASC" if collapse else "ORDER BY id"
-    narrow = (_SCOPE_PREDICATE[scope] if scope else "") + (" AND p.id = %(id)s" if by_id else "")
+    narrow = (
+        (_SCOPE_PREDICATE[scope] if scope else "")
+        + (" AND p.id = %(id)s" if by_id else "")
+        + (" AND rl.id = ANY(%(scope_ids)s)" if lines else "")
+    )
     return cast(
         LiteralString,
         f"""WITH line_events AS (

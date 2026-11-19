@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { ApiError } from "../api";
 import { ChapterIdeaDialog } from "../components/ChapterIdea";
+import { MovePairSearch } from "../components/MovePairSearch";
 import { LineWalkthrough } from "../components/PositionCard/LineReaderPanel";
 import { RefusalDialog, Toggle } from "../components/RepertoireBits";
 import { useApi } from "../hooks/useApi";
@@ -24,6 +25,9 @@ import { numbered } from "../utils/chess";
  * applies them when they land), and a sections response that was in flight when the toggle
  * answered is dropped and fetched again, so it cannot restore the old flags. The contested
  * count under the title is fetched again after every successful toggle.
+ *
+ * Above the books, Find a move pair (`components/MovePairSearch`) lists where a move and its
+ * reply occur in one colour's lines; a row opens the walk-through just after move 1.
  *
  * Each chapter row opens the chapter's idea (`ChapterIdeaDialog`): "Ask about this chapter", or
  * "Chapter idea (N)" once N conversations are stored; only a chapter with neither active lines nor
@@ -229,7 +233,10 @@ function Book({ book, onError, onOpenLine, onOpenChapter, onRefusal, onToggled }
   );
 }
 
-function LineDialog({ line, onClose }: { line: RepertoireLine; onClose: () => void }) {
+/** A line to walk through: its id and name, and the ply it opens at. */
+type WalkLine = { id: number; name: string; initialPly?: number };
+
+function LineDialog({ line, onClose }: { line: WalkLine; onClose: () => void }) {
   useEffect(() => {
     const before = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -251,7 +258,7 @@ function LineDialog({ line, onClose }: { line: RepertoireLine; onClose: () => vo
         <span className="truncate text-xs text-zinc-500">{line.name}</span>
       </div>
       <div className="mx-auto w-full max-w-2xl flex-1 p-4">
-        <LineWalkthrough lineId={line.id} />
+        <LineWalkthrough lineId={line.id} initialPly={line.initialPly} />
       </div>
     </div>
   );
@@ -260,7 +267,7 @@ function LineDialog({ line, onClose }: { line: RepertoireLine; onClose: () => vo
 export default function Repertoire() {
   const { data, error, isLoading } = useApi(getBooks);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [openLine, setOpenLine] = useState<RepertoireLine | null>(null);
+  const [openLine, setOpenLine] = useState<WalkLine | null>(null);
   const [openChapter, setOpenChapter] = useState<OpenChapter | null>(null);
   const closeChapter = useCallback(() => setOpenChapter(null), []);
   const [refusal, setRefusal] = useState<Opened | null>(null);
@@ -281,6 +288,12 @@ export default function Repertoire() {
     );
   }, []);
   useEffect(() => refetchCount(), [refetchCount]);
+  // Bumped by every successful toggle or deletion: the move-pair search on show is asked again.
+  const [repertoireRevision, setRepertoireRevision] = useState(0);
+  const onChanged = useCallback(() => {
+    refetchCount();
+    setRepertoireRevision((n) => n + 1);
+  }, [refetchCount]);
 
   const closeRefusal = useCallback(() => {
     setRefusal((r) => {
@@ -301,6 +314,7 @@ export default function Repertoire() {
           Line report →
         </Link>
       </p>
+      <MovePairSearch revision={repertoireRevision} onWalk={(r) => setOpenLine({ id: r.lineId, name: r.line, initialPly: r.ply + 1 })} />
       {(error || actionError) && (
         <p role="alert" className="mb-3 text-sm text-red-600 dark:text-red-400">
           {error ?? actionError}
@@ -308,7 +322,7 @@ export default function Repertoire() {
       )}
       {isLoading && !data && <p className="text-sm text-zinc-500">Loading…</p>}
       {data && data.books.length === 0 && <p className="py-8 text-center text-sm text-zinc-500">No repertoire yet. Load one with `pipeline import-repertoire`.</p>}
-      <div className="space-y-2">{data?.books.map((b) => <Book key={b.book_id} book={b} onError={setActionError} onOpenLine={setOpenLine} onOpenChapter={setOpenChapter} onRefusal={setRefusal} onToggled={refetchCount} />)}</div>
+      <div className="space-y-2">{data?.books.map((b) => <Book key={b.book_id} book={b} onError={setActionError} onOpenLine={setOpenLine} onOpenChapter={setOpenChapter} onRefusal={setRefusal} onToggled={onChanged} />)}</div>
       {openLine && <LineDialog line={openLine} onClose={() => setOpenLine(null)} />}
       {openChapter && <ChapterIdeaDialog chapterId={openChapter.chapterId} title={openChapter.title} onClose={closeChapter} onCount={openChapter.onCount} />}
       {refusal && <RefusalDialog refusal={refusal.refusal} orientation={refusal.orientation} onClose={closeRefusal} />}
